@@ -1,0 +1,7 @@
+pandas>=2.0
+pyarrow>=14.0
+numpy>=1.24
+matplotlib>=3.7
+
+# 可选：需要「优先调用官方 CLI 清洗」时安装（体积较大，会带上 torch）
+# lerobot>=0.4.0

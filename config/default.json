@@ -1,0 +1,79 @@
+{
+  "version": "1.1",
+  "defaults": {
+    "frame_count": {
+      "mode": "auto",
+      "mad_k_low": 3.0,
+      "mad_k_high": 8.0,
+      "floor": 8,
+      "ceiling": 20000
+    },
+    "action_jump": {
+      "abs_floor": 1.0,
+      "mad_k": 12.0
+    },
+    "timestamp": {
+      "step_tolerance_ratio": 0.25
+    },
+    "video_frame_tolerance": 1,
+    "static_episode": {
+      "enabled": true,
+      "state_std_threshold": 0.001,
+      "min_frames_checked": 5
+    },
+    "blank_video": {
+      "enabled": true,
+      "sample_points": [
+        0.15,
+        0.35,
+        0.55,
+        0.75,
+        0.9
+      ],
+      "lum_std_threshold": 4.0,
+      "bad_ratio_threshold": 0.6,
+      "max_probes": 400
+    },
+    "duplicate_episode": {
+      "enabled": true,
+      "quantize_decimals": 3
+    },
+    "stale_stats": {
+      "enabled": true,
+      "mean_rel_tolerance": 0.05,
+      "sample_episodes": 200
+    },
+    "boundary_trim": {
+      "enabled": true,
+      "max_ratio": 0.25
+    },
+    "probe": {
+      "precise": false,
+      "max_cameras": 3,
+      "small_file_mb_for_precise": 64
+    },
+    "joint_limits": {
+      "enabled": false,
+      "lower": null,
+      "upper": null,
+      "tolerance": 1e-06
+    }
+  },
+  "robots": {},
+  "severity": {
+    "nan_state": "error",
+    "nan_action": "error",
+    "action_jump": "warning",
+    "frame_count_abnormal": "error",
+    "timestamp_not_monotonic": "warning",
+    "timestamp_step_deviation": "info",
+    "frame_mismatch": "error",
+    "meta_index_inconsistent": "warning",
+    "missing_task": "warning",
+    "static_episode": "error",
+    "blank_video": "error",
+    "duplicate_episode": "error",
+    "joint_limit_violation": "error",
+    "stats_stale": "warning"
+  }
+}

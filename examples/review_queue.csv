@@ -1,0 +1,13 @@
+﻿episode_index,severity,suggested_disposition,reasons,recommended_action,frame_count,detail,video,window,reviewer_disposition,reviewer_note
+3,error,drop,nan_state,剔除,112,"nan_state:{""nan_count"": 11, ""inf_count"": 0}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,10.03-13.77s,,
+5,error,repair,nan_state,裁掉首3帧/尾0帧后保留,102,"nan_state:{""nan_count"": 3, ""inf_count"": 0}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,16.63-20.03s,,
+7,warning,review,action_jump,人工复核后决定,58,"action_jump:{""jump_count"": 3, ""max_delta"": 34.0043}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,23.60-25.53s,,
+9,error,drop,static_episode,剔除,64,static_episode:该 episode 数值几乎无变化，疑似未执行任务,G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,27.00-29.13s,,
+11,error,drop,frame_count_abnormal,剔除,5,"frame_count_abnormal:{""direction"": ""too_few""}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,31.23-31.40s,,
+13,error,drop,duplicate_episode,剔除,95,"duplicate_episode:{""duplicate_of"": 2}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,35.17-38.33s,,
+15,warning,repair,timestamp_not_monotonic,用 frame_index/fps 重建时间轴,106,"timestamp_not_monotonic:{""violations"": 1}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,41.00-44.53s,,
+17,error,drop,blank_video,剔除,104,"blank_video:{""bad_ratio"": 1.0}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,46.20-49.67s,,
+19,error,drop,frame_mismatch,剔除,77,,G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,1.63-3.20s,,
+23,warning,review,missing_task,人工复核后决定,62,,G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,11.10-13.17s,,
+27,error,drop,nan_action|action_jump,剔除,76,"nan_action:{""nan_count"": 0, ""inf_count"": 1} | action_jump:{""jump_count"": 2, ""max_delta"": Infinity}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,22.43-24.97s,,
+31,error,drop,nan_state|action_jump,剔除,84,"nan_state:{""nan_count"": 8, ""inf_count"": 0} | action_jump:{""jump_count"": 3, ""max_delta"": 34.0184}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,33.13-35.93s,,

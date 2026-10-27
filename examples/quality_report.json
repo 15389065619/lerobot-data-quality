@@ -1,0 +1,924 @@
+{
+  "schema_version": "1.1",
+  "generated_at": "2026-10-27T22:21:09+08:00",
+  "dataset": {
+    "path": "demo_dataset",
+    "name": "demo_dataset",
+    "codebase_version": "v3.0",
+    "fps": 30.0,
+    "robot_type": "so100_follower",
+    "total_episodes": 36,
+    "total_frames": 3008,
+    "max_episodes_applied": null,
+    "video_features": [
+      "observation.images.top",
+      "observation.images.wrist"
+    ],
+    "state_dims": 7,
+    "fingerprint": "7771c3887cec7ac5"
+  },
+  "config": {
+    "version": "1.1",
+    "robot_type": "so100_follower",
+    "source_file": null,
+    "effective": {
+      "frame_count": {
+        "mode": "auto",
+        "mad_k_low": 3.0,
+        "mad_k_high": 8.0,
+        "floor": 8,
+        "ceiling": 20000
+      },
+      "action_jump": {
+        "abs_floor": 1.0,
+        "mad_k": 12.0
+      },
+      "timestamp": {
+        "step_tolerance_ratio": 0.25
+      },
+      "video_frame_tolerance": 1,
+      "static_episode": {
+        "enabled": true,
+        "state_std_threshold": 0.001,
+        "min_frames_checked": 5
+      },
+      "blank_video": {
+        "enabled": true,
+        "sample_points": [
+          0.15,
+          0.35,
+          0.55,
+          0.75,
+          0.9
+        ],
+        "lum_std_threshold": 4.0,
+        "bad_ratio_threshold": 0.6,
+        "max_probes": 400
+      },
+      "duplicate_episode": {
+        "enabled": true,
+        "quantize_decimals": 3
+      },
+      "stale_stats": {
+        "enabled": true,
+        "mean_rel_tolerance": 0.05,
+        "sample_episodes": 200
+      },
+      "boundary_trim": {
+        "enabled": true,
+        "max_ratio": 0.25
+      },
+      "probe": {
+        "precise": false,
+        "max_cameras": 3,
+        "small_file_mb_for_precise": 64
+      },
+      "joint_limits": {
+        "enabled": false,
+        "lower": null,
+        "upper": null,
+        "tolerance": 1e-06
+      }
+    },
+    "severity": {
+      "nan_state": "error",
+      "nan_action": "error",
+      "action_jump": "warning",
+      "frame_count_abnormal": "error",
+      "timestamp_not_monotonic": "warning",
+      "timestamp_step_deviation": "info",
+      "frame_mismatch": "error",
+      "meta_index_inconsistent": "warning",
+      "missing_task": "warning",
+      "static_episode": "error",
+      "blank_video": "error",
+      "duplicate_episode": "error",
+      "joint_limit_violation": "error",
+      "stats_stale": "warning"
+    }
+  },
+  "resolved_thresholds": {
+    "frame_count": {
+      "mode": "auto",
+      "min": 8,
+      "max": 329,
+      "median": 85.0,
+      "mad": 20.5
+    },
+    "action_jump": {
+      "abs_floor": 1.0,
+      "mad_k": 12.0,
+      "per_dim": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "median_delta": [
+        0.0468,
+        0.0417,
+        0.0451,
+        0.0491,
+        0.0407,
+        0.0411,
+        0.0453
+      ],
+      "mad_delta": [
+        0.0288,
+        0.025,
+        0.0269,
+        0.0283,
+        0.0237,
+        0.0243,
+        0.0275
+      ]
+    },
+    "timestamp_step_tolerance": 0.008333,
+    "video_frame_tolerance": 1
+  },
+  "summary": {
+    "total_episodes": 36,
+    "valid_episodes": 23,
+    "invalid_episodes": 13,
+    "valid_ratio": 0.6389,
+    "severity": {
+      "error": 9,
+      "warning": 3,
+      "info": 1,
+      "ok": 23
+    },
+    "disposition": {
+      "keep": 24,
+      "repair": 2,
+      "review": 2,
+      "drop": 8
+    },
+    "repair_breakdown": {
+      "trim": 1,
+      "timestamps": 1
+    },
+    "overridden_by_human": 0,
+    "invalid_frames": 1009,
+    "drop_frames": 617,
+    "trim_frames": 3,
+    "repair_frames": 208,
+    "invalid_frame_ratio": 0.2051,
+    "remaining_episodes": 28,
+    "remaining_frames": 2388,
+    "health_level": "severe",
+    "has_video_probe": true,
+    "after_cleaning_episodes": 28
+  },
+  "checks": [
+    {
+      "code": "nan_state",
+      "label": "observation.state 存在 NaN/Inf",
+      "description": "传感器掉线、序列化失败；无法插值修复",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 3,
+      "affected_ratio": 0.0833,
+      "status": "enabled"
+    },
+    {
+      "code": "nan_action",
+      "label": "action 存在 NaN/Inf",
+      "description": "控制指令未写入；训练时 loss 直接 NaN",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "action_jump",
+      "label": "action 相邻帧跳变异常",
+      "description": "遥操作接管/碰撞/控制周期抖动；需人审确认是否真实动作",
+      "severity": "warning",
+      "repair": null,
+      "affected_episodes": 3,
+      "affected_ratio": 0.0833,
+      "status": "enabled"
+    },
+    {
+      "code": "frame_count_abnormal",
+      "label": "episode 帧数超出分布区间",
+      "description": "过短无法构成时序窗口，过长多为未切分",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "timestamp_not_monotonic",
+      "label": "timestamp 非严格递增",
+      "description": "时间轴损坏；可用 frame_index/fps 重建",
+      "severity": "warning",
+      "repair": "timestamps",
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "timestamp_step_deviation",
+      "label": "timestamp 步长偏离 1/fps",
+      "description": "掉帧或时间戳抖动；仅记录，不阻断",
+      "severity": "info",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "frame_mismatch",
+      "label": "视频帧数与 state 行数不一致",
+      "description": "采集中断导致 mp4 未收尾，按帧对齐会错位",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "meta_index_inconsistent",
+      "label": "meta/episodes 与数据不一致",
+      "description": "length/索引漂移；清洗时会按真实行数重建",
+      "severity": "warning",
+      "repair": "index",
+      "affected_episodes": 0,
+      "affected_ratio": 0.0,
+      "status": "enabled"
+    },
+    {
+      "code": "missing_task",
+      "label": "任务描述缺失或为空",
+      "description": "语言条件策略会直接报错；需补标",
+      "severity": "warning",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "static_episode",
+      "label": "空转 episode（动作几乎无变化）",
+      "description": "机器人未真正执行任务，属无效采集",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "blank_video",
+      "label": "视频黑屏/纯色遮挡",
+      "description": "镜头被挡或相机未推流；模态信息完全丢失",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "duplicate_episode",
+      "label": "重复采样 episode",
+      "description": "同一条 action 轨迹被重复入库，会造成分布失衡",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 1,
+      "affected_ratio": 0.0278,
+      "status": "enabled"
+    },
+    {
+      "code": "joint_limit_violation",
+      "label": "state 超出关节限位",
+      "description": "标定错误或越界动作；需检查 URDF 限位",
+      "severity": "error",
+      "repair": null,
+      "affected_episodes": 0,
+      "affected_ratio": 0.0,
+      "status": "enabled"
+    }
+  ],
+  "reason_frequency": {
+    "nan_state": 3,
+    "nan_action": 1,
+    "action_jump": 3,
+    "frame_count_abnormal": 1,
+    "timestamp_not_monotonic": 1,
+    "timestamp_step_deviation": 1,
+    "frame_mismatch": 1,
+    "meta_index_inconsistent": 0,
+    "missing_task": 1,
+    "static_episode": 1,
+    "blank_video": 1,
+    "duplicate_episode": 1,
+    "joint_limit_violation": 0
+  },
+  "field_issue_stats": {
+    "observation.state": {
+      "dims": 7,
+      "nan_count": 22,
+      "inf_count": 0,
+      "min": -1.43689,
+      "max": 1.444655,
+      "mean": 0.008283
+    },
+    "action": {
+      "dims": 7,
+      "nan_count": 0,
+      "inf_count": 1,
+      "min": -17.064993,
+      "max": 18.419487,
+      "mean": 0.003423,
+      "jump_episodes": 3
+    }
+  },
+  "dataset_issues": [
+    {
+      "code": "stats_stale",
+      "label": "meta/stats.json 与实测数据偏差过大（归一化统计已过期）",
+      "detail": {
+        "max_relative_deviation": 1.5712,
+        "tolerance": 0.05,
+        "worst_dims": [
+          5,
+          6,
+          1
+        ],
+        "recorded_mean_first3": [
+          -0.0354,
+          0.0189,
+          0.1025
+        ],
+        "actual_mean_first3": [
+          -0.0481,
+          -0.0009,
+          0.0717
+        ]
+      },
+      "repair": "stats"
+    }
+  ],
+  "invalid_episode_details": [
+    {
+      "episode_index": 3,
+      "frame_count": 112,
+      "reasons": [
+        "nan_state"
+      ],
+      "reason_labels": [
+        "observation.state 存在 NaN/Inf"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "nan_state": {
+          "nan_count": 11,
+          "inf_count": 0,
+          "affected_frames": 11,
+          "affected_dims": [
+            2
+          ],
+          "first_bad_frames": [
+            37,
+            38,
+            39,
+            40,
+            41
+          ],
+          "boundary_only": false,
+          "head_frames": 0,
+          "tail_frames": 0,
+          "trimmable": false,
+          "note": "坏帧在序列中段，无法裁剪修复"
+        }
+      }
+    },
+    {
+      "episode_index": 5,
+      "frame_count": 102,
+      "reasons": [
+        "nan_state"
+      ],
+      "reason_labels": [
+        "observation.state 存在 NaN/Inf"
+      ],
+      "severity": "error",
+      "disposition": "repair",
+      "recommended_action": "裁掉首3帧/尾0帧后保留",
+      "details": {
+        "nan_state": {
+          "nan_count": 3,
+          "inf_count": 0,
+          "affected_frames": 3,
+          "affected_dims": [
+            1
+          ],
+          "first_bad_frames": [
+            0,
+            1,
+            2
+          ],
+          "boundary_only": true,
+          "head_frames": 3,
+          "tail_frames": 0,
+          "trimmable": true,
+          "note": "坏帧集中在首尾，可裁剪保留"
+        }
+      }
+    },
+    {
+      "episode_index": 7,
+      "frame_count": 58,
+      "reasons": [
+        "action_jump"
+      ],
+      "reason_labels": [
+        "action 相邻帧跳变异常"
+      ],
+      "severity": "warning",
+      "disposition": "review",
+      "recommended_action": "人工复核后决定",
+      "details": {
+        "action_jump": {
+          "jump_count": 3,
+          "max_delta": 34.0043,
+          "thresholds_used": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "worst_frame": 29,
+          "worst_dim": 0,
+          "examples": [
+            {
+              "frame": 28,
+              "dim": 0,
+              "delta": 18.028,
+              "threshold": 1.0
+            },
+            {
+              "frame": 29,
+              "dim": 0,
+              "delta": 34.0043,
+              "threshold": 1.0
+            },
+            {
+              "frame": 30,
+              "dim": 0,
+              "delta": 16.0367,
+              "threshold": 1.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "episode_index": 9,
+      "frame_count": 64,
+      "reasons": [
+        "static_episode"
+      ],
+      "reason_labels": [
+        "空转 episode（动作几乎无变化）"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "static_episode": {
+          "state_std": 0.0,
+          "threshold": 0.001,
+          "note": "该 episode 数值几乎无变化，疑似未执行任务",
+          "action_std": 0.0
+        }
+      }
+    },
+    {
+      "episode_index": 11,
+      "frame_count": 5,
+      "reasons": [
+        "frame_count_abnormal"
+      ],
+      "reason_labels": [
+        "episode 帧数超出分布区间"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "frame_count_abnormal": {
+          "frame_count": 5,
+          "min_allowed": 8,
+          "max_allowed": 329,
+          "direction": "too_few",
+          "how_derived": "median=85.0 mad=20.5 mode=auto"
+        }
+      }
+    },
+    {
+      "episode_index": 13,
+      "frame_count": 95,
+      "reasons": [
+        "duplicate_episode"
+      ],
+      "reason_labels": [
+        "重复采样 episode"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "duplicate_episode": {
+          "duplicate_of": 2,
+          "fingerprint": "9eec747694e64752",
+          "note": "与 ep 2 的 action 轨迹完全一致"
+        }
+      }
+    },
+    {
+      "episode_index": 15,
+      "frame_count": 106,
+      "reasons": [
+        "timestamp_not_monotonic"
+      ],
+      "reason_labels": [
+        "timestamp 非严格递增"
+      ],
+      "severity": "warning",
+      "disposition": "repair",
+      "recommended_action": "用 frame_index/fps 重建时间轴",
+      "details": {
+        "timestamp_not_monotonic": {
+          "reason": "非严格递增",
+          "violations": 1,
+          "repair_hint": "可用 frame_index/fps 重建时间轴",
+          "examples": [
+            {
+              "prev": 1.8,
+              "next": 1.266667,
+              "delta": -0.533333
+            }
+          ]
+        }
+      }
+    },
+    {
+      "episode_index": 17,
+      "frame_count": 104,
+      "reasons": [
+        "blank_video"
+      ],
+      "reason_labels": [
+        "视频黑屏/纯色遮挡"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "blank_video": {
+          "camera": "observation.images.top",
+          "sampled_frames": 7,
+          "bad_ratio": 1.0,
+          "lum_std_threshold": 4.0,
+          "mean_luminance": 8.0,
+          "note": "画面近乎纯色/全黑，疑似镜头遮挡或未推流"
+        }
+      }
+    },
+    {
+      "episode_index": 19,
+      "frame_count": 77,
+      "reasons": [
+        "frame_mismatch"
+      ],
+      "reason_labels": [
+        "视频帧数与 state 行数不一致"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "frame_mismatch": {
+          "rows": 77,
+          "tolerance": 1,
+          "problems": [
+            {
+              "type": "count_mismatch",
+              "camera": "observation.images.top",
+              "video_frames": 47,
+              "rows": 77,
+              "diff": -30
+            },
+            {
+              "type": "count_mismatch",
+              "camera": "observation.images.wrist",
+              "video_frames": 47,
+              "rows": 77,
+              "diff": -30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "episode_index": 21,
+      "frame_count": 64,
+      "reasons": [
+        "timestamp_step_deviation"
+      ],
+      "reason_labels": [
+        "timestamp 步长偏离 1/fps"
+      ],
+      "severity": "info",
+      "disposition": "keep",
+      "recommended_action": "保留（仅记录）",
+      "details": {
+        "timestamp_step_deviation": {
+          "reason": "步长偏离 1/fps",
+          "affected_frames": 1,
+          "expected_step": 0.033333,
+          "examples": [
+            {
+              "frame": 31,
+              "delta": 0.533333
+            }
+          ]
+        }
+      }
+    },
+    {
+      "episode_index": 23,
+      "frame_count": 62,
+      "reasons": [
+        "missing_task"
+      ],
+      "reason_labels": [
+        "任务描述缺失或为空"
+      ],
+      "severity": "warning",
+      "disposition": "review",
+      "recommended_action": "人工复核后决定",
+      "details": {
+        "missing_task": {
+          "reason": "任务描述为空字符串"
+        }
+      }
+    },
+    {
+      "episode_index": 27,
+      "frame_count": 76,
+      "reasons": [
+        "nan_action",
+        "action_jump"
+      ],
+      "reason_labels": [
+        "action 存在 NaN/Inf",
+        "action 相邻帧跳变异常"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "nan_action": {
+          "nan_count": 0,
+          "inf_count": 1,
+          "affected_frames": 1,
+          "affected_dims": [
+            4
+          ],
+          "first_bad_frames": [
+            38
+          ],
+          "boundary_only": false,
+          "head_frames": 0,
+          "tail_frames": 0,
+          "trimmable": false,
+          "note": "坏帧在序列中段，无法裁剪修复"
+        },
+        "action_jump": {
+          "jump_count": 2,
+          "max_delta": Infinity,
+          "thresholds_used": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "worst_frame": 56,
+          "worst_dim": 3,
+          "examples": [
+            {
+              "frame": 37,
+              "dim": 4,
+              "delta": Infinity,
+              "threshold": 1.0
+            },
+            {
+              "frame": 38,
+              "dim": 4,
+              "delta": Infinity,
+              "threshold": 1.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "episode_index": 31,
+      "frame_count": 84,
+      "reasons": [
+        "nan_state",
+        "action_jump"
+      ],
+      "reason_labels": [
+        "observation.state 存在 NaN/Inf",
+        "action 相邻帧跳变异常"
+      ],
+      "severity": "error",
+      "disposition": "drop",
+      "recommended_action": "剔除",
+      "details": {
+        "nan_state": {
+          "nan_count": 8,
+          "inf_count": 0,
+          "affected_frames": 8,
+          "affected_dims": [
+            2
+          ],
+          "first_bad_frames": [
+            28,
+            29,
+            30,
+            31,
+            32
+          ],
+          "boundary_only": false,
+          "head_frames": 0,
+          "tail_frames": 0,
+          "trimmable": false,
+          "note": "坏帧在序列中段，无法裁剪修复"
+        },
+        "action_jump": {
+          "jump_count": 3,
+          "max_delta": 34.0184,
+          "thresholds_used": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "worst_frame": 42,
+          "worst_dim": 0,
+          "examples": [
+            {
+              "frame": 41,
+              "dim": 0,
+              "delta": 17.9711,
+              "threshold": 1.0
+            },
+            {
+              "frame": 42,
+              "dim": 0,
+              "delta": 34.0184,
+              "threshold": 1.0
+            },
+            {
+              "frame": 43,
+              "dim": 0,
+              "delta": 15.954,
+              "threshold": 1.0
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "attribution": [
+    {
+      "dimension": "meta/collector",
+      "groups": [
+        {
+          "value": "bob",
+          "episodes": 18,
+          "invalid": 8,
+          "error": 5,
+          "invalid_ratio": 0.4444
+        },
+        {
+          "value": "alice",
+          "episodes": 18,
+          "invalid": 5,
+          "error": 4,
+          "invalid_ratio": 0.2778
+        }
+      ]
+    }
+  ],
+  "skipped_checks": {},
+  "cleaning": {
+    "performed": true,
+    "success": true,
+    "method": "manual",
+    "output_path": "G:\\Lerobot\\outputs\\cleaned_dataset",
+    "removed_episode_indices": [
+      3,
+      9,
+      11,
+      13,
+      17,
+      19,
+      27,
+      31
+    ],
+    "removed_count": 8,
+    "repaired_episode_indices": [
+      5,
+      15
+    ],
+    "repairs": {
+      "trim": [
+        5
+      ],
+      "timestamps": [
+        15
+      ]
+    },
+    "kept_episodes": 28,
+    "episode_index_map": {
+      "0": 0,
+      "1": 1,
+      "2": 2,
+      "4": 3,
+      "5": 4,
+      "6": 5,
+      "7": 6,
+      "8": 7,
+      "10": 8,
+      "12": 9,
+      "14": 10,
+      "15": 11,
+      "16": 12,
+      "18": 13,
+      "20": 14,
+      "21": 15,
+      "22": 16,
+      "23": 17,
+      "24": 18,
+      "25": 19,
+      "26": 20,
+      "28": 21,
+      "29": 22,
+      "30": 23,
+      "32": 24,
+      "33": 25,
+      "34": 26,
+      "35": 27
+    },
+    "cli_command": null,
+    "cli_error": null,
+    "warnings": [],
+    "verification": {
+      "ok": true,
+      "episodes": 28,
+      "frames": 2388,
+      "episode_indices_contiguous": true
+    }
+  },
+  "artifacts": {
+    "frame_count_distribution": "outputs\\plots\\01_frame_count_distribution.png",
+    "valid_vs_invalid": "outputs\\plots\\02_valid_vs_invalid_pie.png",
+    "state_curves": "outputs\\plots\\03_state_joint_curves.png",
+    "action_scatter": "outputs\\plots\\04_action_scatter.png",
+    "before_after": "outputs\\plots\\05_before_after_comparison.png",
+    "review_queue": "outputs\\review_queue.csv",
+    "cleaned_dataset": "G:\\Lerobot\\outputs\\cleaned_dataset"
+  },
+  "recommendations": [
+    "2 个 episode 可自动修复（trim:1、timestamps:1）：优先修复而非删除，可避免误丢有效数据。",
+    "2 个 episode 需人工复核（ep7、ep23）：这些多是 action 跳变等「可能是真实动作」的问题，建议回放对应视频片段后再定。",
+    "NaN/Inf 涉及 3 个 state / 1 个 action episode：优先排查采集端序列化与控制环丢包；中段坏帧无法插值，应剔除。",
+    "1 个 episode 画面黑屏/纯色：典型原因是镜头遮挡或相机未推流，建议在采集端加实时预览与掉流告警，比事后清洗更省钱。",
+    "1 个 episode 动作轨迹完全重复：数据集合并/重跑时容易重复入库，建议入库前按内容指纹去重。",
+    "1 个 episode 几乎无动作：机器人在空转，属无效采集，建议剔除并排查操作流程。",
+    "视频与 state 帧数不一致涉及 1 个 episode：多为采集中断导致 mp4 未收尾，训练按帧对齐会错位，建议剔除后重录。",
+    "meta/stats.json 与实测数据不符：归一化会整体偏移，清洗后用重算的 stats 覆盖即可。",
+    "异常率 36% 偏高，属系统性问题：建议先修采集流程再清洗，否则剩余数据不足以支撑训练。"
+  ]
+}
