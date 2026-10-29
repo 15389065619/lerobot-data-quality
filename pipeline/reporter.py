@@ -51,8 +51,16 @@ def build_report(
     total = validation.total_episodes
     valid = validation.valid_episodes
     invalid = total - valid
-    frames_by_ep = dataset.frames.groupby("episode_index").size()
-    total_frames = int(dataset.num_frames)
+    aggregates = getattr(validation, "aggregates", None) or {}
+    if len(dataset.frames):
+        frames_by_ep = dataset.frames.groupby("episode_index").size()
+        total_frames = int(dataset.num_frames)
+    elif aggregates.get("frames_by_episode"):
+        frames_by_ep = pd.Series(aggregates["frames_by_episode"], dtype="int64").sort_index()
+        total_frames = int(aggregates.get("total_frames", int(frames_by_ep.sum())))
+    else:
+        frames_by_ep = dataset.frames_by_episode()
+        total_frames = int(dataset.num_frames)
 
     dropped = [ep for ep, d in decisions.items() if d.disposition == "drop"]
     repaired = [ep for ep, d in decisions.items() if d.disposition == "repair"]
@@ -66,6 +74,7 @@ def build_report(
     )
 
     freq = validation.reason_frequency()
+    disposition_summary = summarize_decisions(decisions) if decisions else {}
     report: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": generated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
@@ -90,9 +99,9 @@ def build_report(
             "invalid_episodes": invalid,
             "valid_ratio": _ratio(valid, total),
             "severity": validation.severity_summary(),
-            "disposition": summarize_decisions(decisions)["counts"] if decisions else {},
-            "repair_breakdown": summarize_decisions(decisions)["repair_breakdown"] if decisions else {},
-            "overridden_by_human": summarize_decisions(decisions)["overridden"] if decisions else 0,
+            "disposition": disposition_summary.get("counts", {}),
+            "repair_breakdown": disposition_summary.get("repair_breakdown", {}),
+            "overridden_by_human": disposition_summary.get("overridden", 0),
             "invalid_frames": int(frames_by_ep[frames_by_ep.index.isin(validation.invalid_indices)].sum())
             if invalid else 0,
             "drop_frames": drop_frames,
@@ -331,6 +340,19 @@ def dataset_fingerprint(dataset: LeRobotDatasetView) -> str:
 
 # ------------------------------------------------------------------- 内部
 def _field_issue_stats(dataset: LeRobotDatasetView, validation: ValidationResult) -> dict[str, Any]:
+    aggregates = getattr(validation, "aggregates", None) or {}
+    streamed = aggregates.get("field_stats")
+    if streamed is not None and not len(dataset.frames):
+        stats = {key: dict(value) for key, value in streamed.items()}
+    else:
+        stats = _field_issue_stats_from_frames(dataset)
+    jump_episodes = [r.episode_index for r in validation.results.values() if "action_jump" in r.reasons]
+    if jump_episodes:
+        stats.setdefault(ACTION_KEY, {})["jump_episodes"] = len(jump_episodes)
+    return stats
+
+
+def _field_issue_stats_from_frames(dataset: LeRobotDatasetView) -> dict[str, Any]:
     stats: dict[str, Any] = {}
     for key in (STATE_KEY, ACTION_KEY):
         if key not in dataset.frames.columns:
@@ -351,10 +373,8 @@ def _field_issue_stats(dataset: LeRobotDatasetView, validation: ValidationResult
             "max": round(float(finite.max()), 6) if finite.size else None,
             "mean": round(float(finite.mean()), 6) if finite.size else None,
         }
-    jump_episodes = [r.episode_index for r in validation.results.values() if "action_jump" in r.reasons]
-    if jump_episodes:
-        stats.setdefault(ACTION_KEY, {})["jump_episodes"] = len(jump_episodes)
     return stats
+
 
 
 def _recommendations(

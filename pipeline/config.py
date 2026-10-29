@@ -49,8 +49,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stale_stats": {"enabled": True, "mean_rel_tolerance": 0.05, "sample_episodes": 200},
         # 边界裁剪：NaN 只出现在首尾时优先修而不删
         "boundary_trim": {"enabled": True, "max_ratio": 0.25},
-        # 视频探针
-        "probe": {"precise": False, "max_cameras": 3, "small_file_mb_for_precise": 64},
+        # 视频探针；max_workers 是并发上限：机械盘建议 2，SSD 可到 4-8
+        "probe": {"precise": False, "max_cameras": 3, "small_file_mb_for_precise": 64, "max_workers": 2},
+        # 流式模式：推导 action 阈值时采样的 episode 数（大数据集不必全量扫两遍配阈值）
+        "streaming": {"action_sample_episodes": 200},
         # 关节限位（可选，未配置则跳过；数组顺序与 observation.state 维度一致）
         "joint_limits": {"enabled": False, "lower": None, "upper": None, "tolerance": 1e-6},
     },

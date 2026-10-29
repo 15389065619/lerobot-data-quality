@@ -1,7 +1,7 @@
 """LeRobot v3 数据集加载器（只读）。
 
 职责边界：只负责「把磁盘上的数据集读成内存里的结构」，不做任何质量校验、
-不做任何写操作。校验逻辑一律放在 validator.py。
+不做任何写操作。校验逻辑一律放在 validator 包。
 
 支持的布局：
   * v3.0（默认）：data/chunk-000/file-000.parquet，多 episode 共用一个 parquet 文件
@@ -41,7 +41,8 @@ STATE_KEY = "observation.state"
 ACTION_KEY = "action"
 TASK_INDEX_KEY = "task_index"
 
-_SOURCE_COL = "__source_file"
+#: 内部字段：记录每行来自哪个 parquet 文件，供 cleaner 按原文件重写
+SOURCE_COL = "__source_file"
 
 
 class DatasetFormatError(RuntimeError):
@@ -64,6 +65,8 @@ class LeRobotDatasetView:
     fps: float = 30.0
     #: --max_episodes 生效时记录被截断到的数量，便于报告里如实标注
     truncated_to: int | None = None
+    #: data/*.parquet 列表，流式模式按文件分片读取时使用
+    data_files: list[Path] = field(default_factory=list)
 
     # ------------------------------------------------------------------ 概览
     @property
@@ -72,11 +75,46 @@ class LeRobotDatasetView:
 
     @property
     def num_frames(self) -> int:
-        return int(len(self.frames))
+        """总帧数；流式模式（frames 未加载）下由 meta 的 episode length 求和。"""
+        if len(self.frames):
+            return int(len(self.frames))
+        return int(self.frames_by_episode().sum())
 
     @property
     def episode_indices(self) -> list[int]:
         return [int(x) for x in self.episodes["episode_index"].tolist()]
+
+    @property
+    def column_names(self) -> list[str]:
+        """可用列名；frames 未加载时按 info.json 的特征 + 核心列推断。"""
+        if len(self.frames):
+            return [c for c in self.frames.columns if c != SOURCE_COL]
+        return list(dict.fromkeys([*self.features.keys(), *CORE_FRAME_COLUMNS]))
+
+    def has_column(self, name: str) -> bool:
+        return name in self.frames.columns if len(self.frames) else name in self.column_names
+
+    def frames_by_episode(self) -> pd.Series:
+        """episode_index -> 帧数；frames 未加载时取 meta 的 length 列。"""
+        if len(self.frames):
+            return self.frames.groupby("episode_index").size()
+        if len(self.episodes) and "length" in self.episodes.columns:
+            lengths = pd.to_numeric(self.episodes["length"], errors="coerce").fillna(0).astype(int)
+            indices = pd.to_numeric(self.episodes["episode_index"], errors="coerce").astype(int)
+            return pd.Series(lengths.to_numpy(), index=indices.to_numpy(), dtype="int64")
+        return pd.Series(dtype="int64")
+
+    def frame_count_of(self, episode_index: int) -> int:
+        """单个 episode 的帧数；优先 meta 的 length，避免为拿长度去读整段帧数据。"""
+        if len(self.frames):
+            return int((self.frames["episode_index"] == episode_index).sum())
+        rows = self.episodes[self.episodes["episode_index"] == episode_index]
+        if len(rows) and "length" in self.episodes.columns:
+            try:
+                return int(rows.iloc[0]["length"])
+            except (TypeError, ValueError):
+                return 0
+        return 0
 
     @property
     def data_features(self) -> list[str]:
@@ -85,7 +123,7 @@ class LeRobotDatasetView:
         for key, spec in self.features.items():
             dtype = str(spec.get("dtype", ""))
             if dtype.startswith(("float", "int", "uint", "bool")):
-                if key in self.frames.columns:
+                if self.has_column(key):
                     out.append(key)
         return out
 
@@ -110,10 +148,22 @@ class LeRobotDatasetView:
 
     @property
     def schema(self) -> dict[str, str]:
-        """字段 schema：列名 -> "dtype shape"，直接从 parquet 实际类型 + info.json 描述合成。"""
+        """字段 schema：列名 -> "dtype shape"，直接从 parquet 实际类型 + info.json 描述合成。
+
+        frames 未加载（流式）时退化为 info.json 描述，保证报告字段不空。
+        """
         out: dict[str, str] = {}
+        if not len(self.frames):
+            for key, spec in self.features.items():
+                dtype = str(spec.get("dtype", ""))
+                if dtype.lower() in {"video", "image"}:
+                    out[key] = f"video {spec.get('shape')}"
+                else:
+                    dim = _feature_dim(spec)
+                    out[key] = dtype + (f" [{dim}]" if dim else "")
+            return out
         for col, dtype in self.frames.dtypes.items():
-            if col == _SOURCE_COL:
+            if col == SOURCE_COL:
                 continue
             out[col] = str(dtype)
         for key, spec in self.features.items():
@@ -127,11 +177,61 @@ class LeRobotDatasetView:
 
     # ------------------------------------------------------------- episode 级
     def episode_frame(self, episode_index: int) -> pd.DataFrame:
-        """取某个 episode 的所有帧，按 frame_index 升序。"""
-        sub = self.frames[self.frames["episode_index"] == episode_index]
+        """取某个 episode 的所有帧，按 frame_index 升序。
+
+        frames 未加载（流式）时按需从 parquet 读该 episode，内存只驻留一段。
+        """
+        if len(self.frames):
+            sub = self.frames[self.frames["episode_index"] == episode_index]
+        else:
+            sub = self._read_episode(episode_index)
         if "frame_index" in sub.columns:
             sub = sub.sort_values("frame_index", kind="stable")
         return sub
+
+    def data_file_of(self, episode_index: int) -> Path | None:
+        """定位 episode 所在的数据文件；meta 没记录时靠单文件/扫描兜底。"""
+        rows = self.episodes[self.episodes["episode_index"] == episode_index]
+        if len(rows):
+            row = rows.iloc[0]
+            chunk, file_idx = row.get("data/chunk_index"), row.get("data/file_index")
+            if pd.notna(chunk) and pd.notna(file_idx):
+                tmpl = self.info.get("data_path") or DEFAULT_DATA_PATH
+                try:
+                    rel = tmpl.format(
+                        chunk_index=int(chunk),
+                        file_index=int(file_idx),
+                        episode_index=int(episode_index),
+                    )
+                except (KeyError, IndexError, ValueError, TypeError):
+                    rel = None
+                if rel:
+                    path = self.root / rel
+                    if path.is_file():
+                        return path
+        if len(self.data_files) == 1:
+            return self.data_files[0]
+        return None
+
+    def _read_episode(self, episode_index: int) -> pd.DataFrame:
+        """流式模式下读单个 episode：优先 meta 指向的文件，否则逐文件过滤。"""
+        target = self.data_file_of(episode_index)
+        candidates = [target] if target is not None else list(self.data_files)
+        for path in candidates:
+            try:
+                table = pq.read_table(path, filters=[("episode_index", "=", int(episode_index))])
+            except Exception:  # noqa: BLE001 - 不支持 filter 时退回全量读
+                try:
+                    table = pq.read_table(path)
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning("读取 %s 失败: %s", path.name, exc)
+                    continue
+            df = table.to_pandas()
+            if "episode_index" in df.columns:
+                df = df[df["episode_index"] == episode_index]
+            if not df.empty:
+                return df.reset_index(drop=True)
+        return pd.DataFrame()
 
     def task_of(self, episode_index: int) -> str:
         """episode 的任务描述；拿不到时返回空串（由 validator 判定是否异常）。"""
@@ -139,10 +239,18 @@ class LeRobotDatasetView:
             row = self.episodes.loc[self.episodes["episode_index"] == episode_index, "tasks"]
             if len(row):
                 val = row.iloc[0]
-                if isinstance(val, (list, tuple)) and len(val):
-                    return str(val[0]).strip()
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
+                if isinstance(val, str):
+                    if val.strip():
+                        return val.strip()
+                elif isinstance(val, (list, tuple)) or hasattr(val, "__len__"):
+                    # parquet 的 list 列可能读成 ndarray/其它序列，不能只判断 list/tuple
+                    try:
+                        if len(val):
+                            first = val[0]
+                            if isinstance(first, str) and first.strip():
+                                return first.strip()
+                    except (TypeError, IndexError):
+                        pass
         if TASK_INDEX_KEY in self.frames.columns:
             sub = self.frames.loc[self.frames["episode_index"] == episode_index, TASK_INDEX_KEY]
             if len(sub):
@@ -197,7 +305,8 @@ class LeRobotDatasetView:
 
     # ----------------------------------------------------------------- 摘要
     def summary(self) -> dict[str, Any]:
-        per_ep = self.frames.groupby("episode_index").size() if self.num_frames else pd.Series(dtype=int)
+        per_ep = self.frames_by_episode()
+        columns = self.column_names
         return {
             "root": str(self.root),
             "codebase_version": self.codebase_version,
@@ -213,10 +322,10 @@ class LeRobotDatasetView:
                 "max": int(per_ep.max()) if len(per_ep) else 0,
                 "mean": round(float(per_ep.mean()), 2) if len(per_ep) else 0.0,
             },
-            "columns": [c for c in self.frames.columns if c != _SOURCE_COL],
+            "columns": columns,
             "schema": self.schema,
-            "state_key": STATE_KEY if STATE_KEY in self.frames.columns else None,
-            "action_key": ACTION_KEY if ACTION_KEY in self.frames.columns else None,
+            "state_key": STATE_KEY if self.has_column(STATE_KEY) else None,
+            "action_key": ACTION_KEY if self.has_column(ACTION_KEY) else None,
             "num_state_dims": _feature_dim(self.features.get(STATE_KEY, {})),
             "num_action_dims": _feature_dim(self.features.get(ACTION_KEY, {})),
             "joint_names": self.joint_names,
@@ -263,19 +372,21 @@ def load_dataset(
 
     frames = pd.DataFrame()
     truncated_to = None
+    keep: set[int] | None = None
+    if max_episodes is not None and max_episodes > 0:
+        all_eps = _episode_order(episodes_meta, data_files)
+        keep = set(all_eps[:max_episodes])
+        truncated_to = len(keep)
+        LOG.info("--max_episodes 生效：只加载前 %d 个 episode", truncated_to)
+
     if load_frames:
-        keep = None
-        if max_episodes is not None and max_episodes > 0:
-            all_eps = _episode_order(episodes_meta, data_files)
-            keep = set(all_eps[:max_episodes])
-            truncated_to = len(keep)
-            LOG.info("--max_episodes 生效：只加载前 %d 个 episode", truncated_to)
         frames = _read_frames(data_files, keep)
         if episodes_meta is None or episodes_meta.empty:
             LOG.warning("meta/episodes 缺失，回退为从帧数据推导 episode 元信息")
             episodes_meta = _episodes_from_frames(frames)
-        if keep is not None:
-            episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(keep)].reset_index(drop=True)
+
+    if keep is not None and episodes_meta is not None and not episodes_meta.empty:
+        episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(keep)].reset_index(drop=True)
 
     if episodes_meta is None:
         episodes_meta = pd.DataFrame(columns=["episode_index", "length"])
@@ -292,6 +403,7 @@ def load_dataset(
         codebase_version=version,
         fps=fps,
         truncated_to=truncated_to,
+        data_files=data_files,
     )
     # 统一 info 中的 total_episodes / total_frames：以实际读到的为准（元数据可能已失真）
     LOG.info(
@@ -479,7 +591,7 @@ def _read_frames(files: list[Path], keep: set[int] | None) -> pd.DataFrame:
                 raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
         if df.empty:
             continue
-        df[_SOURCE_COL] = str(path)
+        df[SOURCE_COL] = str(path)
         parts.append(df)
 
     if not parts:
@@ -541,3 +653,41 @@ def iter_episode_slices(frames: pd.DataFrame) -> Iterator[tuple[int, pd.DataFram
         return
     for ep, sub in frames.groupby("episode_index", sort=True):
         yield int(ep), sub.sort_values("frame_index", kind="stable") if "frame_index" in sub.columns else sub
+
+
+def iter_frame_chunks(
+    dataset: LeRobotDatasetView,
+    columns: list[str] | None = None,
+    episodes: Iterator[int] | list[int] | set[int] | None = None,
+) -> Iterator[pd.DataFrame]:
+    """按 data/*.parquet 分片顺序逐块产出帧数据（流式模式使用）。
+
+    只读当前文件需要的列，内存峰值约等于单个 parquet 文件；episodes 非空时
+    借助 pyarrow 的 row-group filter 只取这些 episode 的行。
+    """
+    wanted: list[str] | None = None
+    if columns is not None:
+        available = set(dataset.column_names)
+        wanted = [c for c in columns if c in available]
+    keep = None if episodes is None else {int(e) for e in episodes}
+
+    for path in dataset.data_files:
+        try:
+            if keep is not None:
+                try:
+                    table = pq.read_table(path, columns=wanted, filters=[("episode_index", "in", sorted(keep))])
+                except Exception:  # noqa: BLE001 - 老版本 pyarrow 不支持 filter
+                    table = pq.read_table(path, columns=wanted)
+            else:
+                table = pq.read_table(path, columns=wanted)
+        except Exception as exc:  # noqa: BLE001
+            raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
+        df = table.to_pandas()
+        if df.empty:
+            continue
+        if keep is not None and "episode_index" in df.columns:
+            df = df[df["episode_index"].isin(keep)]
+            if df.empty:
+                continue
+        df[SOURCE_COL] = str(path)
+        yield df

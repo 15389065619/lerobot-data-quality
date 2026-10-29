@@ -229,7 +229,7 @@ def summarize(decisions: dict[int, Decision]) -> dict[str, Any]:
         "counts": counts,
         "repair_breakdown": by_repair,
         "overridden": overridden,
-        "kept_after_cleaning": counts["keep"] + counts["repair"] + (counts["review"] if True else 0),
+        "kept_after_cleaning": counts["keep"] + counts["repair"] + counts["review"],
     }
 
 
