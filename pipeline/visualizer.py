@@ -87,7 +87,8 @@ def generate_plots(
 
 # ------------------------------------------------------------------- 图 1
 def _plot_frame_distribution(plt, dataset: LeRobotDatasetView, sample_eps, invalid, path: Path) -> Path:
-    counts = dataset.frames[dataset.frames["episode_index"].isin(sample_eps)].groupby("episode_index").size()
+    per_ep = dataset.frames_by_episode()
+    counts = per_ep[per_ep.index.isin(sample_eps)]
     ok_vals = [int(v) for e, v in counts.items() if int(e) not in invalid]
     bad_vals = [int(v) for e, v in counts.items() if int(e) in invalid]
 
@@ -145,7 +146,7 @@ def _plot_pie(plt, validation: ValidationResult, path: Path) -> Path:
 # ------------------------------------------------------------------- 图 3
 def _plot_state_curves(plt, dataset: LeRobotDatasetView, validation: ValidationResult,
                        sample_eps, invalid, path: Path) -> Path:
-    if STATE_KEY not in dataset.frames.columns or not sample_eps:
+    if not dataset.has_column(STATE_KEY) or not sample_eps:
         return _placeholder(plt, path, "数据中不存在 observation.state，无法绘制关节曲线")
 
     normal_ep = next((e for e in sample_eps if e not in invalid), None)
@@ -186,20 +187,30 @@ def _plot_state_curves(plt, dataset: LeRobotDatasetView, validation: ValidationR
 
 # ------------------------------------------------------------------- 图 4
 def _plot_action_scatter(plt, dataset: LeRobotDatasetView, sample_eps, invalid, path: Path) -> Path:
-    if ACTION_KEY not in dataset.frames.columns or not sample_eps:
+    if not dataset.has_column(ACTION_KEY) or not sample_eps:
         return _placeholder(plt, path, "数据中不存在 action，无法绘制散点图")
 
-    sub = dataset.frames[dataset.frames["episode_index"].isin(sample_eps)]
-    try:
-        arr = np.asarray(sub[ACTION_KEY].to_list(), dtype=float)
-    except (TypeError, ValueError):
-        return _placeholder(plt, path, "action 无法解析为数值矩阵")
-    if arr.ndim == 1:
-        arr = arr.reshape(-1, 1)
+    parts: list[np.ndarray] = []
+    flags: list[np.ndarray] = []
+    for ep in sample_eps:
+        df = dataset.episode_frame(ep)
+        if df.empty or ACTION_KEY not in df.columns:
+            continue
+        try:
+            arr_ep = np.asarray(df[ACTION_KEY].to_list(), dtype=float)
+        except (TypeError, ValueError):
+            return _placeholder(plt, path, "action 无法解析为数值矩阵")
+        if arr_ep.ndim == 1:
+            arr_ep = arr_ep.reshape(-1, 1)
+        parts.append(arr_ep)
+        flags.append(np.full(arr_ep.shape[0], ep in invalid, dtype=bool))
+    if not parts:
+        return _placeholder(plt, path, "采样范围内没有可用 action 数据")
+    arr = np.vstack(parts)
     if arr.shape[1] < 2:
         return _placeholder(plt, path, "action 维度不足 2，无法绘制二维散点")
 
-    is_bad = sub["episode_index"].isin(invalid).to_numpy()
+    is_bad = np.concatenate(flags)
     fig, ax = plt.subplots(figsize=(7.6, 5.6))
     ax.scatter(arr[~is_bad, 0], arr[~is_bad, 1], s=8, alpha=0.55, c=COLOR_OK,
                label=f"正常帧 ({int((~is_bad).sum())})", linewidths=0)
@@ -232,9 +243,13 @@ def _plot_before_after(plt, dataset: LeRobotDatasetView, validation: ValidationR
         else:
             removed = set(cleaning.get("removed_episode_indices") or [])
             if removed:
-                after_frames = int(
-                    dataset.frames[~dataset.frames["episode_index"].isin(removed)].shape[0]
-                )
+                per_ep = dataset.frames_by_episode()
+                if len(per_ep):
+                    after_frames = int(per_ep[~per_ep.index.isin(removed)].sum())
+                else:
+                    after_frames = int(
+                        dataset.frames[~dataset.frames["episode_index"].isin(removed)].shape[0]
+                    )
 
     fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.6))
 
