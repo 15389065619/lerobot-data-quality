@@ -23,6 +23,20 @@ _CACHE_LOCK = threading.Lock()
 _KEY_LOCKS: dict[str, threading.Lock] = {}
 
 
+def _run_with_retry(cmd: list[str], *, timeout: int, max_retries: int = 2) -> subprocess.CompletedProcess | None:
+    """执行子进程命令，失败时重试。返回 None 表示全部重试失败。"""
+    for attempt in range(max_retries + 1):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+            return proc
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if attempt < max_retries:
+                LOG.debug("命令失败（第 %d/%d 次重试）: %s", attempt + 1, max_retries, exc)
+                continue
+            LOG.warning("命令最终失败（已重试 %d 次）: %s", max_retries, exc)
+            return None
+
+
 def _key_lock(key: str) -> threading.Lock:
     """同一个视频文件只允许一个线程探针：避免并发重复解码、机械盘来回寻道。"""
     with _CACHE_LOCK:
@@ -48,10 +62,8 @@ def _probe_frame_brightness(
         str(FFMPEG), "-v", "error", "-ss", f"{start_ts:.3f}", "-t", f"{duration:.3f}",
         "-i", str(path), "-vf", f"fps=2,scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-",
     ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        LOG.debug("亮度抽样失败 %s: %s", path, exc)
+    proc = _run_with_retry(cmd, timeout=120, max_retries=2)
+    if proc is None:
         _LUMA_CACHE[key] = None
         return None
     buf = np.frombuffer(proc.stdout, dtype=np.uint8)
@@ -101,13 +113,12 @@ def _probe_video_frames(key: str, path: str | Path, precise: bool) -> int | None
 def _ffprobe_int(path: str | Path, extra: list[str]) -> int | None:
     cmd = [str(FFPROBE), "-v", "error", "-select_streams", "v:0", *extra,
            "-of", "default=nw=1:nk=1", str(path)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
-    except (OSError, subprocess.TimeoutExpired):
+    proc = _run_with_retry(cmd, timeout=120, max_retries=2)
+    if proc is None:
         return None
     if proc.returncode != 0:
         return None
-    for line in (proc.stdout or "").splitlines():
+    for line in (proc.stdout or "").decode("utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line or line.upper() == "N/A":
             continue
@@ -123,14 +134,13 @@ def _ffprobe_int(path: str | Path, extra: list[str]) -> int | None:
 def _ffprobe_estimate(path: str | Path) -> int | None:
     cmd = [str(FFPROBE), "-v", "error", "-select_streams", "v:0",
            "-show_entries", "stream=avg_frame_rate,duration", "-of", "json", str(path)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
-    except (OSError, subprocess.TimeoutExpired):
+    proc = _run_with_retry(cmd, timeout=120, max_retries=2)
+    if proc is None:
         return None
     if proc.returncode != 0:
         return None
     try:
-        stream = (json.loads(proc.stdout or "{}").get("streams") or [{}])[0]
+        stream = (json.loads(proc.stdout.decode("utf-8", errors="replace") or "{}").get("streams") or [{}])[0]
         num, _, den = str(stream.get("avg_frame_rate") or "0/0").partition("/")
         fps = float(num) / float(den) if float(den or 0) else 0.0
         duration = float(stream.get("duration") or 0.0)

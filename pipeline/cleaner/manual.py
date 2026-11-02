@@ -21,7 +21,8 @@ from ..loader import (
     LeRobotDatasetView,
 )
 from ..validator import probe_video_frames
-from .meta import copy_tasks, rewrite_episodes_meta, rewrite_info, rewrite_stats
+from .meta import copy_tasks, rewrite_episodes_meta, rewrite_info, rewrite_stats, rewrite_stats_streaming
+from .stats_streaming import StreamingStats, collect_feature_keys
 from .types import CleaningResult
 from .util import prepare_dir, set_column
 
@@ -50,7 +51,7 @@ def manual_clean(
 
     # 2) 重写 data parquet（含裁帧、时间轴重建）
     ep_index_map = {old: i for i, old in enumerate(kept)}
-    data_meta, cleaned_frames, kept_lengths = _rewrite_frames(
+    data_meta, stats_acc, kept_lengths = _rewrite_frames(
         dataset, kept, ep_index_map, out_root, trim_plan=trim_plan, rebuild_ts=rebuild_ts
     )
 
@@ -63,7 +64,7 @@ def manual_clean(
     copy_tasks(dataset.root, out_root)
     total_frames = int(sum(m["length"] for m in data_meta.values()))
     rewrite_info(dataset, kept, total_frames, out_root)
-    rewrite_stats(dataset, cleaned_frames, out_root)
+    rewrite_stats_streaming(dataset, stats_acc, out_root)
 
     result = CleaningResult(
         success=True,
@@ -136,8 +137,8 @@ def _rewrite_frames(
     *,
     trim_plan: dict[int, dict[str, int]],
     rebuild_ts: set[int],
-) -> tuple[dict[int, dict[str, Any]], pd.DataFrame, dict[int, int]]:
-    """按来源文件重写 parquet。返回 (episode 元信息, 清洗后长表, 每个新 episode 的帧数)。"""
+) -> tuple[dict[int, dict[str, Any]], StreamingStats, dict[int, int]]:
+    """按来源文件重写 parquet。返回 (episode 元信息, 流式统计, 每个新 episode 的帧数)。"""
     template = dataset.info.get("data_path") or DEFAULT_DATA_PATH
     fps = dataset.fps or 30.0
     running_frames: dict[int, int] = {ep_index_map[ep]: 0 for ep in kept}
@@ -146,7 +147,8 @@ def _rewrite_frames(
     data_meta: dict[int, dict[str, Any]] = {}
     global_index = 0
     file_index = 0
-    cleaned_parts: list[pd.DataFrame] = []
+    stats_acc = StreamingStats()
+    feature_keys = collect_feature_keys(dataset)
 
     for src_file in _source_files_in_order(dataset):
         table = pq.read_table(src_file)
@@ -220,15 +222,12 @@ def _rewrite_frames(
                 "chunk_index": 0,
             }
 
-        cleaned_parts.append(sub.to_pandas())
+        stats_acc.update_from_table(sub, feature_keys)
         file_index += 1
 
-    cleaned = pd.concat(cleaned_parts, ignore_index=True) if cleaned_parts else pd.DataFrame()
-    if SOURCE_COL in cleaned.columns:
-        cleaned = cleaned.drop(columns=[SOURCE_COL])
     kept_lengths = {ep: int(m["length"]) for ep, m in data_meta.items()}
-    LOG.info("data parquet 重写完成：%d 个文件 / %d 行", file_index, len(cleaned))
-    return data_meta, cleaned, kept_lengths
+    LOG.info("data parquet 重写完成：%d 个文件 / %d 行", file_index, global_index)
+    return data_meta, stats_acc, kept_lengths
 
 
 def _rebuild_videos(

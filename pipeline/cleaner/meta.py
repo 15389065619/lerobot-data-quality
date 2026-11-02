@@ -146,6 +146,19 @@ def rewrite_stats(dataset: LeRobotDatasetView, cleaned: pd.DataFrame, out_root: 
     LOG.info("meta/stats.json 已重算（%d 个特征）", len(stats))
 
 
+def rewrite_stats_streaming(dataset: LeRobotDatasetView, stats_acc: Any, out_root: Path) -> None:
+    """流式版本：stats_acc 是 StreamingStats 实例，已逐文件累计完成。"""
+    stats = stats_acc.finalize(dataset.stats)
+    for key, spec in dataset.features.items():
+        if key not in stats and key in dataset.stats:
+            stats[key] = dataset.stats[key]
+    path = out_root / "meta" / "stats.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(stats, fh, ensure_ascii=False, indent=2)
+    LOG.info("meta/stats.json 已重算（流式，%d 个特征）", len(stats))
+
+
 def copy_tasks(src_root: Path, out_root: Path) -> None:
     for name in ("tasks.parquet", "tasks.jsonl", "subtasks.parquet"):
         src = src_root / "meta" / name

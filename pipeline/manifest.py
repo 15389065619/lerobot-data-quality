@@ -237,11 +237,26 @@ def _stat(path: Path | None, cache: dict[str, dict[str, Any]] | None = None) -> 
     except OSError:
         result = {"path": key, "exists": False}
     else:
-        # mtime 用纳秒：同一秒内重写也能识别
         result = {"path": key, "exists": True, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        # 小文件（<1MB）加内容哈希：stat 不变但内容被篡改/损坏时能识别
+        if st.st_size < 1_048_576 and st.st_size > 0:
+            try:
+                content_hash = _content_hash(path)
+                result["content_hash"] = content_hash
+            except OSError:
+                pass
     if cache is not None:
         cache[key] = result
     return result
+
+
+def _content_hash(path: Path, *, algorithm: str = "sha256") -> str:
+    """计算文件内容的哈希（小文件用）。"""
+    h = hashlib.new(algorithm)
+    with path.open("rb") as fh:
+        while chunk := fh.read(8192):
+            h.update(chunk)
+    return h.hexdigest()[:16]
 
 
 def _scalar(value: Any) -> Any:
