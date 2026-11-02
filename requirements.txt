@@ -1,9 +1,10 @@
-pandas>=2.0
-pyarrow>=14.0
-numpy>=1.24
-matplotlib>=3.7
-tqdm>=4.60
-PyYAML>=6.0
+# 下限 = 代码实际用到的最新 API 所引入的版本（2026-11 核查 PyPI 最新稳定版，括号内为最新版，本地/CI 均已实测）
+pandas>=1.5       # 用到 concat/to_numeric/isna/notna/Timestamp，均为 1.x 早期 API；1.5 为 1.x 最终稳定线（最新 3.1.0）
+pyarrow>=7.0      # 用到 Table.from_pylist（7.0 引入）；ParquetFile/ParquetWriter/read_table(filters)/write_table 更早（最新 26.0.0）
+numpy>=1.21       # 用到 random.default_rng/Generator（1.17 引入）；1.21 起提供 Python 3.10 轮子（最新 2.4.6）
+matplotlib>=3.5   # 用到 pyplot.subplots/close/rcParams/use，均为长期稳定 API；3.5 起提供 Python 3.10 轮子（最新 3.11.2）
+tqdm>=4.60        # tqdm(desc/unit/dynamic_ncols) 版本不敏感，4.60+ 为稳定基线（最新 4.70.1）
+PyYAML>=6.0       # safe_load/safe_dump 为长期稳定 API；6.0 起提供 Python 3.10 轮子（最新 6.0.3）
 
 # 可选：需要「优先调用官方 CLI 清洗」时安装（体积较大，会带上 torch）
 # lerobot>=0.4.0
