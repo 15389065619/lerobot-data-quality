@@ -124,6 +124,28 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 
 **在流水线里的位置**：点云阶段放在 `cleaner` **之后**（episode 可能被重编号），在清洗产物 `cleaned_dataset` 上重跑质检并**原地 patch 它的 parquet**；若跳过/失败清洗，则退回原数据集**只读**，独立输出到 `outputs/pointcloud_cleaned/`，绝不修改用户源数据。
 
+## FZMotion 风格 CSV 适配（可选）
+
+除 LeRobot Parquet 主线外，仓库附带一个**独立可选**的 FZMotion 风格动捕 CSV 适配器，位于 `src/lerobot_data_quality/`——独立包，不依赖、也不影响 `pipeline/` 主线的任何代码；不使用它时整条流水线行为不变。
+
+- **输入**：`timestamp, marker_id, x, y, z` 长表 CSV（每个采样帧 N 个 marker 行）
+- **输出**：与 LeRobot 帧表同构的 DataFrame：`episode_index / frame_index / timestamp / observation.state / action`
+  - `observation.state`：按 marker_id 升序拼接的 3N 维向量；某帧缺某个 marker 时对应三元组补 NaN
+  - `action`：定义为下一帧 state（最后一帧保持自身，定长契约）
+- **缺陷不在这里裁决**：丢帧表现为时间戳缺口，NaN/跳变原样保留进 state——加载器不重采样、不插值，交给下游质检规则（`nan_state` / `action_jump` / `timestamp_step_deviation` 等）统一标记
+
+```bash
+# 生成模拟数据（120 FPS × 10 秒 × 6 marker，注入丢帧/NaN/坐标跳变）
+python examples/fzmotion_sim/generate_fzmotion_csv.py
+```
+
+```python
+from lerobot_data_quality.loaders import load_fzmotion_csv, load_fzmotion_csv_dir
+
+df_one = load_fzmotion_csv("examples/fzmotion_sim/episode_000.csv", episode_index=0)
+df_all = load_fzmotion_csv_dir("examples/fzmotion_sim")   # 多 episode 合并
+```
+
 ## 技术栈
 
 pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（43 个单测）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
