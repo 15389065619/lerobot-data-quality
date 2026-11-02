@@ -1,2 +1,2 @@
 -r requirements.txt
-pytest>=8.0
+pytest>=8.0    # 测试仅用 tmp_path/monkeypatch/raises/parametrize 等长期稳定 API（最新 9.2.0，实测 9.1.1）

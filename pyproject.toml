@@ -1,0 +1,36 @@
+# 打包配置：setuptools 后端
+# 安装：pip install .            —— 提供 console 命令 lerobot-data-quality
+# 开发：pip install -e .[dev]    —— 可编辑安装 + pytest
+[build-system]
+requires = ["setuptools>=61"]   # 61 起原生支持 [project] 表
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-data-quality"
+version = "1.0.0"
+description = "机器人多模态数据质量治理流水线：视频 / 动作 / 点云质检，Keep-Repair-Review-Drop 分级处置与可视化报告"
+readme = "README.md"
+requires-python = ">=3.10"
+# 与 requirements.txt 保持同一套下限（依据见该文件逐行注释）
+dependencies = [
+    "pandas>=1.5",
+    "pyarrow>=7.0",
+    "numpy>=1.21",
+    "matplotlib>=3.5",
+    "tqdm>=4.60",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+# console 入口：lerobot-data-quality = python main.py 的同义封装
+# main.py 顶层本就有 main() 与 sys.exit(main()) 守卫，无需改动业务逻辑
+[project.scripts]
+lerobot-data-quality = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]   # 根目录单文件入口模块
+
+[tool.setuptools.packages.find]
+include = ["pipeline*", "tools*"]   # 声明 pipeline（含 cleaner/validator 子包）与 tools 为包
