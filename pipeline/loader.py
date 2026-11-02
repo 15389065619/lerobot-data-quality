@@ -44,6 +44,9 @@ TASK_INDEX_KEY = "task_index"
 #: 内部字段：记录每行来自哪个 parquet 文件，供 cleaner 按原文件重写
 SOURCE_COL = "__source_file"
 
+#: 二维特征（点云 / embedding）达到该元素数即视为「重型列」，默认不读进内存
+HEAVY_FEATURE_MIN_VALUES = 1000
+
 
 class DatasetFormatError(RuntimeError):
     """目录结构不符合 LeRobot 数据集约定。"""
@@ -67,6 +70,8 @@ class LeRobotDatasetView:
     truncated_to: int | None = None
     #: data/*.parquet 列表，流式模式按文件分片读取时使用
     data_files: list[Path] = field(default_factory=list)
+    #: 检测到但未读入内存的二维重型特征（如点云），由 pointcloud 阶段按需流式读取
+    heavy_features: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------ 概览
     @property
@@ -139,8 +144,16 @@ class LeRobotDatasetView:
     def joint_names(self) -> list[str]:
         spec = self.features.get(STATE_KEY, {})
         names = spec.get("names") or []
-        if isinstance(names, dict):  # 少数导出工具会写成 {0: "j0", ...}
-            names = [names[k] for k in sorted(names, key=lambda s: int(s))]
+        if isinstance(names, dict):
+            # 两种写法都要兼容：{0: "j0", ...}（按索引）与 {"joints": ["j0", ...]}（分组）
+            vals = list(names.values())
+            if all(isinstance(v, (list, tuple)) for v in vals):
+                names = [str(x) for v in vals for x in v]
+            else:
+                try:
+                    names = [names[k] for k in sorted(names, key=lambda s: int(s))]
+                except (TypeError, ValueError):
+                    names = [str(v) for v in vals]
         dim = _feature_dim(spec)
         if names and len(names) == dim:
             return [str(n) for n in names]
@@ -335,6 +348,7 @@ class LeRobotDatasetView:
             },
             "episode_meta_columns": [c for c in self.episodes.columns],
             "has_stats": bool(self.stats),
+            "pointcloud_features": list(self.heavy_features),
         }
 
 
@@ -344,6 +358,7 @@ def load_dataset(
     max_episodes: int | None = None,
     *,
     load_frames: bool = True,
+    include_heavy: bool = False,
 ) -> LeRobotDatasetView:
     """加载本地 LeRobot 数据集，返回只读视图。
 
@@ -351,6 +366,9 @@ def load_dataset(
         dataset_path: 数据集根目录（含 meta/info.json）。
         max_episodes: 只加载前 N 个 episode（按 episode_index 升序），None 表示全量。
         load_frames: False 时只读元信息，不读 parquet 帧数据。
+        include_heavy: True 时把点云等二维重型特征也读进内存。默认 False：
+            512×6 的点云乘以 2 万帧会占用 GB 级内存，且主质检流程用不到，
+            点云清洗阶段改用流式逐帧读取。
     """
     root = Path(dataset_path).expanduser().resolve()
     if not root.is_dir():
@@ -370,6 +388,11 @@ def load_dataset(
     episodes_meta = _read_episodes_meta(root, info)
     video_index = _discover_videos(root)
 
+    heavy = heavy_feature_keys(features) if not include_heavy else []
+    if heavy:
+        LOG.info("检测到 %d 个重型二维特征，默认不载入内存（点云阶段按需流式读取）: %s",
+                 len(heavy), ", ".join(heavy))
+
     frames = pd.DataFrame()
     truncated_to = None
     keep: set[int] | None = None
@@ -380,7 +403,7 @@ def load_dataset(
         LOG.info("--max_episodes 生效：只加载前 %d 个 episode", truncated_to)
 
     if load_frames:
-        frames = _read_frames(data_files, keep)
+        frames = _read_frames(data_files, keep, exclude=tuple(heavy))
         if episodes_meta is None or episodes_meta.empty:
             LOG.warning("meta/episodes 缺失，回退为从帧数据推导 episode 元信息")
             episodes_meta = _episodes_from_frames(frames)
@@ -404,6 +427,7 @@ def load_dataset(
         fps=fps,
         truncated_to=truncated_to,
         data_files=data_files,
+        heavy_features=heavy,
     )
     # 统一 info 中的 total_episodes / total_frames：以实际读到的为准（元数据可能已失真）
     LOG.info(
@@ -454,6 +478,10 @@ def _read_tasks(root: Path) -> dict[int, str]:
                     tasks[int(ti)] = str(task)
             elif df.index.dtype.kind in "iu":
                 tasks = {int(i): str(row.iloc[0]) for i, row in df.iterrows()}
+            elif "task_index" in df.columns and len(df.columns) == 1:
+                # 任务文本存放在索引里的变体（如 nsgzfei/w01_v3）：
+                # index="Put the sweet potato into the white basket."、列只保留 task_index
+                tasks = {int(ti): str(text).strip() for text, ti in df["task_index"].items()}
             if tasks:
                 return tasks
 
@@ -572,21 +600,29 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
     return None
 
 
-def _read_frames(files: list[Path], keep: set[int] | None) -> pd.DataFrame:
-    """把 data/*.parquet 读成一张长表，记录来源文件便于清洗阶段原地重写。"""
+def _read_frames(
+    files: list[Path], keep: set[int] | None, exclude: tuple[str, ...] = ()
+) -> pd.DataFrame:
+    """把 data/*.parquet 读成一张长表，记录来源文件便于清洗阶段原地重写。
+
+    exclude 用于跳过点云/embedding 这类二维重型列：不读出来才不会占用 GB 级内存。
+    """
     parts: list[pd.DataFrame] = []
     for path in files:
+        cols = _columns_excluding(path, exclude)
         df: pd.DataFrame | None = None
         if keep is not None:
             try:
-                table = pq.read_table(path, filters=[("episode_index", "in", sorted(keep))])
+                table = pq.read_table(
+                    path, columns=cols, filters=[("episode_index", "in", sorted(keep))]
+                )
                 df = table.to_pandas()
             except Exception as exc:  # noqa: BLE001 - 不支持 filter 时退回全量读
                 LOG.debug("按 episode 过滤读取 %s 失败，改为全量读取: %s", path.name, exc)
                 df = None
         if df is None:
             try:
-                df = pq.read_table(path).to_pandas()
+                df = pq.read_table(path, columns=cols).to_pandas()
             except Exception as exc:  # noqa: BLE001
                 raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
         if df.empty:
@@ -629,6 +665,38 @@ def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -
             continue
         seen.update(int(x) for x in col if x is not None)
     return sorted(seen)
+
+
+def heavy_feature_keys(features: dict[str, Any]) -> list[str]:
+    """识别二维重型特征（点云 / embedding）：shape=[N, D] 且 N*D 达到阈值。
+
+    这类列用 pandas 读出来是「每行一个 ndarray」的对象列，Python 对象开销可达
+    原始数据的数十倍；主质检流程不需要它们，因此默认不载入。
+    """
+    out: list[str] = []
+    for key, spec in (features or {}).items():
+        shape = spec.get("shape")
+        if not isinstance(shape, (list, tuple)) or len(shape) != 2:
+            continue
+        try:
+            values = int(shape[0]) * int(shape[1])
+        except (TypeError, ValueError):
+            continue
+        if values >= HEAVY_FEATURE_MIN_VALUES:
+            out.append(key)
+    return out
+
+
+def _columns_excluding(path: Path, exclude: tuple[str, ...]) -> list[str] | None:
+    """parquet 实际列名去掉 exclude；无 exclude 时返回 None 表示读取全部列。"""
+    if not exclude:
+        return None
+    try:
+        names = pq.ParquetFile(path).schema_arrow.names
+    except Exception:  # noqa: BLE001 - schema 读不出来就退回全量
+        return None
+    cols = [n for n in names if n not in set(exclude)]
+    return cols or None
 
 
 def _feature_dim(spec: dict[str, Any]) -> int:

@@ -295,7 +295,7 @@ def attribute_by_metadata(
         return []
     results: list[dict[str, Any]] = []
     for col in dataset.episodes.columns:
-        if col in _NON_ATTRIBUTION_COLUMNS or col.startswith("videos/") or col.startswith("data/"):
+        if col in _NON_ATTRIBUTION_COLUMNS or col.startswith(("videos/", "data/", "stats/")):
             continue
         series = dataset.episodes[col]
         if series.dtype.kind not in "OUS" or not len(series):

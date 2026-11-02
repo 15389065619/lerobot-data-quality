@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LeRobot v3 数据质量校验与清洗 Pipeline — CLI 入口。
 
-流程：loader -> validator -> policy -> reporter -> cleaner -> visualizer
+流程：loader -> validator -> policy -> reporter -> cleaner -> pointcloud -> visualizer
 
 每一步都把中间结果落盘到 <output_dir>/intermediate/，任何一步异常中断，
 已完成的阶段产物仍然可用（例如质检过了但清洗挂了，报告照样能交出去）。
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline import cleaner as cleaner_mod
+from pipeline import pointcloud as pointcloud_mod
 from pipeline import policy as policy_mod
 from pipeline import reporter as reporter_mod
 from pipeline import visualizer as visualizer_mod
@@ -65,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="action 跳变的绝对下限（覆盖自适应阈值）")
 
     p.add_argument("--skip-clean", action="store_true", help="只做质检与报告，不生成清洗后数据集")
+    p.add_argument("--skip-pointcloud", action="store_true", help="跳过 3D 点云质检与清洗")
+    p.add_argument("--pointcloud-feature", default=None,
+                   help="点云特征列名（默认自动识别，如 observation.environment_state）")
+    p.add_argument("--pointcloud-max-frames", type=int, default=None,
+                   help="只校验前 N 帧点云（调试大数据集时用）")
+    p.add_argument("--pointcloud-overrides", default=None,
+                   help="点云人工复核结果 CSV（来自 pointcloud_review_queue.csv）")
     p.add_argument("--skip-plots", action="store_true", help="跳过可视化")
     p.add_argument("--no-cli", action="store_true", help="不调用 lerobot-edit-dataset，强制使用内置清洗实现")
     p.add_argument("--plots-sample", type=int, default=20, help="可视化采样 episode 数量")
@@ -131,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"输出  : {output_dir.resolve()}")
     print(BANNER)
 
-    total_steps = 6
+    total_steps = 8
 
     # ----------------------------------------------------- 0. 增量状态
     manifest_path = Path(args.manifest).expanduser() if args.manifest else output_dir / MANIFEST_FILENAME
@@ -294,12 +302,94 @@ def main(argv: list[str] | None = None) -> int:
             _write_failure(output_dir, "cleaner", exc, keep_going=True)
             print("  ! 清洗阶段失败，但 quality_report.json 仍然保留，可单独重跑 cleaner。")
 
-    # ------------------------------------------------------ 6. visualizer
+    # ------------------------------------------- 6. pointcloud validation
+    pc_validation = None
+    pc_decisions: dict[Any, Any] = {}
+    pc_clean_dict: dict[str, Any] | None = None
+    pc_report_path: Path | None = None
+    pc_review_path: Path | None = None
+    pc_feature = args.pointcloud_feature or cfg_get(config, "pointcloud.feature_key")
+    # 点云阶段作用在「行已稳定」的清洗产物上；没有清洗产物时退回原数据集（只读，独立输出）
+    pc_source_root = (Path(cleaning_dict["output_path"])
+                      if cleaning_dict and cleaning_dict.get("output_path") else dataset_path)
+    pc_patch_in_place = bool(cleaning_dict and cleaning_dict.get("output_path"))
+
+    if args.skip_pointcloud:
+        step("3D 点云质检（pointcloud）— 已跳过", 6, total_steps)
+    else:
+        step("3D 点云质检（pointcloud：几何 / 颜色 / 时序 8 条规则）", 6, total_steps)
+        try:
+            pc_validation = pointcloud_mod.validate_pointcloud_dataset(
+                pc_source_root, config, feature_key=pc_feature, max_frames=args.pointcloud_max_frames
+            )
+            pc_validation_dict = pc_validation.to_dict()
+            save_intermediate(output_dir, "05_pointcloud_validation.json", pc_validation_dict)
+            _print_pointcloud_thresholds(pc_validation)
+
+            pc_overrides = (pointcloud_mod.read_overrides(args.pointcloud_overrides)
+                            if args.pointcloud_overrides else {})
+            pc_decisions = pointcloud_mod.decide(
+                pc_validation, on_review=args.on_review, overrides=pc_overrides
+            )
+            save_intermediate(output_dir, "06_pointcloud_dispositions.json",
+                              {f"{e}:{f}": d.to_dict() for (e, f), d in sorted(pc_decisions.items())})
+
+            pc_report = pointcloud_mod.build_report(pc_validation, pc_decisions,
+                                                    dataset_path=pc_source_root)
+            pc_report_path = pointcloud_mod.write_report(pc_report, output_dir)
+            pointcloud_mod.print_summary(pc_report)
+            pc_review_path = pointcloud_mod.write_review_queue(
+                output_dir / pointcloud_mod.REVIEW_FILENAME, pc_validation, pc_decisions
+            )
+            print(f"点云复核队列: {pc_review_path}  （填 reviewer_disposition 后可用 --pointcloud-overrides 回灌）")
+        except pointcloud_mod.PointCloudFormatError as exc:
+            LOG.info("未检测到可用的点云特征，跳过点云阶段：%s", exc)
+            print("  未检测到二维点云特征（shape=[N,D], D≥3），跳过点云质检与清洗。")
+            pc_validation = None
+        except Exception as exc:  # noqa: BLE001 - 点云失败不应中断数值质检链路
+            LOG.error("点云质检失败: %s\n%s", exc, traceback.format_exc())
+            _write_failure(output_dir, "pointcloud_validator", exc, keep_going=True)
+            print("  ! 点云质检失败，主链路继续。")
+            pc_validation = None
+
+    # ----------------------------------------------- 7. pointcloud cleaning
+    if pc_validation is None:
+        step("3D 点云清洗（pointcloud）— 已跳过", 7, total_steps)
+    else:
+        step("3D 点云清洗（pointcloud：只改点、不改行）", 7, total_steps)
+        try:
+            pc_cleaning = pointcloud_mod.clean_pointclouds(
+                pc_source_root, pc_validation, pc_decisions, output_dir,
+                feature_key=pc_validation.feature_key,
+                target_root=str(pc_source_root) if pc_patch_in_place else None,
+            )
+            pc_clean_dict = pc_cleaning.to_dict()
+            save_intermediate(output_dir, "07_pointcloud_cleaning.json", pc_clean_dict)
+            print(f"  方式: {pc_cleaning.method}    修复 {len(pc_cleaning.repaired_frames)} 帧 / "
+                  f"占位 {len(pc_cleaning.held_frames)} 帧 / 保留 {pc_cleaning.kept_frames} 帧")
+            print(f"  点数: 移除 {pc_cleaning.removed_points} / 补回 {pc_cleaning.added_points}"
+                  f"    stats 更新: {pc_cleaning.stats_updated}")
+            print(f"  输出: {pc_cleaning.output_root}")
+            for warning in pc_cleaning.warnings[:5]:
+                LOG.warning("点云清洗警告: %s", warning)
+            if not pc_cleaning.verification.get("ok", False):
+                LOG.warning("点云清洗校验未通过: %s", pc_cleaning.verification)
+
+            # 用清洗后的真实结果重建点云报告
+            pc_report = pointcloud_mod.build_report(pc_validation, pc_decisions, pc_cleaning,
+                                                    dataset_path=pc_source_root)
+            pc_report_path = pointcloud_mod.write_report(pc_report, output_dir)
+        except Exception as exc:  # noqa: BLE001 - 点云清洗失败保留报告
+            LOG.error("点云清洗失败: %s\n%s", exc, traceback.format_exc())
+            _write_failure(output_dir, "pointcloud_cleaner", exc, keep_going=True)
+            print("  ! 点云清洗失败，但 pointcloud_report.json 仍然保留。")
+
+    # ------------------------------------------------------ 8. visualizer
     if args.skip_plots:
-        step("可视化（visualizer）— 已跳过", 6, total_steps)
+        step("可视化（visualizer）— 已跳过", 8, total_steps)
         plots: dict[str, Path] = {}
     else:
-        step("生成可视化（visualizer）", 6, total_steps)
+        step("生成可视化（visualizer）", 8, total_steps)
         try:
             plots = visualizer_mod.generate_plots(
                 dataset, validation, output_dir, cleaning=cleaning_dict, sample_size=args.plots_sample
@@ -318,6 +408,12 @@ def main(argv: list[str] | None = None) -> int:
             artifacts["review_queue"] = str(review_path)
         if cleaning_dict and cleaning_dict.get("output_path"):
             artifacts["cleaned_dataset"] = cleaning_dict["output_path"]
+        if pc_report_path is not None:
+            artifacts["pointcloud_report"] = str(pc_report_path)
+        if pc_review_path is not None:
+            artifacts["pointcloud_review_queue"] = str(pc_review_path)
+        if pc_clean_dict and pc_clean_dict.get("output_path"):
+            artifacts["pointcloud_cleaned_dataset"] = str(pc_clean_dict["output_path"])
         reporter_mod.attach_artifacts(report_path, artifacts)
 
     # ------------------------------------------------------------ 收尾
@@ -329,6 +425,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  复核队列    : {review_path}")
     if cleaning_dict:
         print(f"  清洗后数据  : {cleaning_dict.get('output_path')}")
+    if pc_report_path is not None:
+        print(f"  点云报告    : {pc_report_path}")
+    if pc_clean_dict:
+        print(f"  点云清洗后  : {pc_clean_dict.get('output_path')}")
     if plots:
         print(f"  可视化      : {output_dir / 'plots'}")
     print(f"  中间结果    : {output_dir / 'intermediate'}")
@@ -398,6 +498,19 @@ def _print_thresholds(validation) -> None:
         print(f"  action 跳变 : 逐维阈值 {[round(float(x), 2) for x in per_dim]}")
     if t.get("video_frame_tolerance") is not None:
         print(f"  视频帧容差 : ±{t['video_frame_tolerance']} 帧")
+
+
+def _print_pointcloud_thresholds(validation) -> None:
+    r = validation.resolved or {}
+    key = validation.feature_key
+    n = validation.expected_points or "变长"
+    print(f"  点云特征    : {key}  ({n} 点 × {validation.dim} 维)")
+    print(f"  自适应阈值  : 场景尺度 {r.get('scene_extent')} m   离群半径 {r.get('outlier_radius')} m   "
+          f"最少有效点 {r.get('min_points')}  颜色量程 {r.get('color_scale'):g}")
+    if r.get("workspace_lower"):
+        print(f"  工作空间    : {r.get('workspace_mode')} 包围盒 "
+              f"{[round(float(x), 2) for x in r['workspace_lower']]} ~ "
+              f"{[round(float(x), 2) for x in r['workspace_upper']]}")
 
 
 def _write_failure(output_dir: Path, stage: str, exc: BaseException, keep_going: bool = False) -> None:

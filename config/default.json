@@ -10,7 +10,8 @@
     },
     "action_jump": {
       "abs_floor": 1.0,
-      "mad_k": 12.0
+      "mad_k": 12.0,
+      "discrete_max_unique": 3
     },
     "timestamp": {
       "step_tolerance_ratio": 0.25
@@ -57,6 +58,35 @@
       "lower": null,
       "upper": null,
       "tolerance": 1e-06
+    },
+    "pointcloud": {
+      "feature_key": null,
+      "batch_size": 256,
+      "sample_frames": 200,
+      "min_points": 16,
+      "sparse_ratio": 0.02,
+      "degenerate_diag": 0.001,
+      "duplicate_decimals": 4,
+      "max_duplicate_ratio": 0.05,
+      "outlier_radius_k": 2.5,
+      "outlier_min_neighbors": 2,
+      "max_outlier_ratio": 0.1,
+      "workspace": {
+        "mode": "auto",
+        "margin_ratio": 0.1,
+        "max_outside_ratio": 0.05,
+        "lower": null,
+        "upper": null
+      },
+      "color": {
+        "max_bad_ratio": 0.01
+      },
+      "temporal": {
+        "abs_jump": 0.05,
+        "mad_k": 6.0
+      },
+      "max_repair_ratio": 0.35,
+      "jitter_ratio": 0.005
     }
   },
   "robots": {},
@@ -74,6 +104,14 @@
     "blank_video": "error",
     "duplicate_episode": "error",
     "joint_limit_violation": "error",
-    "stats_stale": "warning"
+    "stats_stale": "warning",
+    "pc_non_finite": "error",
+    "pc_empty_or_sparse": "error",
+    "pc_degenerate": "error",
+    "pc_duplicate": "warning",
+    "pc_outliers": "warning",
+    "pc_out_of_bounds": "error",
+    "pc_color_invalid": "warning",
+    "pc_temporal_jump": "warning"
   }
 }

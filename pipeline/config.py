@@ -33,7 +33,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 自适应帧数区间：median ± mad_k * 1.4826 * MAD，再夹到 [floor, ceiling]
         "frame_count": {"mode": "auto", "mad_k_low": 3.0, "mad_k_high": 8.0, "floor": 8, "ceiling": 20000},
         # action 跳变：逐维阈值 = max(abs_floor, median|Δ| + mad_k * 1.4826 * MAD|Δ|)
-        "action_jump": {"abs_floor": 1.0, "mad_k": 12.0},
+        # discrete_max_unique：取值种类 ≤ 该值的维视为二值/离散（如夹爪 ±1），不按连续跳变判定
+        "action_jump": {"abs_floor": 1.0, "mad_k": 12.0, "discrete_max_unique": 3},
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
         "timestamp": {"step_tolerance_ratio": 0.25},
         # 视频帧对齐容差（浮点累积误差，单位：帧）
@@ -55,6 +56,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "streaming": {"action_sample_episodes": 200},
         # 关节限位（可选，未配置则跳过；数组顺序与 observation.state 维度一致）
         "joint_limits": {"enabled": False, "lower": None, "upper": None, "tolerance": 1e-6},
+        # 3D 点云清洗：阈值按点云自身尺度自适应，绝对坐标只作为兜底
+        "pointcloud": {
+            "feature_key": None,
+            "batch_size": 256,
+            "sample_frames": 200,
+            "min_points": 16,
+            "sparse_ratio": 0.02,
+            "degenerate_diag": 1e-3,
+            "duplicate_decimals": 4,
+            "max_duplicate_ratio": 0.05,
+            "outlier_radius_k": 2.5,
+            "outlier_min_neighbors": 2,
+            "max_outlier_ratio": 0.10,
+            "workspace": {"mode": "auto", "margin_ratio": 0.10,
+                          "max_outside_ratio": 0.05, "lower": None, "upper": None},
+            "color": {"max_bad_ratio": 0.01},
+            "temporal": {"abs_jump": 0.05, "mad_k": 6.0},
+            "max_repair_ratio": 0.35,
+            "jitter_ratio": 0.005,
+        },
     },
     "robots": {},
     "severity": {
@@ -73,6 +94,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "joint_limit_violation": "error",
         # 数据集级问题
         "stats_stale": "warning",
+        # 点云规则
+        "pc_non_finite": "error",
+        "pc_empty_or_sparse": "error",
+        "pc_degenerate": "error",
+        "pc_duplicate": "warning",
+        "pc_outliers": "warning",
+        "pc_out_of_bounds": "error",
+        "pc_color_invalid": "warning",
+        "pc_temporal_jump": "warning",
     },
 }
 
