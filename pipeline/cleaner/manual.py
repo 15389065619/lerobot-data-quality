@@ -83,7 +83,12 @@ def manual_clean(
 
 def copy_untouched(dataset: LeRobotDatasetView, out_root: Path, *, overwrite: bool) -> CleaningResult:
     prepare_dir(out_root, overwrite=overwrite)
-    shutil.copytree(dataset.root, out_root, dirs_exist_ok=True)
+    # 跳过 .cache：huggingface-cli 下载残留（可占数百 MB），不属于数据集内容
+    shutil.copytree(
+        dataset.root, out_root, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".cache")
+    )
+    # 即使没有 episode 需要清洗，也要重算 stats，否则 stats_stale 会被原样带进训练
+    rewrite_stats(dataset, dataset.frames, out_root)
     return CleaningResult(
         success=True,
         method="noop-copy",

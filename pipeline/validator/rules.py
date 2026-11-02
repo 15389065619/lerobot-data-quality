@@ -73,6 +73,15 @@ def check_action_jump(
     deltas = np.nan_to_num(deltas, nan=0.0, posinf=np.inf)
     dim = min(deltas.shape[1], len(thresholds))
     thr = np.asarray(thresholds[:dim], dtype=float)
+    # 夹爪等二值/离散维的「开合」本身就是 ±2 的跳变，属正常控制指令，不能按连续维阈值判异常
+    discrete_max = int(cfg_get(config, "action_jump.discrete_max_unique", 3))
+    nunique = np.array([
+        len(np.unique(arr[np.isfinite(arr[:, d]), d])) if np.isfinite(arr[:, d]).any() else 0
+        for d in range(dim)
+    ])
+    discrete_dims = np.where(nunique <= discrete_max)[0]
+    if discrete_dims.size:
+        deltas[:, discrete_dims] = 0.0
     over = deltas[:, :dim] > thr
     if not over.any():
         return
@@ -84,6 +93,7 @@ def check_action_jump(
         jump_count=int(over.sum()),
         max_delta=round(float(np.max(deltas[:, :dim])), 4),
         thresholds_used=[round(float(t), 4) for t in thr],
+        discrete_dims=[int(x) for x in discrete_dims],
         worst_frame=int(worst[0]),
         worst_dim=int(worst[1]),
         examples=[
