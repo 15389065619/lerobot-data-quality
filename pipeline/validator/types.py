@@ -34,6 +34,8 @@ RULES: tuple[Rule, ...] = (
     Rule("blank_video", "视频黑屏/纯色遮挡", "镜头被挡或相机未推流；模态信息完全丢失", None),
     Rule("duplicate_episode", "重复采样 episode", "同一条 action 轨迹被重复入库，会造成分布失衡", None),
     Rule("joint_limit_violation", "state 超出关节限位", "标定错误或越界动作；需检查 URDF 限位", None),
+    Rule("episode_read_error", "episode 数据损坏或缺失，无法读取",
+         "对应 parquet 文件损坏，或 meta 中有记录但没有任何数据行；无法自动修复", None),
 )
 
 RULE_MAP = {r.code: r for r in RULES}

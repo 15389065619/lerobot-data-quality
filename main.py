@@ -54,7 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output_dir", default="outputs", help="输出根目录（报告 / 清洗结果 / 图表）")
     p.add_argument("--max_episodes", type=int, default=None, help="只处理前 N 个 episode（调试大数据集时用）")
 
-    p.add_argument("--config", default=None, help="质检策略配置 JSON（阈值、严重度、机器人覆盖）")
+    p.add_argument("--config", default=None,
+                   help="质检策略配置文件（YAML/JSON，按扩展名识别；阈值、严重度、机器人覆盖，缺失键自动用代码默认值）")
     p.add_argument("--overrides", default=None, help="人工复核结果 CSV（来自 review_queue.csv）")
     p.add_argument("--on-review", choices=["keep", "drop"], default="keep",
                    help="未经人工复核的 warning 级 episode 如何处理")
@@ -77,12 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-cli", action="store_true", help="不调用 lerobot-edit-dataset，强制使用内置清洗实现")
     p.add_argument("--plots-sample", type=int, default=20, help="可视化采样 episode 数量")
     p.add_argument("--incremental", action="store_true",
-                   help="增量模式：复用未变更 episode 的质检结论，清洗计划不变时复用上次产出")
+                   help="增量/断点续传：episode 级复用 manifest 中未变更的结论，"
+                        "点云帧级复用 pointcloud_scan_cache.json；损坏/新增/改动自动重检")
     p.add_argument("--manifest", default=None,
                    help=f"增量状态文件路径（默认 <output_dir>/{MANIFEST_FILENAME}）")
     p.add_argument("--force", action="store_true", help="忽略增量缓存，强制全量重跑")
     p.add_argument("--streaming", action="store_true",
                    help="流式模式：按 parquet 文件分片扫描，不把整张逐帧表读进内存（大数据集用；暂不支持清洗）")
+    p.add_argument("--workers", type=int, default=1,
+                   help="多进程并发数：>1 时 episode 质检与点云扫描用 ProcessPoolExecutor 并行"
+                        "（worker 为纯函数不写盘，结果由主进程统一归并落盘；1=串行）")
     p.add_argument("--verbose", "-v", action="store_true", help="输出 DEBUG 日志")
     return p
 
@@ -132,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         LOG.warning("--streaming 模式暂不支持清洗（需要整表重写），本次自动跳过 cleaner；"
                     "如需清洗请去掉 --streaming")
         args.skip_clean = True
+    if args.streaming and args.workers > 1:
+        LOG.info("--streaming 模式下 episode 质检走流式单进程，--workers 仅作用于点云阶段")
 
     print(BANNER)
     print("LeRobot v3 数据质量校验与清洗 Pipeline")
@@ -202,12 +209,13 @@ def main(argv: list[str] | None = None) -> int:
                          len(changed), len(all_eps) - len(changed))
 
         validation = validate_dataset(dataset, config, prior=prior, only=only,
-                                      streaming=args.streaming)
+                                      streaming=args.streaming, workers=args.workers)
         if prior is not None and not _thresholds_equal(
             validation.resolved_thresholds, manifest.resolved_thresholds()
         ):
             LOG.info("阈值随数据集变化而改变，增量缓存失效，回退全量重检")
-            validation = validate_dataset(dataset, config, streaming=args.streaming)
+            validation = validate_dataset(dataset, config, streaming=args.streaming,
+                                          workers=args.workers)
     except Exception as exc:  # noqa: BLE001
         LOG.error("质检失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "validator", exc)
@@ -320,7 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         step("3D 点云质检（pointcloud：几何 / 颜色 / 时序 8 条规则）", 6, total_steps)
         try:
             pc_validation = pointcloud_mod.validate_pointcloud_dataset(
-                pc_source_root, config, feature_key=pc_feature, max_frames=args.pointcloud_max_frames
+                pc_source_root, config, feature_key=pc_feature,
+                max_frames=args.pointcloud_max_frames, workers=args.workers,
+                # 断点续传：增量模式下复用文件指纹未变的逐帧扫描结论
+                cache_path=(output_dir / "pointcloud_scan_cache.json") if args.incremental else None,
             )
             pc_validation_dict = pc_validation.to_dict()
             save_intermediate(output_dir, "05_pointcloud_validation.json", pc_validation_dict)

@@ -72,6 +72,8 @@ class LeRobotDatasetView:
     data_files: list[Path] = field(default_factory=list)
     #: 检测到但未读入内存的二维重型特征（如点云），由 pointcloud 阶段按需流式读取
     heavy_features: list[str] = field(default_factory=list)
+    #: 读取失败被跳过的损坏数据文件（毒数据防冲击），元素为 {"file": 路径, "error": 原因}
+    corrupted_files: list[dict[str, str]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ 概览
     @property
@@ -403,7 +405,8 @@ def load_dataset(
         LOG.info("--max_episodes 生效：只加载前 %d 个 episode", truncated_to)
 
     if load_frames:
-        frames = _read_frames(data_files, keep, exclude=tuple(heavy))
+        corrupted: list[dict[str, str]] = []
+        frames = _read_frames(data_files, keep, exclude=tuple(heavy), corrupted=corrupted)
         if episodes_meta is None or episodes_meta.empty:
             LOG.warning("meta/episodes 缺失，回退为从帧数据推导 episode 元信息")
             episodes_meta = _episodes_from_frames(frames)
@@ -428,6 +431,7 @@ def load_dataset(
         truncated_to=truncated_to,
         data_files=data_files,
         heavy_features=heavy,
+        corrupted_files=corrupted if load_frames else [],
     )
     # 统一 info 中的 total_episodes / total_frames：以实际读到的为准（元数据可能已失真）
     LOG.info(
@@ -601,30 +605,40 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
 
 
 def _read_frames(
-    files: list[Path], keep: set[int] | None, exclude: tuple[str, ...] = ()
+    files: list[Path], keep: set[int] | None, exclude: tuple[str, ...] = (),
+    corrupted: list[dict[str, str]] | None = None,
 ) -> pd.DataFrame:
     """把 data/*.parquet 读成一张长表，记录来源文件便于清洗阶段原地重写。
 
     exclude 用于跳过点云/embedding 这类二维重型列：不读出来才不会占用 GB 级内存。
+
+    毒数据防冲击：传入 corrupted 列表时，单个文件损坏（schema 读不出 / parquet
+    截断 / 缺列）不再中断整个加载，而是记录 {"file", "error"} 后跳过；
+    全部文件都不可读时仍抛 DatasetFormatError（没有数据就没有质检的意义）。
     """
     parts: list[pd.DataFrame] = []
     for path in files:
-        cols = _columns_excluding(path, exclude)
-        df: pd.DataFrame | None = None
-        if keep is not None:
-            try:
-                table = pq.read_table(
-                    path, columns=cols, filters=[("episode_index", "in", sorted(keep))]
-                )
-                df = table.to_pandas()
-            except Exception as exc:  # noqa: BLE001 - 不支持 filter 时退回全量读
-                LOG.debug("按 episode 过滤读取 %s 失败，改为全量读取: %s", path.name, exc)
-                df = None
-        if df is None:
-            try:
+        try:
+            cols = _columns_excluding(path, exclude)
+            df: pd.DataFrame | None = None
+            if keep is not None:
+                try:
+                    table = pq.read_table(
+                        path, columns=cols, filters=[("episode_index", "in", sorted(keep))]
+                    )
+                    df = table.to_pandas()
+                except Exception as exc:  # noqa: BLE001 - 不支持 filter 时退回全量读
+                    LOG.debug("按 episode 过滤读取 %s 失败，改为全量读取: %s", path.name, exc)
+                    df = None
+            if df is None:
                 df = pq.read_table(path, columns=cols).to_pandas()
-            except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if corrupted is None:
                 raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
+            LOG.error("数据文件损坏，已跳过（其中 episode 将标记 episode_read_error）: %s -> %s",
+                      path.name, exc)
+            corrupted.append({"file": str(path), "error": str(exc)})
+            continue
         if df.empty:
             continue
         df[SOURCE_COL] = str(path)
