@@ -29,7 +29,11 @@ class DatasetContext:
     def build(
         cls, dataset: LeRobotDatasetView, config: dict[str, Any], skipped: dict[str, str]
     ) -> "DatasetContext":
-        counts = dataset.frames.groupby("episode_index").size().to_numpy(dtype=float)
+        # 全部数据文件损坏时 frames 连列都没有：counts 为空，episode 由 validator 兜底标 episode_read_error
+        if "episode_index" in dataset.frames.columns:
+            counts = dataset.frames.groupby("episode_index").size().to_numpy(dtype=float)
+        else:
+            counts = np.array([], dtype=float)
         frame_bounds = _resolve_frame_bounds(counts, config)
         action_thresholds, action_meta = _resolve_action_thresholds(dataset, config)
         issues: list[DatasetIssue] = []

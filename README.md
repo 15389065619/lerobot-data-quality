@@ -78,7 +78,7 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 | `joint_limit_violation` | error | drop | 超出关节限位（配置提供 limits 时启用） |
 | `stats_stale`（数据集级） | warning | **repair** | stats.json 与实测偏差过大 → 重算 |
 
-严重度与阈值都可在 `config/default.json` 按 robot_type 覆盖（`robots: {"so100_follower": {...}}`）。
+严重度与阈值都可在 `config/default.yaml` 按 robot_type 覆盖（`robots: {so100_follower: {...}}`）。
 
 ## 3D 点云质检与清洗（8 条规则）
 
@@ -143,7 +143,7 @@ python main.py --dataset_path demo_dataset --output_dir outputs --on-review drop
 python main.py --dataset_path demo_dataset --output_dir outputs_run2 --overrides outputs/review_queue_reviewed.csv
 
 # 自定义阈值（按机器人型号）
-python main.py --dataset_path ... --config config/default.json
+python main.py --dataset_path ... --config config/default.yaml
 
 # 只跑数值质检与报告，跳过点云阶段
 python main.py --dataset_path ... --output_dir outputs --skip-pointcloud

@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import cfg_get, load_config
-from ..loader import ACTION_KEY, STATE_KEY, LeRobotDatasetView
+from ..loader import ACTION_KEY, DEFAULT_DATA_PATH, STATE_KEY, LeRobotDatasetView
 from .context import DatasetContext
 from .probes import FFMPEG, FFPROBE, probe_frame_brightness, probe_video_frames
 from .rules import (
@@ -73,6 +73,38 @@ __all__ = [
 
 
 # ------------------------------------------------------------------ 主入口
+def _corrupted_episode_map(dataset: LeRobotDatasetView) -> dict[int, dict[str, str]]:
+    """把 loader 记录的损坏文件映射到受影响的 episode。
+
+    依赖 meta/episodes 的 data/chunk_index、data/file_index 两列 +
+    info.json 的 data_path 模板反推文件路径；映射不上时返回空 dict，
+    调用方会退回通用错误描述。
+    """
+    corrupted = getattr(dataset, "corrupted_files", None) or []
+    if not corrupted:
+        return {}
+    by_file = {item["file"]: item for item in corrupted}
+    tmpl = dataset.info.get("data_path") or DEFAULT_DATA_PATH
+    eps = dataset.episodes
+    required = {"episode_index", "data/chunk_index", "data/file_index"}
+    if not required <= set(eps.columns):
+        return {}
+    out: dict[int, dict[str, str]] = {}
+    for _, row in eps.iterrows():
+        try:
+            rel = tmpl.format(
+                chunk_index=int(row["data/chunk_index"]),
+                file_index=int(row["data/file_index"]),
+                episode_index=int(row["episode_index"]),
+            )
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        item = by_file.get(str(dataset.root / rel))
+        if item is not None:
+            out[int(row["episode_index"])] = item
+    return out
+
+
 def validate_dataset(
     dataset: LeRobotDatasetView,
     config: dict[str, Any] | None = None,
@@ -80,6 +112,7 @@ def validate_dataset(
     prior: Mapping[int, EpisodeResult] | None = None,
     only: Iterable[int] | None = None,
     streaming: bool = False,
+    workers: int = 1,
 ) -> ValidationResult:
     """逐 episode 质检。
 
@@ -87,6 +120,8 @@ def validate_dataset(
         prior: 上一次的结论；增量模式下未变更的 episode 直接复用，避免重复视频探针。
         only: 只重新质检这些 episode，其余使用 prior；None 表示全部重检。
         streaming: 按 parquet 文件分片扫描，不在内存里保留整张逐帧表（大数据集用）。
+        workers: >1 时用 ProcessPoolExecutor 并行跑非视频规则（worker 为纯函数，
+            结论统一由主进程归并，写盘仍只在主进程；串行行为保持不变）。
     """
     if streaming:
         from .streaming import validate_dataset_streaming
@@ -113,20 +148,88 @@ def validate_dataset(
     revalidate = None if only is None else {int(ep) for ep in only}
 
     # 第一阶段：非视频规则 + 决定哪些 episode 需要复用历史结论
+    # 全部数据文件损坏时 frames 连列都没有：迭代为空，episode 由 missing_eps 兜底标 episode_read_error
+    frame_groups = (
+        dataset.frames.groupby("episode_index", sort=True)
+        if "episode_index" in dataset.frames.columns
+        else iter(())
+    )
     pending_video: list[tuple[EpisodeResult, int, bool]] = []
-    for ep_index, ep_df in dataset.frames.groupby("episode_index", sort=True):
-        ep_index = int(ep_index)
-        if revalidate is not None and ep_index not in revalidate and prior and ep_index in prior:
-            res = EpisodeResult.from_dict(prior[ep_index].to_dict())
-            _refresh_duplicate(res, ep_df, ctx, config)
-            results[ep_index] = res
-            reused += 1
-            continue
+    if workers > 1:
+        # 多进程分支：worker 是纯函数（只算不写），结论由主进程按 episode 归并，
+        # 全局指纹表在 ctx 构建时已预计算，worker 只读，结果与串行逐位一致。
+        from ..parallel import run_pool
+        from . import parallel as parallel_mod
 
-        res = _validate_non_video(ep_df, ep_index, dataset, ctx, config, skipped)
-        results[ep_index] = res
-        want_blank = blank_enabled and len(pending_video) < max_probes
-        pending_video.append((res, ep_index, want_blank))
+        recheck: list[tuple[int, pd.DataFrame]] = []
+        for ep_index, ep_df in frame_groups:
+            ep_index = int(ep_index)
+            if revalidate is not None and ep_index not in revalidate and prior and ep_index in prior:
+                res = EpisodeResult.from_dict(prior[ep_index].to_dict())
+                _refresh_duplicate(res, ep_df, ctx, config)
+                results[ep_index] = res
+                reused += 1
+                continue
+            recheck.append((ep_index, ep_df))
+
+        shared = parallel_mod.build_episode_shared(dataset, ctx, config)
+        rechecked: list[int] = []
+        for ep_index, res, skipped_delta in run_pool(
+            recheck,
+            parallel_mod.validate_episode_worker,
+            shared,
+            workers,
+            desc="episode 质检",
+            unit="ep",
+            initializer=parallel_mod.init_episode_worker,
+        ):
+            for code, why in skipped_delta.items():
+                skipped.setdefault(code, why)
+            results[ep_index] = res
+            rechecked.append(ep_index)
+
+        # blank 探针名额按 episode 升序分配，与串行的 groupby 迭代顺序一致
+        for ep_index in sorted(rechecked):
+            want_blank = blank_enabled and len(pending_video) < max_probes
+            pending_video.append((results[ep_index], ep_index, want_blank))
+
+        # future 完成顺序不确定：按 episode_index 排序重建 dict，
+        # 保证下游报告 / 复核队列的顺序与串行逐位一致
+        results = dict(sorted(results.items()))
+    else:
+        for ep_index, ep_df in frame_groups:
+            ep_index = int(ep_index)
+            if revalidate is not None and ep_index not in revalidate and prior and ep_index in prior:
+                res = EpisodeResult.from_dict(prior[ep_index].to_dict())
+                _refresh_duplicate(res, ep_df, ctx, config)
+                results[ep_index] = res
+                reused += 1
+                continue
+
+            try:
+                res = _validate_non_video(ep_df, ep_index, dataset, ctx, config, skipped)
+            except Exception as exc:  # noqa: BLE001 - 毒数据防冲击：单 episode 失败不中断整体
+                LOG.exception("episode %d 质检过程异常，已标记 episode_read_error 并跳过", ep_index)
+                res = EpisodeResult(episode_index=ep_index, frame_count=int(len(ep_df)))
+                res.add("episode_read_error", error=str(exc))
+            results[ep_index] = res
+            want_blank = blank_enabled and len(pending_video) < max_probes
+            pending_video.append((res, ep_index, want_blank))
+
+    # 损坏文件 / 行缺失兜底：meta 中存在但没读到任何帧的 episode 不参与逐帧规则，
+    # 直接标记 episode_read_error 进入处置流程（severity=error，默认 drop/review）
+    missing_eps = [ep for ep in dataset.episode_indices if ep not in results]
+    if missing_eps:
+        corrupted_map = _corrupted_episode_map(dataset)
+        for ep_index in missing_eps:
+            info = corrupted_map.get(ep_index) or {}
+            res = EpisodeResult(episode_index=ep_index, frame_count=0)
+            res.add("episode_read_error",
+                    file=info.get("file"),
+                    error=info.get("error") or "meta/episodes 中存在但没有任何数据行")
+            results[ep_index] = res
+        results = dict(sorted(results.items()))
+        LOG.error("%d 个 episode 因数据损坏/缺失无法质检: %s", len(missing_eps), missing_eps)
 
     # 第二阶段：视频探针（进程等待为主，但有界并发；机械盘上默认只开 2 路）
     _run_video_checks(pending_video, dataset, cameras, precise, config)

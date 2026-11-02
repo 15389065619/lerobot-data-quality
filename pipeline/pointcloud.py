@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ import pyarrow.parquet as pq
 
 from .config import cfg_get, load_config, severity_of, snapshot as config_snapshot
 from .loader import DEFAULT_DATA_PATH, LeRobotDatasetView, heavy_feature_keys
+from .manifest import config_digest
 
 LOG = logging.getLogger(__name__)
 
@@ -113,6 +115,19 @@ class FrameResult:
             "metrics": self.metrics,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FrameResult":
+        """从 to_dict 的载荷还原（点云扫描断点续传缓存的读取侧）。"""
+        return cls(
+            episode_index=int(data["episode_index"]),
+            frame_index=int(data["frame_index"]),
+            point_count=int(data.get("point_count") or 0),
+            valid_count=int(data.get("valid_count") or 0),
+            reasons=[str(c) for c in (data.get("reasons") or [])],
+            details=dict(data.get("details") or {}),
+            metrics=dict(data.get("metrics") or {}),
+        )
+
 
 @dataclass
 class PointCloudValidation:
@@ -126,6 +141,8 @@ class PointCloudValidation:
     dataset_issues: list[dict[str, Any]] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
     expected_points: int | None = None
+    #: 读取失败被跳过的损坏数据文件（毒数据防冲击），元素为 {"file", "error", ...}
+    corrupted_files: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def valid_frames(self) -> int:
@@ -183,6 +200,8 @@ class PointCloudValidation:
             "episodes": self.episode_summary(),
             "invalid_frame_details": [r.to_dict() for r in invalid],
         }
+        if self.corrupted_files:
+            payload["corrupted_files"] = self.corrupted_files
         if self.skipped:
             payload["skipped_checks"] = self.skipped
         return payload
@@ -245,8 +264,16 @@ def validate_pointcloud_dataset(
     *,
     feature_key: str | None = None,
     max_frames: int | None = None,
+    workers: int = 1,
+    cache_path: str | Path | None = None,
 ) -> PointCloudValidation:
-    """流式校验点云特征，返回逐帧结论（不保留原始点云）。"""
+    """流式校验点云特征，返回逐帧结论（不保留原始点云）。
+
+    workers>1 时按 (parquet 文件, row group) 分片多进程扫描，结论在主进程归并，
+    与串行结果逐位一致（跨帧的 pc_temporal_jump 始终在归并后统一执行）。
+    cache_path 传入时启用断点续传：文件指纹未变的分片直接复用上次逐帧结论。
+    单个文件损坏不再中断：记录进 validation.corrupted_files 并跳过。
+    """
     view = root_or_view if isinstance(root_or_view, LeRobotDatasetView) else None
     root = view.root if view else Path(root_or_view).expanduser().resolve()
     info = view.info if view else _read_info(root)
@@ -266,11 +293,27 @@ def validate_pointcloud_dataset(
     files = _discover_data_files(root, info)
     if not files:
         raise PointCloudFormatError(f"未在 {root} 下找到 data/*.parquet")
-    if key not in pq.ParquetFile(files[0]).schema_arrow.names:
+    # 第一个分片可能就损坏：跨文件探测特征列，全部不可读/都没有该列才判定格式错误
+    feature_present = False
+    for path in files:
+        try:
+            if key in pq.ParquetFile(path).schema_arrow.names:
+                feature_present = True
+                break
+        except Exception:  # noqa: BLE001 - 坏文件留给扫描阶段记账
+            continue
+    if not feature_present:
         raise PointCloudFormatError(f"数据 parquet 中不存在点云列: {key}")
 
     ctx = _build_context(root, files, info, config, key, expected_points, dim)
-    results, skipped = _scan(files, ctx, max_frames=max_frames)
+    cache = _ScanCache(Path(cache_path), config, key, ctx.resolved) if cache_path else None
+    if workers > 1:
+        results, skipped, corrupted = _scan_parallel(
+            files, ctx, max_frames=max_frames, workers=workers, cache=cache)
+    else:
+        results, skipped, corrupted = _scan(files, ctx, max_frames=max_frames, cache=cache)
+    if cache:
+        cache.save()
     _apply_temporal_rule(results, ctx)
 
     validation = PointCloudValidation(
@@ -283,6 +326,7 @@ def validate_pointcloud_dataset(
         resolved=ctx.resolved,
         skipped=skipped,
         expected_points=expected_points,
+        corrupted_files=corrupted,
     )
     sev = validation.severity_summary()
     LOG.info("点云质检完成：%d 帧，正常 %d / 异常 %d（error %d, warning %d）",
@@ -376,11 +420,11 @@ def _sample_points(files: list[Path], feature_key: str, limit: int) -> np.ndarra
     chunks: list[np.ndarray] = []
     taken = 0
     for path in files:
-        pf = pq.ParquetFile(path)
-        cols = [c for c in ("episode_index", "frame_index", feature_key) if c in pf.schema_arrow.names]
-        if feature_key not in cols:
-            continue
         try:
+            pf = pq.ParquetFile(path)
+            cols = [c for c in ("episode_index", "frame_index", feature_key) if c in pf.schema_arrow.names]
+            if feature_key not in cols:
+                continue
             for batch in pf.iter_batches(batch_size=max(1, min(limit, 256)), columns=cols):
                 cells = batch.column(batch.schema.get_field_index(feature_key)).to_pylist()
                 for cell in cells:
@@ -392,7 +436,7 @@ def _sample_points(files: list[Path], feature_key: str, limit: int) -> np.ndarra
                         break
                 if taken >= limit:
                     break
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 采样是 best-effort，坏文件留给扫描阶段记账
             LOG.debug("采样 %s 失败: %s", path, exc)
         if taken >= limit:
             break
@@ -425,22 +469,25 @@ def _median_nn_distance(files: list[Path], feature_key: str, limit: int) -> floa
     values: list[float] = []
     taken = 0
     for path in files:
-        pf = pq.ParquetFile(path)
-        if feature_key not in pf.schema_arrow.names:
-            continue
-        for batch in pf.iter_batches(batch_size=max(1, min(limit, 64)), columns=[feature_key]):
-            for cell in batch.column(0).to_pylist():
-                xyz = _xyz(_to_matrix(cell))
-                xyz = xyz[np.isfinite(xyz).all(axis=1)]
-                if len(xyz) >= 8:
-                    d2 = ((xyz[:, None, :] - xyz[None, :, :]) ** 2).sum(axis=2)
-                    np.fill_diagonal(d2, np.inf)
-                    values.append(float(np.median(np.sqrt(d2.min(axis=1)))))
-                taken += 1
+        try:
+            pf = pq.ParquetFile(path)
+            if feature_key not in pf.schema_arrow.names:
+                continue
+            for batch in pf.iter_batches(batch_size=max(1, min(limit, 64)), columns=[feature_key]):
+                for cell in batch.column(0).to_pylist():
+                    xyz = _xyz(_to_matrix(cell))
+                    xyz = xyz[np.isfinite(xyz).all(axis=1)]
+                    if len(xyz) >= 8:
+                        d2 = ((xyz[:, None, :] - xyz[None, :, :]) ** 2).sum(axis=2)
+                        np.fill_diagonal(d2, np.inf)
+                        values.append(float(np.median(np.sqrt(d2.min(axis=1)))))
+                    taken += 1
+                    if taken >= limit:
+                        break
                 if taken >= limit:
                     break
-            if taken >= limit:
-                break
+        except Exception as exc:  # noqa: BLE001 - 采样是 best-effort，坏文件留给扫描阶段记账
+            LOG.debug("NN 距离采样 %s 失败: %s", path, exc)
         if taken >= limit:
             break
     return float(np.median(values)) if values else 0.0
@@ -478,25 +525,33 @@ def _estimate_color_scale(files: list[Path], feature_key: str, dim: int, limit: 
 
 # ------------------------------------------------------------------ 逐帧校验
 def _scan(
-    files: list[Path], ctx: _Context, *, max_frames: int | None = None
-) -> tuple[dict[FramesKey, FrameResult], dict[str, str]]:
+    files: list[Path], ctx: _Context, *, max_frames: int | None = None,
+    cache: "_ScanCache | None" = None,
+) -> tuple[dict[FramesKey, FrameResult], dict[str, str], list[dict[str, Any]]]:
+    """串行流式扫描。
+
+    毒数据防冲击：单个 parquet 损坏（截断/schema 异常/缺列读失败）记录进
+    corrupted 并跳过，不再中断整个点云阶段；断点续传：cache 命中且文件
+    指纹未变时直接复用上次的逐帧结论。
+    """
     results: dict[FramesKey, FrameResult] = {}
-    skipped: dict[str, str] = {}
-    if ctx.dim < 6:
-        skipped["pc_color_invalid"] = "点云维度 < 6，没有颜色通道"
-    if ctx.workspace_lower is None:
-        skipped["pc_out_of_bounds"] = "无法推导工作空间包围盒（样本点不足）"
-    if ctx.outlier_radius <= 1e-6:
-        skipped["pc_outliers"] = "场景尺度≈0，无法推导离群半径"
+    skipped = _scan_skipped(ctx)
+    corrupted: list[dict[str, Any]] = []
 
     batch_size = max(1, int(cfg_get(ctx.config, "pointcloud.batch_size", 256)))
     for path in files:
-        pf = pq.ParquetFile(path)
-        names = pf.schema_arrow.names
-        cols = [c for c in ("episode_index", "frame_index", ctx.feature_key) if c in names]
-        if ctx.feature_key not in cols:
+        cached = cache.get(path) if cache else None
+        if cached is not None:
+            for res in cached:
+                results[(res.episode_index, res.frame_index)] = res
             continue
+        file_frames: list[FrameResult] = []
         try:
+            pf = pq.ParquetFile(path)
+            names = pf.schema_arrow.names
+            cols = [c for c in ("episode_index", "frame_index", ctx.feature_key) if c in names]
+            if ctx.feature_key not in cols:
+                continue
             for batch in pf.iter_batches(batch_size=batch_size, columns=cols):
                 data = batch.to_pydict()
                 eps = data["episode_index"]
@@ -504,13 +559,225 @@ def _scan(
                 cells = data[ctx.feature_key]
                 for ep, fi, cell in zip(eps, fis, cells):
                     key = (int(ep), int(fi))
-                    results[key] = evaluate_frame(_to_matrix(cell), key, ctx)
+                    res = evaluate_frame(_to_matrix(cell), key, ctx)
+                    results[key] = res
+                    file_frames.append(res)
                     if max_frames and len(results) >= max_frames:
                         LOG.info("--pointcloud_max_frames 生效：只校验前 %d 帧", max_frames)
-                        return results, skipped
-        except Exception as exc:  # noqa: BLE001
-            raise PointCloudFormatError(f"读取点云列失败: {path} -> {exc}") from exc
-    return results, skipped
+                        # 截断发生在文件中途：该文件结论不完整，不入缓存
+                        return results, skipped, corrupted
+        except Exception as exc:  # noqa: BLE001 - 坏文件不中断流水线
+            LOG.error("点云数据文件损坏，已跳过: %s -> %s", path.name, exc)
+            corrupted.append({"file": str(path), "error": str(exc)})
+            continue
+        if cache:
+            cache.put(path, file_frames)
+    return results, skipped, corrupted
+
+
+def _scan_skipped(ctx: _Context) -> dict[str, str]:
+    """扫描前即可确定的规则跳过原因（只看全局上下文，与具体数据无关）。"""
+    skipped: dict[str, str] = {}
+    if ctx.dim < 6:
+        skipped["pc_color_invalid"] = "点云维度 < 6，没有颜色通道"
+    if ctx.workspace_lower is None:
+        skipped["pc_out_of_bounds"] = "无法推导工作空间包围盒（样本点不足）"
+    if ctx.outlier_radius <= 1e-6:
+        skipped["pc_outliers"] = "场景尺度≈0，无法推导离群半径"
+    return skipped
+
+
+def _jsonable(obj: Any) -> Any:
+    """把 numpy 标量/数组转成 JSON 原生类型（扫描缓存落盘用）。"""
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_jsonable(v) for v in obj.tolist()]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
+class _ScanCache:
+    """点云逐帧扫描的断点续传缓存（写在 output_dir，不碰源数据集）。
+
+    命中条件（全部满足才复用上次结论）：
+      1. 配置指纹一致（阈值/严重度变了结论必须重算）；
+      2. 同一特征列、同一解析出的自适应规则上下文（随数据分布变化）；
+      3. 文件 stat 未变（路径 + 大小 + mtime_ns，廉价指纹，不读文件内容）。
+    损坏修复、新增、改动的文件因指纹变化自动重扫；缓存损坏/写不进时
+    静默降级为不缓存，绝不影响主流程。
+    """
+
+    VERSION = 1
+
+    def __init__(self, path: Path, config: dict[str, Any], feature_key: str,
+                 resolved: dict[str, Any]) -> None:
+        self.path = path
+        self._envelope = {
+            "version": self.VERSION,
+            "config_digest": config_digest(config),
+            "feature_key": feature_key,
+            "resolved": _jsonable(resolved),
+        }
+        self._files: dict[str, dict[str, Any]] = {}
+        self._dirty = False
+        if not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            LOG.warning("点云扫描缓存无法解析，按首次运行处理: %s", exc)
+            return
+        meta = {k: payload.get(k) for k in self._envelope}
+        if meta == self._envelope:
+            self._files = payload.get("files") or {}
+            LOG.info("断点续传：载入点云扫描缓存（%d 个文件分片）", len(self._files))
+        else:
+            LOG.info("配置/特征列/自适应阈值已变化，点云扫描缓存失效，将全量重扫")
+
+    @staticmethod
+    def _key(path: Path) -> str:
+        try:
+            st = path.stat()
+            sig = {"path": str(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        except OSError:
+            sig = {"path": str(path), "exists": False}
+        return hashlib.sha1(json.dumps(sig, sort_keys=True).encode()).hexdigest()[:16]
+
+    def get(self, path: Path) -> list[FrameResult] | None:
+        entry = self._files.get(self._key(path))
+        if not entry:
+            return None
+        return [FrameResult.from_dict(d) for d in entry.get("frames") or []]
+
+    def put(self, path: Path, frames: list[FrameResult]) -> None:
+        self._files[self._key(path)] = {
+            "file": str(path),
+            "frames": [_jsonable(r.to_dict()) for r in frames],
+        }
+        self._dirty = True
+
+    def save(self) -> None:
+        if not self._dirty and self.path.is_file():
+            return
+        payload = dict(self._envelope)
+        payload["files"] = self._files
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(payload, ensure_ascii=False, default=str),
+                                 encoding="utf-8")
+            LOG.info("点云扫描缓存已保存: %s（%d 个文件分片）", self.path, len(self._files))
+        except OSError as exc:
+            LOG.warning("点云扫描缓存写入失败（不影响本次结果）: %s", exc)
+
+
+# ------------------------------------------------------------------ 多进程扫描
+# 子进程共享的只读规则上下文（由 _init_pc_worker 在子进程启动时注入一次）
+_PC_CTX: "_Context | None" = None
+
+
+def _init_pc_worker(ctx: _Context) -> None:
+    """子进程 initializer：注入点云规则上下文（阈值 / 包围盒 / 颜色量程）。"""
+    global _PC_CTX
+    _PC_CTX = ctx
+
+
+def _scan_row_group_worker(job: tuple[str, int]) -> dict[str, Any]:
+    """worker：读 parquet 的一个 row group，逐帧跑 8 条规则。
+
+    返回 {"file", "results", "corrupted"}：读取失败不再上抛拖垮进程池，
+    而是作为 corrupted 条目交回主进程记录（毒数据防冲击）。
+    纯函数契约：只读输入文件、只经返回值交回结论，不写盘、不写共享状态；
+    跨帧规则（pc_temporal_jump）由主进程在结果归并后统一执行。
+    """
+    path, rg_index = job
+    ctx = _PC_CTX
+    if ctx is None:  # 防御：initializer 未跑时给出可读错误而不是 AttributeError
+        raise RuntimeError("点云 worker 上下文未初始化（initializer 未执行）")
+    try:
+        pf = pq.ParquetFile(path)
+        names = pf.schema_arrow.names
+        cols = [c for c in ("episode_index", "frame_index", ctx.feature_key) if c in names]
+        if ctx.feature_key not in cols:
+            return {"file": path, "results": [], "corrupted": None}  # 该文件没有点云列
+        table = pf.read_row_group(rg_index, columns=cols)
+    except Exception as exc:  # noqa: BLE001
+        return {"file": path, "results": [],
+                "corrupted": {"file": path, "row_group": rg_index, "error": str(exc)}}
+    data = table.to_pydict()
+    out = [
+        evaluate_frame(_to_matrix(cell), (int(ep), int(fi)), ctx)
+        for ep, fi, cell in zip(data["episode_index"], data["frame_index"], data[ctx.feature_key])
+    ]
+    return {"file": path, "results": out, "corrupted": None}
+
+
+def _scan_parallel(
+    files: list[Path], ctx: _Context, *, max_frames: int | None, workers: int,
+    cache: "_ScanCache | None" = None,
+) -> tuple[dict[FramesKey, FrameResult], dict[str, str], list[dict[str, Any]]]:
+    """按 (parquet 文件, row group) 分片并发扫描，主进程按 (episode, frame) 归并。
+
+    与串行 _scan 的唯一语义差异在 --pointcloud_max_frames：串行是按文件序
+    提前截断，并发是扫描全量后按 (episode_index, frame_index) 排序截取，
+    两者各自确定，但截断窗口可能不同（max_frames 只是调试开关，不影响全量结果）。
+    """
+    from .parallel import run_pool
+
+    skipped = _scan_skipped(ctx)
+    corrupted: list[dict[str, Any]] = []
+    results: dict[FramesKey, FrameResult] = {}
+    per_file: dict[str, list[FrameResult]] = {}
+
+    jobs: list[tuple[str, int]] = []
+    for path in files:
+        cached = cache.get(path) if cache else None
+        if cached is not None:
+            for res in cached:
+                results[(res.episode_index, res.frame_index)] = res
+            continue
+        try:
+            pf = pq.ParquetFile(path)
+        except Exception as exc:  # noqa: BLE001 - 连文件头都打不开，主进程直接记账
+            LOG.error("点云数据文件损坏，已跳过: %s -> %s", path.name, exc)
+            corrupted.append({"file": str(path), "error": str(exc)})
+            continue
+        if ctx.feature_key not in pf.schema_arrow.names:
+            continue
+        per_file[str(path)] = []
+        for rg in range(pf.metadata.num_row_groups):
+            jobs.append((str(path), rg))
+
+    for chunk in run_pool(
+        jobs, _scan_row_group_worker, ctx, workers,
+        desc="点云帧质检", unit="RG", initializer=_init_pc_worker,
+    ):
+        if chunk["corrupted"]:
+            corrupted.append(chunk["corrupted"])
+        for res in chunk["results"]:
+            results[(res.episode_index, res.frame_index)] = res
+            per_file.setdefault(chunk["file"], []).append(res)
+
+    # future 完成顺序不确定：按 (episode, frame) 排序重建 dict，
+    # 保证下游 invalid_frame_details / 报告的顺序与串行逐位一致
+    results = {k: results[k] for k in sorted(results)}
+
+    if cache:
+        # 只缓存「所有 row group 都成功」的文件；有分片损坏的文件下次仍会重扫
+        broken = {c["file"] for c in corrupted}
+        for file_key, frames in per_file.items():
+            if frames and file_key not in broken:
+                cache.put(Path(file_key), frames)
+
+    if max_frames and len(results) > max_frames:
+        LOG.info("--pointcloud_max_frames 生效：并发模式扫描全量后按 (episode, frame) 截取前 %d 帧",
+                 max_frames)
+        keys = sorted(results)[:max_frames]
+        results = {k: results[k] for k in keys}
+    return results, skipped, corrupted
 
 
 def evaluate_frame(points: np.ndarray, key: FramesKey, ctx: _Context) -> FrameResult:
@@ -813,63 +1080,76 @@ def clean_pointclouds(
     removed_points = 0
 
     for src_path in files:
-        pf = pq.ParquetFile(src_path)
-        names = pf.schema_arrow.names
-        if key not in names or "episode_index" not in names or "frame_index" not in names:
-            result.warnings.append(f"{src_path.name} 缺少点云/索引列，跳过")
-            continue
-        dst_path = dst_root / src_path.relative_to(src_root)
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
-        if same_tree:
-            # 同目录临时文件 + os.replace，避免边读边写覆盖源分片；不用 mkstemp 以免泄漏 fd
-            tmp_path = dst_path.with_name(dst_path.name + ".tmp")
-            tmp_path.unlink(missing_ok=True)
-        else:
-            tmp_path = dst_path
-
-        col_index = pf.schema_arrow.get_field_index(key)
-        field = pf.schema_arrow.field(col_index)
-        writer = pq.ParquetWriter(tmp_path, pf.schema_arrow)
-        last_good: dict[int, np.ndarray] = {}
         try:
-            for batch in pf.iter_batches(batch_size=batch_size):
-                data = batch.to_pydict()
-                eps = data["episode_index"]
-                fis = data["frame_index"]
-                cells = data[key]
-                new_cells: list[Any] = []
-                for ep, fi, cell in zip(eps, fis, cells):
-                    k = (int(ep), int(fi))
-                    pts = _to_matrix(cell)
-                    if k in decisions and decisions[k].disposition == "repair":
-                        new_pts, removed, added = repair_frame(pts, decisions[k], ctx)
-                        added_points += added
-                        removed_points += removed
-                        last_good[int(ep)] = new_pts
-                        new_cells.append(_to_nested(new_pts))
-                    elif k in decisions and decisions[k].disposition == "drop":
-                        good = last_good.get(int(ep))
-                        if good is None:
-                            new_cells.append(_to_nested(pts))
-                            result.warnings.append(f"ep {ep} 帧 {fi} 之前没有可参考的好帧，保留原值")
-                        else:
-                            new_cells.append(_to_nested(good))
-                            result.warnings.append(f"ep {ep} 帧 {fi} 不可修复，使用同 episode 最近好帧占位")
-                    else:
-                        last_good[int(ep)] = pts if np.isfinite(pts).all() else last_good.get(int(ep), pts)
-                        new_cells.append(_to_nested(pts))
-                icol = batch.schema.get_field_index(key)
-                new_col = pa.array(new_cells, type=field.type)
-                batch = batch.set_column(icol, field, new_col)
-                writer.write_batch(batch)
-        finally:
-            writer.close()
-            # Windows 上源 parquet 仍被 ParquetFile 持有句柄时，os.replace 会报 WinError 5
-            pf.close()
+            pf = pq.ParquetFile(src_path)
+            names = pf.schema_arrow.names
+            if key not in names or "episode_index" not in names or "frame_index" not in names:
+                result.warnings.append(f"{src_path.name} 缺少点云/索引列，跳过")
+                continue
+            dst_path = dst_root / src_path.relative_to(src_root)
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            if same_tree:
+                # 同目录临时文件 + os.replace，避免边读边写覆盖源分片；不用 mkstemp 以免泄漏 fd
+                tmp_path = dst_path.with_name(dst_path.name + ".tmp")
+                tmp_path.unlink(missing_ok=True)
+            else:
+                tmp_path = dst_path
 
-        if same_tree:
-            os.replace(tmp_path, dst_path)
-        LOG.info("点云清洗写入 %s", dst_path)
+            col_index = pf.schema_arrow.get_field_index(key)
+            field = pf.schema_arrow.field(col_index)
+            writer = pq.ParquetWriter(tmp_path, pf.schema_arrow)
+            last_good: dict[int, np.ndarray] = {}
+            try:
+                for batch in pf.iter_batches(batch_size=batch_size):
+                    data = batch.to_pydict()
+                    eps = data["episode_index"]
+                    fis = data["frame_index"]
+                    cells = data[key]
+                    new_cells: list[Any] = []
+                    for ep, fi, cell in zip(eps, fis, cells):
+                        k = (int(ep), int(fi))
+                        pts = _to_matrix(cell)
+                        if k in decisions and decisions[k].disposition == "repair":
+                            new_pts, removed, added = repair_frame(pts, decisions[k], ctx)
+                            added_points += added
+                            removed_points += removed
+                            last_good[int(ep)] = new_pts
+                            new_cells.append(_to_nested(new_pts))
+                        elif k in decisions and decisions[k].disposition == "drop":
+                            good = last_good.get(int(ep))
+                            if good is None:
+                                new_cells.append(_to_nested(pts))
+                                result.warnings.append(f"ep {ep} 帧 {fi} 之前没有可参考的好帧，保留原值")
+                            else:
+                                new_cells.append(_to_nested(good))
+                                result.warnings.append(f"ep {ep} 帧 {fi} 不可修复，使用同 episode 最近好帧占位")
+                        else:
+                            last_good[int(ep)] = pts if np.isfinite(pts).all() else last_good.get(int(ep), pts)
+                            new_cells.append(_to_nested(pts))
+                    icol = batch.schema.get_field_index(key)
+                    new_col = pa.array(new_cells, type=field.type)
+                    batch = batch.set_column(icol, field, new_col)
+                    writer.write_batch(batch)
+            finally:
+                writer.close()
+                # Windows 上源 parquet 仍被 ParquetFile 持有句柄时，os.replace 会报 WinError 5
+                pf.close()
+
+            if same_tree:
+                os.replace(tmp_path, dst_path)
+            LOG.info("点云清洗写入 %s", dst_path)
+        except Exception as exc:  # noqa: BLE001 - 毒数据防冲击：坏文件原样保留，不中断清洗
+            LOG.error("点云清洗：文件损坏，原样保留并继续: %s -> %s", src_path.name, exc)
+            result.warnings.append(f"{src_path.name} 损坏，已原样保留: {exc}")
+            if not same_tree:
+                # 独立输出目录需要一份完整副本：损坏分片直接二进制复制过去
+                try:
+                    raw_dst = dst_root / src_path.relative_to(src_root)
+                    raw_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_path, raw_dst)
+                except OSError as copy_exc:
+                    result.warnings.append(f"{src_path.name} 原样复制也失败: {copy_exc}")
+            continue
 
     result.removed_points = removed_points
     result.added_points = added_points
@@ -1012,6 +1292,7 @@ def build_report(
         },
         "config": config_snapshot(validation.config),
         "resolved": validation.resolved,
+        "corrupted_files": validation.corrupted_files,
         "summary": {
             "total_frames": validation.total_frames,
             "valid_frames": validation.valid_frames,
@@ -1330,22 +1611,26 @@ def _rewrite_pointcloud_stats(dst_root: Path, feature_key: str, config: dict[str
     hi = None
     batch_size = max(1, int(cfg_get(config, "pointcloud.batch_size", 256)))
     for path in files:
-        pf = pq.ParquetFile(path)
-        if feature_key not in pf.schema_arrow.names:
+        try:
+            pf = pq.ParquetFile(path)
+            if feature_key not in pf.schema_arrow.names:
+                continue
+            for batch in pf.iter_batches(batch_size=batch_size, columns=[feature_key]):
+                cells = batch.column(0).to_pylist()
+                for cell in cells:
+                    arr = _to_matrix(cell)
+                    arr = arr[np.isfinite(arr).all(axis=1)]
+                    if not arr.size:
+                        continue
+                    a = arr.astype(np.float64)
+                    total += len(a)
+                    s = a.sum(axis=0) if s is None else s + a.sum(axis=0)
+                    sq = (a ** 2).sum(axis=0) if sq is None else sq + (a ** 2).sum(axis=0)
+                    lo = a.min(axis=0) if lo is None else np.minimum(lo, a.min(axis=0))
+                    hi = a.max(axis=0) if hi is None else np.maximum(hi, a.max(axis=0))
+        except Exception as exc:  # noqa: BLE001 - 损坏分片不参与统计，不中断
+            LOG.warning("stats 重算：跳过损坏文件 %s: %s", path.name, exc)
             continue
-        for batch in pf.iter_batches(batch_size=batch_size, columns=[feature_key]):
-            cells = batch.column(0).to_pylist()
-            for cell in cells:
-                arr = _to_matrix(cell)
-                arr = arr[np.isfinite(arr).all(axis=1)]
-                if not arr.size:
-                    continue
-                a = arr.astype(np.float64)
-                total += len(a)
-                s = a.sum(axis=0) if s is None else s + a.sum(axis=0)
-                sq = (a ** 2).sum(axis=0) if sq is None else sq + (a ** 2).sum(axis=0)
-                lo = a.min(axis=0) if lo is None else np.minimum(lo, a.min(axis=0))
-                hi = a.max(axis=0) if hi is None else np.maximum(hi, a.max(axis=0))
     if total == 0 or s is None:
         return False
     mean = s / total
@@ -1381,17 +1666,21 @@ def _attach_samples(
     wanted = {k: "repaired" if k in (repaired or []) else "valid" for k in keys}
     found: dict[FramesKey, np.ndarray] = {}
     for path in _discover_data_files(root, _read_info(root)):
-        pf = pq.ParquetFile(path)
-        if feature_key not in pf.schema_arrow.names:
+        try:
+            pf = pq.ParquetFile(path)
+            if feature_key not in pf.schema_arrow.names:
+                continue
+            for batch in pf.iter_batches(batch_size=256, columns=["episode_index", "frame_index", feature_key]):
+                data = batch.to_pydict()
+                for ep, fi, cell in zip(data["episode_index"], data["frame_index"], data[feature_key]):
+                    k = (int(ep), int(fi))
+                    if k in wanted and k not in found:
+                        found[k] = _to_matrix(cell).copy()
+                if len(found) == len(keys):
+                    break
+        except Exception as exc:  # noqa: BLE001 - 采样是锦上添花，坏文件跳过
+            LOG.debug("对比样本抓取跳过损坏文件 %s: %s", path.name, exc)
             continue
-        for batch in pf.iter_batches(batch_size=256, columns=["episode_index", "frame_index", feature_key]):
-            data = batch.to_pydict()
-            for ep, fi, cell in zip(data["episode_index"], data["frame_index"], data[feature_key]):
-                k = (int(ep), int(fi))
-                if k in wanted and k not in found:
-                    found[k] = _to_matrix(cell).copy()
-            if len(found) == len(keys):
-                break
         if len(found) == len(keys):
             break
     for k in keys:

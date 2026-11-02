@@ -1,0 +1,156 @@
+# ==============================================================================
+# LeRobot 数据质检流水线 · 策略配置模板
+#
+# 用法：python main.py --dataset_path ... --config config/default.yaml
+#
+# 本文件是「完整模板」：每个键都写着与代码内置默认值相同的取值。
+# 实际业务里不需要整份复制——没写的键自动回退到代码默认值，
+# 所以你的 my_config.yaml 只需要保留「与默认值不同」的几行即可，例如：
+#
+#   defaults:
+#     pointcloud:
+#       max_outlier_ratio: 0.20      # 贵司传感器噪声大，放宽离群比例
+#
+# 合并优先级（后者覆盖前者，逐层深合并）：
+#   代码内置 DEFAULT_CONFIG  <-  本文件  <-  robots[robot_type]  <-  CLI 显式参数
+# ==============================================================================
+
+version: "1.1"
+
+# ------------------------------------------------------------------------------
+# 规则严重度：error（剔除/修复）/ warning（人工复核）/ info（仅提示）
+# ------------------------------------------------------------------------------
+severity:
+  # —— episode 级规则 ——
+  nan_state: error                # observation.state 出现 NaN/Inf
+  nan_action: error               # action 出现 NaN/Inf
+  action_jump: warning            # action 相邻帧跳变超过自适应阈值
+  frame_count_abnormal: error     # episode 帧数偏离数据集分布
+  timestamp_not_monotonic: warning    # 时间戳非单调递增
+  timestamp_step_deviation: info      # 时间戳步长抖动（掉帧/采集抖动）
+  frame_mismatch: error           # 视频帧数与数据行数对不上
+  meta_index_inconsistent: warning    # meta 索引与数据行数不一致
+  missing_task: warning           # 缺 task 描述
+  static_episode: error           # 整条 episode 几乎不动（空转采集）
+  blank_video: error              # 视频黑屏/遮挡
+  duplicate_episode: error        # 与其他 episode 的 action 序列完全重复
+  joint_limit_violation: error    # 关节超出限位（需先在 defaults.joint_limits 配置）
+  episode_read_error: error       # 数据文件损坏/缺失，episode 无法读取
+  # —— 数据集级问题 ——
+  stats_stale: warning            # meta/stats.json 与实测分布漂移
+  # —— 点云规则（pointcloud_rules） ——
+  pc_non_finite: error            # 点云含 NaN/Inf
+  pc_empty_or_sparse: error       # 有效点数不足（空帧/稀疏）
+  pc_degenerate: error            # 整帧点退化成一个点（包围盒≈0）
+  pc_duplicate: warning           # 帧内重复点比例过高
+  pc_outliers: warning            # 离群点比例过高
+  pc_out_of_bounds: error         # 点超出工作空间包围盒
+  pc_color_invalid: warning       # RGB 颜色通道越界
+  pc_temporal_jump: warning       # 相邻帧点云质心/尺度突变
+
+# ------------------------------------------------------------------------------
+# 默认阈值（所有机器人共用的基线；按模块分组）
+# ------------------------------------------------------------------------------
+defaults:
+
+  # ===== timing_rules：帧数 / 时间戳 / 视频对齐 =====
+  # episode 帧数区间：auto = 按数据集分布取 median ± k·1.4826·MAD，
+  # 再夹到 [floor, ceiling]；floor/ceiling 只是安全边界，换机器人不用改
+  frame_count:
+    mode: auto            # auto | fixed
+    mad_k_low: 3.0        # 低于 median - k·σ 判异常（σ = 1.4826·MAD）
+    mad_k_high: 8.0       # 高于 median + k·σ 判异常
+    floor: 8              # 帧数硬下限（fixed 模式的主判据）
+    ceiling: 20000        # 帧数硬上限
+  # 时间戳：允许的单步偏差占标称步长(1/fps)的比例（掉帧/抖动容忍）
+  timestamp:
+    step_tolerance_ratio: 0.25
+  # 视频帧数 vs 数据行数的对齐容差（浮点累积误差，单位：帧）
+  video_frame_tolerance: 1
+
+  # ===== action_rules：动作序列合理性 =====
+  # action 跳变：逐维阈值 = max(abs_floor, median|Δ| + mad_k·1.4826·MAD|Δ|)
+  action_jump:
+    abs_floor: 1.0              # 绝对下限（弧度/米混用数据集的兜底）
+    mad_k: 12.0                 # 自适应部分的 k 值
+    discrete_max_unique: 3      # 取值种类 ≤ 此数的维视为离散（夹爪 ±1），不判跳变
+  # 重复采样检测：action 序列量化小数位后做指纹，完全相同即重复 episode
+  duplicate_episode:
+    enabled: true
+    quantize_decimals: 3
+  # 空转检测：整条 episode 的 state/action 标准差低于阈值 = 无效采集
+  static_episode:
+    enabled: true
+    state_std_threshold: 0.001
+    min_frames_checked: 5
+  # 关节限位（默认关闭；lower/upper 数组顺序与 observation.state 维度一致）
+  joint_limits:
+    enabled: false
+    lower: null
+    upper: null
+    tolerance: 0.000001
+
+  # ===== pointcloud_rules：3D 点云质检 =====
+  # 阈值按点云自身尺度自适应（离群半径 = outlier_radius_k × 1-NN 距离中位数），
+  # 绝对坐标只在 workspace.mode=fixed 时使用
+  pointcloud:
+    feature_key: null           # 点云列名；null = 自动探测（shape=[N,D≥3] 的浮点列）
+    batch_size: 256             # 流式读取批大小（性能参数，非判定阈值）
+    sample_frames: 200          # 推导尺度/包围盒/颜色范围的采样帧数
+    min_points: 16              # 每帧最少有效点数（硬下限）
+    sparse_ratio: 0.02          # 稀疏判据：有效点 < max(min_points, 声明点数×此比例)
+    degenerate_diag: 0.001      # 包围盒对角线低于此值 = 退化帧（米）
+    duplicate_decimals: 4       # 重复点判定：坐标量化小数位
+    max_duplicate_ratio: 0.05   # 帧内重复点比例上限
+    outlier_radius_k: 2.5       # 离群半径 = k × 每帧 1-NN 距离中位数
+    outlier_min_neighbors: 2    # 半径内邻居少于此数 = 离群点
+    max_outlier_ratio: 0.10     # 帧内离群点比例上限
+    workspace:                  # 工作空间包围盒
+      mode: auto                # auto = 按采样点分位数推导 | fixed = 用 lower/upper
+      margin_ratio: 0.10        # auto 模式外扩边距比例
+      max_outside_ratio: 0.05   # 帧内出界点比例上限
+      lower: null               # fixed 模式下角点，如 [0.5, -0.5, 0.0]
+      upper: null
+    color:
+      max_bad_ratio: 0.01       # RGB 越界点比例上限
+    temporal:                   # 时序一致性（相邻帧质心/尺度突变）
+      abs_jump: 0.05            # 绝对跳变下限（米），低于此不判
+      mad_k: 6.0                # 自适应跳变阈值 = median + k·1.4826·MAD
+    max_repair_ratio: 0.35      # 单帧需修复点数占比超过此值 → 放弃修复转人工
+    jitter_ratio: 0.005         # 补点抖动 σ = 场景尺度 × 此比例
+
+  # ===== 视频内容检测 =====
+  blank_video:                  # 黑屏/遮挡：抽帧算灰度标准差
+    enabled: true
+    sample_points: [0.15, 0.35, 0.55, 0.75, 0.9]   # 按时长比例抽 5 帧
+    lum_std_threshold: 4.0      # 灰度标准差低于此值 = 疑似黑屏
+    bad_ratio_threshold: 0.6    # 抽帧中黑屏占比超过此值才判 blank
+    max_probes: 400             # 每次运行最多探测的视频数（控制耗时）
+  probe:                        # 视频探针引擎参数
+    precise: false              # true = 逐帧精确计数（慢）
+    max_cameras: 3              # 每 episode 最多探测的相机路数
+    small_file_mb_for_precise: 64
+    max_workers: 2              # 探针并发：机械盘建议 2，SSD 可到 4-8
+
+  # ===== 数据集级一致性 =====
+  stale_stats:                  # stats.json 时效性：与实测均值的相对偏差
+    enabled: true
+    mean_rel_tolerance: 0.05
+    sample_episodes: 200
+  boundary_trim:                # NaN 只出现在 episode 首尾时优先修剪而不删除
+    enabled: true
+    max_ratio: 0.25
+  streaming:                    # 流式模式：推导 action 阈值的采样 episode 数
+    action_sample_episodes: 200
+
+# ------------------------------------------------------------------------------
+# 按机器人型号覆盖（键路径与 defaults 相同，深合并；示例取消注释即可用）
+# ------------------------------------------------------------------------------
+robots: {}
+  # so100_follower:
+  #   action_jump:
+  #     abs_floor: 0.5          # 该机型 action 量程小，收紧绝对下限
+  #   joint_limits:
+  #     enabled: true
+  #     lower: [-1.57, -1.57, -1.57, -1.57, -1.57, -1.57, -0.2]
+  #     upper: [ 1.57,  1.57,  1.57,  1.57,  1.57,  1.57,  1.0]

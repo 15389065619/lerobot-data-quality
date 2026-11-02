@@ -3,15 +3,15 @@
 真实业务里阈值不是 CLI 参数，而是按机器人型号/采集批次维护的配置文件：
 不同机械臂的关节单位（弧度 vs 米）、不同相机的曝光特性，都不该共用一套硬编码常量。
 
-配置结构（JSON）：
-    {
-      "version": "1.1",
-      "defaults": { ... },              # 所有机器人共用的基线
-      "robots": {"so100_follower": {...}},  # 按 robot_type 覆盖（浅层 key 级 merge）
-      "severity": {"nan_state": "error"}
-    }
+配置结构（YAML/JSON，按扩展名识别）：
+    version: "1.1"
+    defaults: { ... }                 # 所有机器人共用的基线
+    robots: {so100_follower: {...}}   # 按 robot_type 覆盖（深层 merge）
+    severity: {nan_state: error}
 
-merge 规则：defaults <- robots[robot_type] <- 调用方显式覆盖（CLI）。
+merge 规则：代码内置 DEFAULT_CONFIG <- 配置文件 <- robots[robot_type] <- 调用方显式覆盖（CLI）。
+配置文件缺失或某个键缺失时，自动回退到代码里的默认值（cfg_get 的 default 参数），
+因此业务方只需在 YAML 里写「与默认值不同」的那几个键。
 """
 
 from __future__ import annotations
@@ -92,6 +92,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "blank_video": "error",
         "duplicate_episode": "error",
         "joint_limit_violation": "error",
+        "episode_read_error": "error",
         # 数据集级问题
         "stats_stale": "warning",
         # 点云规则
@@ -107,21 +108,40 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def _load_config_file(user_path: Path) -> dict[str, Any]:
+    """按扩展名解析配置文件：.yaml/.yml 走 PyYAML，.json 走标准库。
+
+    YAML 是 JSON 的超集且支持注释，适合给人维护的阈值文件；
+    JSON 保留给需要程序生成/ diff 的场景。未知扩展名按 YAML 解析。
+    """
+    text = user_path.read_text(encoding="utf-8")
+    suffix = user_path.suffix.lower()
+    if suffix == ".json":
+        data = json.loads(text)
+    else:
+        import yaml  # 延迟导入：只用代码默认值时不强求装 PyYAML
+
+        data = yaml.safe_load(text)
+    if data is None:  # 空文件 / 只有注释：视为「全部用默认值」
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件顶层必须是键值映射: {user_path}")
+    return data
+
+
 def load_config(
     path: str | Path | None = None,
     robot_type: str | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """加载并合并配置：默认值 <- 配置文件 <- 机器人覆盖 <- 显式覆盖。"""
+    """加载并合并配置：代码默认值 <- 配置文件(YAML/JSON) <- 机器人覆盖 <- 显式覆盖。"""
     cfg = copy.deepcopy(DEFAULT_CONFIG)
 
     if path:
         user_path = Path(path).expanduser()
         if not user_path.is_file():
             raise FileNotFoundError(f"配置文件不存在: {user_path}")
-        with user_path.open("r", encoding="utf-8") as fh:
-            user_cfg = json.load(fh)
-        cfg = _deep_merge(cfg, user_cfg)
+        cfg = _deep_merge(cfg, _load_config_file(user_path))
         LOG.info("已加载配置 %s", user_path)
 
     sections: dict[str, Any] = {}
@@ -169,11 +189,17 @@ def snapshot(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_default_config(path: str | Path) -> Path:
-    """导出一份可直接改的配置模板。"""
+    """导出一份可直接改的配置模板（.yaml/.yml 输出 YAML，其余输出 JSON）。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w", encoding="utf-8") as fh:
-        json.dump(DEFAULT_CONFIG, fh, ensure_ascii=False, indent=2)
+    if p.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        p.write_text(yaml.safe_dump(DEFAULT_CONFIG, allow_unicode=True, sort_keys=False),
+                     encoding="utf-8")
+    else:
+        with p.open("w", encoding="utf-8") as fh:
+            json.dump(DEFAULT_CONFIG, fh, ensure_ascii=False, indent=2)
     return p
 
 
