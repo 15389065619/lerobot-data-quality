@@ -108,7 +108,7 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（34 个单测）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（43 个单测）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 
@@ -127,7 +127,7 @@ dataset/
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 34 个单测
+python -m pytest tests                                  # 43 个单测
 ```
 
 ```bash
@@ -151,6 +151,12 @@ python main.py --dataset_path ... --output_dir outputs --skip-pointcloud
 # 点云人工复核后回灌（第二次运行）
 python main.py --dataset_path ... --output_dir outputs \
   --pointcloud-overrides outputs/pointcloud_review_queue.csv
+
+# 增量模式：只重检变更过的 episode，清洗计划未变则复用上次产出
+python main.py --dataset_path demo_dataset --output_dir outputs --incremental
+
+# 流式模式：按 parquet 分片扫描，不把整张逐帧表读进内存（大数据集；暂不支持清洗）
+python main.py --dataset_path big_dataset --output_dir outputs --streaming
 ```
 
 | 参数 | 默认 | 说明 |
@@ -165,6 +171,9 @@ python main.py --dataset_path ... --output_dir outputs \
 | `--pointcloud-feature` | 自动识别 | 指定点云列名（如 `observation.environment_state`） |
 | `--pointcloud-max-frames` | 全量 | 只校验前 N 帧点云（调试用） |
 | `--pointcloud-overrides` | 无 | 点云复核结果 CSV |
+| `--incremental` | 关 | 增量模式：按 episode 指纹复用未变更结论 |
+| `--manifest` / `--force` | `quality_manifest.json` / 关 | 增量状态文件路径 / 忽略缓存强制全量重跑 |
+| `--streaming` | 关 | 流式模式：按 parquet 分片扫描（自动跳过清洗） |
 | `--plots-sample` | 20 | 可视化采样数 |
 | `--min-frames` / `--max-frames` / `--action-jump-threshold` | 自适应 | 快捷固定阈值（会切换出 fixed 模式） |
 
@@ -176,6 +185,7 @@ python main.py --dataset_path ... --output_dir outputs \
 outputs/
 ├── quality_report.json      # 指纹、阈值快照、逐 episode 明细（帧号级证据）、
 │                            #   处置统计、数据集级问题、归因分析、建议
+├── quality_manifest.json    # 增量模式状态：episode 指纹、阈值快照、清洗产出缓存
 ├── review_queue.csv         # 人工复核队列：填 reviewer_disposition 后可 --overrides 回灌
 ├── pointcloud_report.json   # 点云质检：自适应阈值、逐帧处置、证据、修复动作、前后对比样本
 ├── pointcloud_review_queue.csv  # 点云复核队列：填 reviewer_disposition 后可 --pointcloud-overrides 回灌
@@ -196,7 +206,7 @@ outputs/
 - 清洗后 28 episode / 2388 帧，`length==rows`、视频窗口==行数、index 连续、stats 对齐
 - 复核回灌：override 后 ep7 剔除 / ep23 保留，报告标注「人工覆盖 2 条」
 - 归因：bob 批次异常率 44.4% vs alice 27.8%，直接定位到人
-- 26 个数值质检单测 + 8 个点云单测，覆盖全部规则的正反例、处置策略、清洗不变量与「源数据零改动」
+- 35 个数值/清洗/增量/流式单测 + 8 个点云单测（合计 43），覆盖全部规则的正反例、处置策略、清洗不变量与「源数据零改动」
 
 ## 实测（真实点云数据集 gym_xarm_pointcloud）
 
@@ -206,7 +216,7 @@ outputs/
 python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_full
 ```
 
-- 全流程 **8 步跑通，172s**；`observation.environment_state` 被识别为重型二维特征（512×6），流式读取不占主内存
+- 全流程 **8 步跑通，170s**；`observation.environment_state` 被识别为重型二维特征（512×6），流式读取不占主内存
 - 数值质检：50/50 episode 正常；点云质检：18374/18374 帧正常（0 NaN / 0 离群 / 0 重复 / 0 越界 / 0 颜色异常）
 - 点云自适应阈值实测：场景尺度 1.138m，离群半径 0.0615m（1-NN 中位数 0.0246m × 2.5），工作空间 `[0.87,-0.21,0.43] ~ [1.89,0.78,0.97]`
 - 修复链路走 `noop`（数据本身干净），产物为完整 `cleaned_dataset`（含 4 路视频），`pointcloud_report.json` / `pointcloud_review_queue.csv` 正常生成
@@ -246,6 +256,6 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 >
 > **点云扩展**：在真实 LeRobot 点云数据集上补了 8 条规则（NaN/稀疏/退化/重复/离群/越界/颜色/时序跳变）。关键不是规则本身，而是三个契约：① 离群半径按「每帧 1-NN 距离中位数 × k」自适应，固定比例在稀疏点云上会全帧误报；② 修复后必须还是 N 点，所以用「过滤 → 去重 → 抖动重采样补点」；③ 不可修复帧用 hold-last-good 占位，保住 parquet 行数与视频/state 对齐。真实数据故障注入 8 类全命中，修复后行数、点数、schema 元数据全部不变。
 >
-> **结果**：13 类数值脏数据 + 8 类点云脏数据 100% 检出；清洗后复检 0 error，视频帧数与 state 行数逐 episode 对齐；34 个单测保证「源数据零改动」「index 连续」「stats 对齐」「点云定长契约」这些不变量。顺带修掉一个真实误报：夹爪 {-1,+1} 二值维的开合被当成 action 跳变，导致 50/50 episode 全报警——离散维不应参与连续跳变判定。
+> **结果**：13 类数值脏数据 + 8 类点云脏数据 100% 检出；清洗后复检 0 error，视频帧数与 state 行数逐 episode 对齐；43 个单测保证「源数据零改动」「index 连续」「stats 对齐」「点云定长契约」这些不变量。顺带修掉一个真实误报：夹爪 {-1,+1} 二值维的开合被当成 action 跳变，导致 50/50 episode 全报警——离散维不应参与连续跳变判定。
 >
 > **定位**：数据治理工程，不是训练。我关心的是让进训练的每条数据可信任、可回溯、可复现——这也是从爬虫清洗迁移过来的核心能力：规则化、可回滚、可验证。
