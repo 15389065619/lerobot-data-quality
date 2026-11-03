@@ -51,7 +51,7 @@ flowchart TD
     subgraph CORE[质检核心]
         L["① loader<br/>只读加载 · 逐文件容错<br/>损坏文件记账不中断"]
         CTX["② 规则上下文构建<br/>自适应阈值推导<br/>median ± k·1.4826·MAD"]
-        V["② validator 规则引擎<br/>13 条 episode 规则 + 8 条点云规则<br/>证据结构化产出"]
+        V["② validator 规则引擎<br/>13 条内容规则 + 1 条文件完整性<br/>+ 8 条点云规则<br/>证据结构化产出"]
         P["③ policy 分级处置<br/>severity × 可修复性 → Keep/Repair/Review/Drop"]
     end
 

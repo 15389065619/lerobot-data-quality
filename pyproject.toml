@@ -23,14 +23,24 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+hf = ["huggingface_hub>=0.23"]   # 仅 tools/publish_demo_to_hf.py 需要，发布演示数据集时安装
+
+[project.urls]
+Homepage = "https://github.com/15389065619/lerobot-data-quality"
+Architecture = "https://github.com/15389065619/lerobot-data-quality/blob/main/ARCHITECTURE.md"
 
 # console 入口：lerobot-data-quality = python main.py 的同义封装
 # main.py 顶层本就有 main() 与 sys.exit(main()) 守卫，无需改动业务逻辑
 [project.scripts]
 lerobot-data-quality = "main:main"
+lerobot-data-quality-precheck = "pipeline.precheck:main"
+lerobot-data-quality-version = "pipeline.versions:main"
+lerobot-data-quality-tune = "pipeline.tuning:main"
+lerobot-data-quality-dashboard = "tools.dashboard_server:main"
 
 [tool.setuptools]
 py-modules = ["main"]   # 根目录单文件入口模块
 
 [tool.setuptools.packages.find]
-include = ["pipeline*", "tools*"]   # 声明 pipeline（含 cleaner/validator 子包）与 tools 为包
+where = [".", "src"]   # src 下是可选适配器包（FZMotion CSV），一并打进 wheel
+include = ["pipeline*", "tools*", "lerobot_data_quality*"]   # pipeline 含 cleaner/validator 子包
