@@ -1,0 +1,17 @@
+# 构建镜像时排除的数据与开发产物（数据集动辄数十 GB，必须挡在构建上下文外）
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+outputs*/
+demo_dataset/
+data/
+examples/
+docs/
+tests/
+fault_inject_pc*/
+.DS_Store
+Thumbs.db

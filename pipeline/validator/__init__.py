@@ -32,6 +32,7 @@ from .probes import FFMPEG, FFPROBE, probe_frame_brightness, probe_video_frames
 from .rules import (
     as_matrix,
     check_action_jump,
+    check_alignment,
     check_blank_video,
     check_duplicate,
     check_finite,
@@ -289,6 +290,7 @@ def _validate_non_video(
 
     check_frame_count(res, ctx.frame_bounds, config)
     check_timestamp(ep_df, res, config, dataset.fps)
+    check_alignment(ep_df, res, dataset, config, dataset.fps)
     check_meta_consistency(res, ep_index, dataset)
     check_task(res, ep_index, dataset)
     return res

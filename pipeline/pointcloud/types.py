@@ -102,6 +102,7 @@ class PointCloudValidation:
     skipped: dict[str, str] = field(default_factory=dict)
     expected_points: int | None = None
     corrupted_files: list[dict[str, Any]] = field(default_factory=list)
+    frame_alignment: dict[str, Any] | None = None
 
     @property
     def valid_frames(self) -> int:
@@ -161,6 +162,8 @@ class PointCloudValidation:
         }
         if self.corrupted_files:
             payload["corrupted_files"] = self.corrupted_files
+        if self.frame_alignment:
+            payload["frame_alignment"] = self.frame_alignment
         if self.skipped:
             payload["skipped_checks"] = self.skipped
         return payload

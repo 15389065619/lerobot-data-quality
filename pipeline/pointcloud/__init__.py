@@ -143,6 +143,27 @@ def validate_pointcloud_dataset(
         cache.save()
     apply_temporal_rule(results, ctx)
 
+    # 点云帧数 vs parquet 总行数：视频只查了帧数，这里验证点云与数值模态是否逐行对齐
+    alignment = None
+    if max_frames is None:
+        import pyarrow.parquet as pq
+        broken = {str(c.get("file")) for c in corrupted}
+        rows = readable = 0
+        for path in files:
+            if str(path) in broken:
+                continue
+            try:
+                rows += pq.ParquetFile(path).metadata.num_rows
+                readable += 1
+            except Exception:  # noqa: BLE001 - 已记录为 corrupted，不再重复告警
+                continue
+        if readable:
+            alignment = {"pointcloud_frames": len(results), "parquet_rows": rows,
+                         "aligned": len(results) == rows}
+            if len(results) != rows:
+                LOG.warning("点云帧数(%d)与 parquet 总行数(%d)不一致，模态间可能错位",
+                            len(results), rows)
+
     validation = PointCloudValidation(
         feature_key=key,
         dim=dim,
@@ -154,6 +175,7 @@ def validate_pointcloud_dataset(
         skipped=skipped,
         expected_points=expected_points,
         corrupted_files=corrupted,
+        frame_alignment=alignment,
     )
     sev = validation.severity_summary()
     LOG.info("点云质检完成：%d 帧，正常 %d / 异常 %d（error %d, warning %d）",

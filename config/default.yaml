@@ -28,6 +28,9 @@ severity:
   frame_count_abnormal: error     # episode 帧数偏离数据集分布
   timestamp_not_monotonic: warning    # 时间戳非单调递增
   timestamp_step_deviation: info      # 时间戳步长抖动（掉帧/采集抖动）
+  timestamp_drift: warning            # 时间戳与标称时间轴漂移（跨模态已不同步）
+  frame_index_gap: warning            # frame_index 不连续，视频切窗会错位
+  video_span_mismatch: warning        # 视频时间窗与 episode 时长不符
   frame_mismatch: error           # 视频帧数与数据行数对不上
   meta_index_inconsistent: warning    # meta 索引与数据行数不一致
   missing_task: warning           # 缺 task 描述
@@ -67,6 +70,11 @@ defaults:
     step_tolerance_ratio: 0.25
   # 视频帧数 vs 数据行数的对齐容差（浮点累积误差，单位：帧）
   video_frame_tolerance: 1
+  # ===== alignment_rules：跨模态时间对齐（state/action/视频/点云指向同一段物理时间） =====
+  alignment:
+    enabled: true
+    timestamp_drift_frames: 2.0     # 全局时间戳与视频 from/to 允许的偏移（帧）
+    video_span_tolerance_ratio: 0.05  # 视频时间窗跨度与 frames/fps 的相对偏差容忍
 
   # ===== action_rules：动作序列合理性 =====
   # action 跳变：逐维阈值 = max(abs_floor, median|Δ| + mad_k·1.4826·MAD|Δ|)

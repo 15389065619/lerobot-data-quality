@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+build/
+dist/
 
 # 项目产物（可随时再生成；仓库里保留的是 examples/ 下的样例快照）
 outputs*/
@@ -11,6 +13,7 @@ demo_dataset/
 data/
 fault_inject_pc*/
 .pytest_cache/
+.lrdq/
 
 # 工具与编辑器
 .workbuddy/

@@ -39,6 +39,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timestamp": {"step_tolerance_ratio": 0.25},
         # 视频帧对齐容差（浮点累积误差，单位：帧）
         "video_frame_tolerance": 1,
+        # 多模态对齐：全局时间戳相对视频 from/to 的偏移容忍、视频窗与 episode 时长的相对偏差容忍
+        "alignment": {"enabled": True, "timestamp_drift_frames": 2.0, "video_span_tolerance_ratio": 0.05},
         # 空转检测：整条 episode 的 state/action 标准差低于阈值即视为无效采集
         "static_episode": {"enabled": True, "state_std_threshold": 1e-3, "min_frames_checked": 5},
         # 黑屏/遮挡：抽帧算灰度标准差
@@ -85,6 +87,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "frame_count_abnormal": "error",
         "timestamp_not_monotonic": "warning",
         "timestamp_step_deviation": "info",
+        "timestamp_drift": "warning",
+        "frame_index_gap": "warning",
+        "video_span_mismatch": "warning",
         "frame_mismatch": "error",
         "meta_index_inconsistent": "warning",
         "missing_task": "warning",

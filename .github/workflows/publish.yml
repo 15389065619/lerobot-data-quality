@@ -1,0 +1,59 @@
+# 发布到 PyPI：推送 v* 标签时触发（也支持手动触发做演练）
+# 采用 PyPI Trusted Publishing（OIDC），无需在仓库里保存 API Token。
+# 首次发布前需要在 PyPI 后台为本项目配置 trusted publisher：
+#   Owner: 15389065619   Repository: lerobot-data-quality
+#   Workflow: publish.yml   Environment: pypi
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: 构建并校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt build twine
+
+      - name: 先跑测试，避免带着回归发布
+        run: python -m pytest tests -q
+
+      - name: 构建 sdist + wheel
+        run: python -m build
+
+      - name: 校验产物元数据
+        run: python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: 上传 PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lerobot-data-quality
+    permissions:
+      id-token: write   # OIDC Trusted Publishing 必需
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

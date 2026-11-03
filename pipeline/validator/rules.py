@@ -230,6 +230,163 @@ def check_timestamp(ep_df: pd.DataFrame, res: EpisodeResult, config: dict[str, A
         )
 
 
+def check_alignment(
+    ep_df: pd.DataFrame,
+    res: EpisodeResult,
+    dataset: LeRobotDatasetView,
+    config: dict[str, Any],
+    fps: float,
+) -> None:
+    """多模态对齐：时间戳 ↔ 标称时间轴 ↔ 视频时间窗 ↔ frame_index 连续性。
+
+    逐模态「各自是否合理」由 nan/timestamp/frame_mismatch 规则负责；这里只回答
+    一个跨模态问题：**它们在时间上是否指向同一段物理时间**。
+    """
+    if not cfg_get(config, "alignment.enabled", True):
+        return
+    _check_timestamp_drift(ep_df, res, dataset, config, fps)
+    _check_video_span(res, dataset, config, fps)
+    _check_frame_index_gap(ep_df, res)
+
+
+def _meta_table(dataset: LeRobotDatasetView) -> pd.DataFrame | None:
+    """并行模式下 worker 拿到的是 EpisodeDatasetStub（episodes_meta），串行模式是 episodes。"""
+    for attr in ("episodes", "episodes_meta"):
+        table = getattr(dataset, attr, None)
+        if isinstance(table, pd.DataFrame) and not table.empty:
+            return table
+    return None
+
+
+def _video_windows(dataset: LeRobotDatasetView, episode_index: int) -> list[dict[str, Any]]:
+    """从 meta 中取出该 episode 每个相机的时间窗 [from, to]。没有视频元数据时返回空列表。"""
+    meta = _meta_table(dataset)
+    if meta is None or "episode_index" not in meta.columns:
+        return []
+    rows = meta[meta["episode_index"] == episode_index]
+    if not len(rows):
+        return []
+    windows = []
+    for column in meta.columns:
+        name = str(column)
+        if not (name.startswith("videos/") and name.endswith("/to_timestamp")):
+            continue
+        camera = name[len("videos/"):-len("/to_timestamp")]
+        from_col = f"videos/{camera}/from_timestamp"
+        if from_col not in meta.columns:
+            continue
+        to_ts = rows.iloc[0].get(column)
+        from_ts = rows.iloc[0].get(from_col)
+        if pd.isna(to_ts) or pd.isna(from_ts):
+            continue
+        windows.append({"camera": camera, "from": float(from_ts), "to": float(to_ts)})
+    return windows
+
+
+def _check_timestamp_drift(
+    ep_df: pd.DataFrame, res: EpisodeResult, dataset: LeRobotDatasetView,
+    config: dict[str, Any], fps: float,
+) -> None:
+    """state 的首/末时间戳应落在视频时间窗内（位置对不对）。
+
+    长度对不对由 video_span_mismatch 负责；这里只查「起点/终点偏移」，两者互不重叠。
+
+    LeRobot v3 有两种时间戳约定，必须都支持：
+
+    * ``timestamp`` 以 episode 起点为 0（v3 常见）：视频窗是**文件内绝对时间**，
+      两者不存在可比较的绝对位置，位置检查直接跳过，时长由 ``video_span_mismatch`` 负责；
+    * ``timestamp`` 是文件内全局时间：直接与 ``from/to`` 比较，偏移超容差即漂移。
+
+    用 ``ts[0]≈0`` 区分两者；否则多 episode 拼接的 mp4 会被整体误报偏移。
+    """
+    if "timestamp" not in ep_df.columns or res.frame_count < 2:
+        return
+    ts = pd.to_numeric(ep_df["timestamp"], errors="coerce").to_numpy(dtype=float)
+    if np.isnan(ts).any():
+        return  # 非单调/含 NaN 已由 timestamp_not_monotonic 记录
+    windows = _video_windows(dataset, res.episode_index)
+    if not windows:
+        return
+    tol = float(cfg_get(config, "alignment.timestamp_drift_frames", 2.0)) / float(fps or 1.0)
+    first, last = float(ts[0]), float(ts[-1])
+    if abs(first) <= tol:
+        return  # episode 相对时间轴：绝对位置不可比
+    problems = []
+    for win in windows:
+        start_off = first - win["from"]
+        end_off = last - win["to"]
+        if abs(start_off) > tol or abs(end_off) > tol:
+            problems.append({
+                "camera": win["camera"],
+                "video_from": round(win["from"], 4),
+                "video_to": round(win["to"], 4),
+                "state_first": round(first, 4),
+                "state_last": round(last, 4),
+                "start_offset_frames": round(start_off * fps, 3),
+                "end_offset_frames": round(end_off * fps, 3),
+            })
+    if problems:
+        res.add(
+            "timestamp_drift",
+            tolerance_frames=cfg_get(config, "alignment.timestamp_drift_frames", 2.0),
+            cameras=problems,
+            repair_hint="可用 frame_index/fps 重建时间轴",
+        )
+
+
+def _check_video_span(
+    res: EpisodeResult, dataset: LeRobotDatasetView, config: dict[str, Any], fps: float
+) -> None:
+    """视频时间窗跨度应与 episode 时长（frame_count/fps）一致。
+
+    帧数相等 ≠ 时间对齐：多 episode 拼接的 mp4 只要 from/to 写错，帧数校验照样通过，
+    但取出来的是另一段时间的画面。
+    """
+    if fps <= 0 or res.frame_count <= 0:
+        return
+    ratio_tol = float(cfg_get(config, "alignment.video_span_tolerance_ratio", 0.05))
+    expected = res.frame_count / float(fps)
+    problems = []
+    for win in _video_windows(dataset, res.episode_index):
+        span = win["to"] - win["from"]
+        if span <= 0:
+            problems.append({"camera": win["camera"], "from": round(win["from"], 4),
+                             "to": round(win["to"], 4), "span": round(span, 4)})
+            continue
+        if abs(span - expected) > ratio_tol * expected:
+            problems.append({
+                "camera": win["camera"],
+                "from": round(win["from"], 4),
+                "to": round(win["to"], 4),
+                "span": round(span, 4),
+                "expected_span": round(expected, 4),
+                "deviation": round(span - expected, 4),
+            })
+    if problems:
+        res.add("video_span_mismatch", expected_span=round(expected, 4),
+                tolerance_ratio=ratio_tol, cameras=problems)
+
+
+def _check_frame_index_gap(ep_df: pd.DataFrame, res: EpisodeResult) -> None:
+    """frame_index 必须是从 0 开始的连续整数：视频按它切窗口，断裂即错位。"""
+    if "frame_index" not in ep_df.columns or res.frame_count < 2:
+        return
+    idx = pd.to_numeric(ep_df["frame_index"], errors="coerce").to_numpy(dtype=float)
+    if np.isnan(idx).any():
+        return
+    expected = np.arange(res.frame_count, dtype=float)
+    if np.array_equal(idx, expected):
+        return
+    gaps = int(np.count_nonzero(idx != expected))
+    res.add(
+        "frame_index_gap",
+        mismatched_frames=gaps,
+        first_bad_frame=int(np.argmax(idx != expected)),
+        head=[int(v) for v in idx[:5]],
+        repair_hint="清洗时按真实行数重建全局索引",
+    )
+
+
 def check_meta_consistency(res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView) -> None:
     if "length" not in dataset.episodes.columns:
         return

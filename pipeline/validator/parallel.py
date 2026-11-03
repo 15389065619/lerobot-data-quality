@@ -87,7 +87,10 @@ def build_episode_shared(
     """
     eps = dataset.episodes
     if "length" in eps.columns:
-        episodes_meta = eps[["episode_index", "length"]].copy()
+        # 附带视频时间窗列，让多模态对齐规则在并行模式下也能生效
+        video_cols = [c for c in eps.columns
+                      if str(c).startswith("videos/") and str(c).endswith(("/from_timestamp", "/to_timestamp"))]
+        episodes_meta = eps[["episode_index", "length", *video_cols]].copy()
     else:
         # 没有 length 列时 check_meta_consistency 直接跳过；空表保持同样语义
         episodes_meta = pd.DataFrame()

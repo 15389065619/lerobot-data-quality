@@ -1,50 +1,54 @@
-# LeRobot 数据质量校验与清洗 Pipeline
+# LeRobot 数据质量治理流水线
+
+![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
+![tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
+![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
 
-整条流水线固定 8 步：`loader(1) → validator(2) → policy(3) → reporter(4) → cleaner(5) → pointcloud 质检(6) → pointcloud 清洗(7) → visualizer(8)`。
+![架构动图](docs/architecture.gif)
 
-## 解决的问题
+## 为什么需要这一层
 
 机器人模仿学习对数据质量极其敏感：一段 112 帧里混着 11 帧 NaN 的 episode 能让训练直接崩溃；一次遥操作接管产生的 action 跳变会污染归一化统计；视频与 state 帧数错位会让训练管线**静默地**学到错位数据。这些问题在真实采集里几乎必然出现（采集中断、控制环丢包、镜头遮挡、合并时重复入库），而 LeRobot 官方工具链只有「加载」和「编辑」能力，没有质检层——本项目补的就是这一层。
-
-## 架构速览
-
-```mermaid
-flowchart LR
-    DS[("LeRobot v3<br/>数据集")] --> L["① loader<br/>容错加载"]
-    L --> V["② validator<br/>13+8 条规则<br/>自适应阈值"]
-    V --> P["③ policy<br/>Keep/Repair/<br/>Review/Drop"]
-    P --> R["④ reporter<br/>报告+复核队列"]
-    P --> C["⑤ cleaner<br/>表格修复"]
-    P --> PC["⑥⑦ 点云质检/清洗<br/>修复保持定长"]
-    C --> OUT[("干净数据集")]
-    PC --> OUT
-    R --> VIS["⑧ visualizer<br/>复核可视化"]
-    R -.->|"review_queue.csv<br/>人工复核回灌"| P
-```
-
-核心设计决策：**分级处置**而非一刀切删除（数据稀缺，能救则救）；**规则引擎**而非 ML（确定性可审计、纯 CPU 分钟级、自适应阈值无冷启动，语义判断通过复核队列契约留给 ML）；**计算与落盘分离**的并发模型（worker 纯函数不写盘，主进程统一写入，结果与串行逐位一致）。完整设计权衡见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 30 秒跑通
 
 ```bash
-pip install -r requirements.txt
-python tools/make_demo_dataset.py --output demo_dataset --episodes 36   # 生成含 13 处注入异常的演示集
-python main.py --dataset_path demo_dataset --output_dir outputs
+git clone https://github.com/15389065619/lerobot-data-quality && cd lerobot-data-quality
+pip install -e .                                   # 安装依赖与 lerobot-data-quality 命令
+python tools/make_demo_dataset.py                   # 生成含 13 处注入异常的演示集
+lerobot-data-quality --dataset_path demo_dataset --output_dir outputs
 ```
 
 产出：`outputs/quality_report.json`、`outputs/review_queue.csv`、`outputs/cleaned_dataset/`、`outputs/plots/`。本仓库的 [`examples/`](examples) 目录是这次运行的快照，可以直接点开看。
+
+没有 Docker 环境也行：
+
+```bash
+docker build -t lerobot-data-quality .
+docker run --rm \
+  -v /path/to/dataset:/data:ro \
+  -v /path/to/outputs:/outputs \
+  lerobot-data-quality --dataset_path /data --output_dir /outputs
+```
+
+## 核心设计决策
+
+| 决策 | 理由 |
+|---|---|
+| **分级处置**，而非一刀切删除 | 数据稀缺——keep / repair / review / drop 四档，能修则修，实测把 8 条待删数据里的 2 条救了回来 |
+| **规则引擎**，而非 ML | 确定性可审计、纯 CPU 分钟级、自适应阈值无冷启动；语义层判断通过复核队列契约留给 ML |
+| **计算与落盘分离** | worker 纯函数不写盘，主进程统一写入，并发结果与串行逐位一致 |
+
+完整权衡见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 效果预览
 
 | 帧数分布（正常/异常分色） | 处置结果占比 |
 |---|---|
 | ![帧数分布](examples/plots/01_frame_count_distribution.png) | ![占比](examples/plots/02_valid_vs_invalid_pie.png) |
-
-| 关节曲线（正常 vs 异常 episode 对照） | action 分布 |
-|---|---|
-| ![关节曲线](examples/plots/03_state_joint_curves.png) | ![action 散点](examples/plots/04_action_scatter.png) |
 
 ![清洗前后对比](examples/plots/05_before_after_comparison.png)
 
@@ -78,7 +82,7 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 | 全解码统计视频帧数在几十 GB 数据集上不可行 | 视频探针优先读容器元数据（nb_frames / duration×fps），必要时才精确解码 |
 | 结论要可追溯 | 报告带**数据集指纹**（内容哈希）、**配置与自适应阈值快照**（含推导依据）、**修复动作清单**，可 diff 历次报告 |
 
-## 质检规则（13 条）
+## 质检规则（17 条 + 1 条数据集级）
 
 | 规则 | 级别 | 处置 | 说明 |
 |---|---|---|---|
@@ -87,6 +91,9 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 | `frame_count_abnormal` | error | drop | 自适应区间；过短无法构成时序窗口 |
 | `timestamp_not_monotonic` | warning | **repair** | 用 frame_index/fps 重建时间轴 |
 | `timestamp_step_deviation` | info | keep | 掉帧/时钟抖动，仅记录 |
+| `timestamp_drift` | warning | review | `timestamp` 为文件内全局时间时，state 首/末与视频窗 `from/to` 偏移超 `alignment.timestamp_drift_frames`；episode 相对时间轴不适用（无绝对位置可比），交由下一条查时长 |
+| `video_span_mismatch` | warning | review | 视频窗跨度与 `frame_count/fps` 偏差超 5%；帧数相等但取错了时间段 |
+| `frame_index_gap` | warning | review | `frame_index` 不是 0..n-1 连续序列，视频按帧号切窗会错位 |
 | `frame_mismatch` | error | drop | 视频帧数≠state 行数（含 mp4 缺失/截断，±1 帧容差） |
 | `meta_index_inconsistent` | warning | **repair** | meta length 漂移 / 全局 index 断裂，按真实行数重建 |
 | `missing_task` | warning | review | 任务缺失，可补标 |
@@ -94,6 +101,7 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 | `blank_video` | error | drop | 黑屏/纯色遮挡（抽帧亮度方差） |
 | `duplicate_episode` | error | drop | action 序列指纹重复 |
 | `joint_limit_violation` | error | drop | 超出关节限位（配置提供 limits 时启用） |
+| `episode_read_error` | error | drop | parquet 损坏或 meta 有记录但无数据行 |
 | `stats_stale`（数据集级） | warning | **repair** | stats.json 与实测偏差过大 → 重算 |
 
 严重度与阈值都可在 `config/default.yaml` 按 robot_type 覆盖（`robots: {so100_follower: {...}}`）。
@@ -113,30 +121,23 @@ python main.py --dataset_path demo_dataset --output_dir outputs
 | `pc_color_invalid` | warning | **repair** | RGB 为负或超过量程（自动识别 0~1 / 0~255）；裁剪到合法区间 |
 | `pc_temporal_jump` | warning | review | 相邻帧质心跳变 > `max(abs_jump, median×mad_k)`；可能是坐标系切换/跟踪丢失，必须回放确认，不改数据 |
 
-**处置与修复链**：
+**处置与修复链**
 
-- `keep / repair / review / drop` 四档，逻辑与数值质检一致；
-- 可修复坏点比例 > `max_repair_ratio`（默认 35%）→ 判 `drop`，避免用抖动点大规模伪造几何；
-- repair 流程：过滤非有限点 → 去离群 → 去重 → 颜色裁剪 → **抖动重采样补回固定点数**；
-- `drop` 帧用**同 episode 最近的好帧占位（hold-last-good）**，保证 parquet 行数、state/action、视频时间窗始终对齐；
-- 修复后必须仍是 `N 点 × D 维`（LeRobot Array2D 契约），并保留 `ARROW:extension:name` 元数据；
-- 修复完重算 `meta/stats.json` 里点云特征的统计，并写 `meta/pointcloud_cleaning_notes.json` 留痕。
+- `keep / repair / review / drop` 四档，逻辑与数值质检一致
+- 可修复坏点比例 > `max_repair_ratio`（默认 35%）→ 判 `drop`，避免用抖动点大规模伪造几何
+- repair 流程：过滤非有限点 → 去离群 → 去重 → 颜色裁剪 → **抖动重采样补回固定点数**
+- `drop` 帧用**同 episode 最近的好帧占位（hold-last-good）**，保证 parquet 行数、state/action、视频时间窗始终对齐
+- 修复后必须仍是 `N 点 × D 维`（LeRobot Array2D 契约），并保留 `ARROW:extension:name` 元数据
+- 修复完重算 `meta/stats.json` 里点云特征的统计，并写 `meta/pointcloud_cleaning_notes.json` 留痕
 
-**在流水线里的位置**：点云阶段放在 `cleaner` **之后**（episode 可能被重编号），在清洗产物 `cleaned_dataset` 上重跑质检并**原地 patch 它的 parquet**；若跳过/失败清洗，则退回原数据集**只读**，独立输出到 `outputs/pointcloud_cleaned/`，绝不修改用户源数据。
+点云阶段放在 `cleaner` **之后**（episode 可能被重编号），在清洗产物 `cleaned_dataset` 上重跑质检并**原地 patch**；若跳过/失败清洗，则退回原数据集**只读**，独立输出到 `outputs/pointcloud_cleaned/`，绝不修改用户源数据。
 
 ## FZMotion 风格 CSV 适配（可选）
 
-除 LeRobot Parquet 主线外，仓库附带一个**独立可选**的 FZMotion 风格动捕 CSV 适配器，位于 `src/lerobot_data_quality/`——独立包，不依赖、也不影响 `pipeline/` 主线的任何代码；不使用它时整条流水线行为不变。
-
-- **输入**：`timestamp, marker_id, x, y, z` 长表 CSV（每个采样帧 N 个 marker 行）
-- **输出**：与 LeRobot 帧表同构的 DataFrame：`episode_index / frame_index / timestamp / observation.state / action`
-  - `observation.state`：按 marker_id 升序拼接的 3N 维向量；某帧缺某个 marker 时对应三元组补 NaN
-  - `action`：定义为下一帧 state（最后一帧保持自身，定长契约）
-- **缺陷不在这里裁决**：丢帧表现为时间戳缺口，NaN/跳变原样保留进 state——加载器不重采样、不插值，交给下游质检规则（`nan_state` / `action_jump` / `timestamp_step_deviation` 等）统一标记
+仓库附带一个**独立可选**的 FZMotion 风格动捕 CSV 适配器（`src/lerobot_data_quality/`），不依赖、也不影响 `pipeline/` 主线；不使用它时整条流水线行为不变。
 
 ```bash
-# 生成模拟数据（120 FPS × 10 秒 × 6 marker，注入丢帧/NaN/坐标跳变）
-python examples/fzmotion_sim/generate_fzmotion_csv.py
+python examples/fzmotion_sim/generate_fzmotion_csv.py   # 生成 120 FPS × 10s × 6 marker 的模拟数据
 ```
 
 ```python
@@ -146,20 +147,86 @@ df_one = load_fzmotion_csv("examples/fzmotion_sim/episode_000.csv", episode_inde
 df_all = load_fzmotion_csv_dir("examples/fzmotion_sim")   # 多 episode 合并
 ```
 
-## 技术栈
+输出与 LeRobot 帧表同构（`episode_index / frame_index / timestamp / observation.state / action`）。缺陷**不在加载层裁决**：丢帧表现为时间戳缺口，NaN/跳变原样进 state，交给下游质检规则统一标记。
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（43 个单测）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+## 在线 Dashboard / 训练前预检 / 版本管理 / 策略学习
 
-## 数据集格式（LeRobot v3.0）
+这五件事分别解决「看得见」「挡得住」「退得回」「越跑越准」「对得齐」。
 
+### 1. Web Dashboard（在线看每集曲线 + 视频片段）
+
+```bash
+python tools/dashboard_server.py --dataset_path demo_dataset --output_dir outputs --open
+# 或安装后：lerobot-data-quality-dashboard --dataset_path demo_dataset --output_dir outputs
 ```
-dataset/
-├── data/chunk-000/file-000.parquet          # 多 episode 合并存储
-├── meta/info.json, stats.json, tasks.parquet
-├── meta/episodes/chunk-000/file-000.parquet # length、tasks、视频 chunk/file/from/to_timestamp
-└── videos/<camera>/chunk-000/file-000.mp4   # 多 episode 拼接，按时间窗切分
+
+- 左侧按 keep/repair/review/drop 过滤 episode；右侧看 **action / state 多维度曲线**
+- 曲线按需从 parquet 流式读取（`--max_points` 控制采样点，长 episode 不卡）
+- ECharts 走 CDN，**离线/内网自动降级到原生 canvas 折线**，不装任何前端依赖也能看
+- NaN/Inf 在 API 层转 `null`，坏数据处曲线直接断开（`JSON.parse` 不会因 `NaN` 崩掉）
+- 视频按 meta 的 `from_timestamp / to_timestamp` 自动用 `#t=from,to` 截取片段；
+  服务端实现 **HTTP Range**，拖动进度条不重新下载整段 mp4
+- 点云坏帧直接叠加在 episode 详情里
+- 纯标准库 `http.server`，不引入 Web 框架；`/healthz` 可直接接 k8s 探针
+
+### 2. 训练前预检：脏数据直接拦在训练门口
+
+```python
+# train.py
+from pipeline.precheck import precheck, DirtyDatasetError
+
+def train(dataset_path):
+    precheck(dataset_path, strict=True)   # 有 drop 级 episode → 抛异常，训练不会白跑 8 小时
+    ...
 ```
-兼容 v2.1 布局（episode-per-file、episodes.jsonl、tasks.jsonl）。
+
+```bash
+python -m pipeline.precheck --dataset_path /data/gym_xarm --strict
+# 退出码：0 通过 / 2 被 drop 级数据阻断；--json 落盘结论，可直接接入 CI
+```
+
+预检**只读**：不写数据集、不生成清洗产物，几秒钟给出「能不能开训」的结论。
+`repair / review` 不阻断，只告警；需要更严格可加 `--on-review drop`。
+
+### 3. 数据集版本管理（类 DVC，支持回滚）
+
+```bash
+python -m pipeline.versions --dataset_path data/gym_xarm commit --note "清洗前基线"
+python -m pipeline.versions --dataset_path data/gym_xarm log
+python -m pipeline.versions --dataset_path data/gym_xarm diff --from <v1> --to <v2>
+python -m pipeline.versions --dataset_path data/gym_xarm restore --version <v1>          # 只出 plan
+python -m pipeline.versions --dataset_path data/gym_xarm restore --version <v1> --apply  # 真回滚
+```
+
+- 内容寻址存储（`.lrdq/objects/<sha1 前两位>/<sha1>`），同一文件多版本只存一份
+- 增量快照：`mtime_ns + size` 未变的文件直接沿用父版本哈希，二次快照几乎不耗 IO
+- 回滚默认 **dry-run**，必须 `--apply` 才写盘；目标版本缺对象时直接拒绝，避免半套数据
+- 默认不删目标版本里不存在的文件（需要时加 `--delete-extra`）
+
+### 4. 自动修复策略学习（人审数据 → 阈值建议）
+
+```bash
+python -m pipeline.tuning --report outputs/quality_report.json \
+    --reviews outputs/review_queue_reviewed.csv --out config/tuned.yaml
+```
+
+- 按规则统计「命中且被复核」的 episode 里人最终 `drop` 的比例
+- 剔除率 ≥80% 且样本 ≥2 → 建议升级 `severity: error`；≤20% 且样本 ≥3 → 建议降级 `info`
+- 对 `action_jump.max_delta` 之类带数值证据的规则，做 keep/drop 两组**可分离性分析**，
+  能分开时给出 `suggested_cut`
+- 只输出 **YAML patch**，必须人工评审后合并进 `config/default.yaml`：判定规则始终可审计，
+  机器学习只「提议」不「静默生效」
+
+### 5. 多模态对齐（state / action / 视频 / 点云）
+
+新增 3 条跨模态规则，与原有「单模态各自是否合理」互不重叠：
+
+| 维度 | 检查 | 规则 |
+|---|---|---|
+| 位置 | 全局 `timestamp` 的首/末 vs 视频窗 `from/to`（容差 `timestamp_drift_frames`）；episode 相对时间轴跳过 | `timestamp_drift` |
+| 长度 | 视频窗跨度 vs `frame_count/fps`（相对容差 5%） | `video_span_mismatch` |
+| 连续性 | `frame_index` 必须是 `0..n-1` | `frame_index_gap` |
+| 点云 | 点云帧数 vs parquet 行数（`pointcloud_report.frame_alignment`） | 数据集级告警 |
 
 ## 安装与运行
 
@@ -167,8 +234,10 @@ dataset/
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 43 个单测
+python -m pytest tests                                  # 89 个单测
 ```
+
+> 打包与发布配置（`pyproject.toml` + console 脚本 + PyPI Trusted Publishing workflow）已就绪；未上传 PyPI 前请从源码 `pip install -e .` 安装。
 
 ```bash
 python main.py --dataset_path path/to/dataset --output_dir outputs
@@ -203,15 +272,16 @@ python main.py --dataset_path big_dataset --output_dir outputs --streaming
 |---|---|---|
 | `--dataset_path` / `--output_dir` | 必填 / `outputs` | 数据集根目录 / 输出根目录 |
 | `--max_episodes` | 全量 | 只处理前 N 个 episode |
-| `--config` | 内置默认 | 策略配置 JSON |
+| `--config` | 内置默认 | 策略配置 YAML/JSON（按 robot_type 覆盖阈值） |
 | `--overrides` | 无 | 人工复核结果 CSV |
 | `--on-review` | `keep` | 未经复核的 warning 如何处置（keep/drop） |
+| `--workers` | 1 | 并发进程数（仅作用于质检阶段） |
 | `--skip-clean` / `--skip-plots` / `--no-cli` | 关 | 跳过对应阶段 / 禁用官方 CLI |
-| `--skip-pointcloud` | 关 | 跳过点云质检与清洗（无点云数据集可加，省 2~3 分钟） |
+| `--skip-pointcloud` | 关 | 跳过点云质检与清洗（无点云数据集可加） |
 | `--pointcloud-feature` | 自动识别 | 指定点云列名（如 `observation.environment_state`） |
 | `--pointcloud-max-frames` | 全量 | 只校验前 N 帧点云（调试用） |
 | `--pointcloud-overrides` | 无 | 点云复核结果 CSV |
-| `--incremental` | 关 | 增量模式：按 episode 指纹复用未变更结论 |
+| `--incremental` | 关 | 增量/断点续传：episode 级复用 manifest，点云帧级复用缓存 |
 | `--manifest` / `--force` | `quality_manifest.json` / 关 | 增量状态文件路径 / 忽略缓存强制全量重跑 |
 | `--streaming` | 关 | 流式模式：按 parquet 分片扫描（自动跳过清洗） |
 | `--plots-sample` | 20 | 可视化采样数 |
@@ -238,64 +308,38 @@ outputs/
 
 **安全约束**：源数据集严格只读（输出目录禁止等于/位于源数据集内部，有单测保障）；每个 episode 删了什么、修了什么、重映射到哪，全部记录在 `quality_cleaning_notes.json`。
 
-## 实测（demo_dataset，36 episode / 3008 帧 / 2 相机）
+## 实测摘要
 
-- 13 处注入异常全部命中，**0 误报**（自适应阈值下正常轨迹不触发跳变告警）
-- 处置：保留 24 / 修复 2（边界裁帧、时间轴重建）/ 复核 2 / 剔除 8
-- 修复验证：裁帧后 NaN 归零，重建的时间轴与 `frame_index/fps` 完全一致
-- 清洗后 28 episode / 2388 帧，`length==rows`、视频窗口==行数、index 连续、stats 对齐
-- 复核回灌：override 后 ep7 剔除 / ep23 保留，报告标注「人工覆盖 2 条」
-- 归因：bob 批次异常率 44.4% vs alice 27.8%，直接定位到人
-- 35 个数值/清洗/增量/流式单测 + 8 个点云单测（合计 43），覆盖全部规则的正反例、处置策略、清洗不变量与「源数据零改动」
+| 场景 | 数据 | 结论 |
+|---|---|---|
+| demo_dataset | 36 episode / 3008 帧 | 13 处注入异常全命中、0 误报；保留 24 / 修复 2 / 复核 2 / 剔除 8；归因定位到采集人 |
+| 真实点云数据集 | 50 episode / 18374 帧 | 8 步全跑通；点云 18374 帧全正常；故障注入 8 类规则全命中，修复后行数/点数/schema 全不变 |
+| 并发 | 同上 | `--workers 8`：190.1 s → 64.7 s（2.9×），产物与串行逐字节一致 |
+| 容错 + 续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫并全部恢复 |
 
-## 实测（真实点云数据集 gym_xarm_pointcloud）
+详细数字、注入表与边界说明见 [docs/EVAL.md](docs/EVAL.md)。
 
-数据集：HuggingFace `rishabhrj11/gym-xarm-pointcloud`（LeRobot v3.0 原生点云，50 episode / 18374 帧 / 4 相机 224×224 / 点云 512×6）。
+## 快速导航
 
-```bash
-python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_full
+| 文档 | 内容 |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 架构设计说明书：业务痛点、架构图、契约思维、为何规则而非 ML、扩展性 |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | 与 LeRobot 官方工具 / ROS 工具链 / OpenVLA 数据管线的对比与选型建议 |
+| [docs/EVAL.md](docs/EVAL.md) | 全量实测记录、故障注入表、已知边界 |
+| [docs/INTERVIEW.md](docs/INTERVIEW.md) | 项目讲解话术与高频追问的回答要点 |
+
+## 技术栈
+
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（89 个单测）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+
+## 数据集格式（LeRobot v3.0）
+
+```
+dataset/
+├── data/chunk-000/file-000.parquet          # 多 episode 合并存储
+├── meta/info.json, stats.json, tasks.parquet
+├── meta/episodes/chunk-000/file-000.parquet # length、tasks、视频 chunk/file/from/to_timestamp
+└── videos/<camera>/chunk-000/file-000.mp4   # 多 episode 拼接，按时间窗切分
 ```
 
-- 全流程 **8 步跑通，170s**；`observation.environment_state` 被识别为重型二维特征（512×6），流式读取不占主内存
-- 数值质检：50/50 episode 正常；点云质检：18374/18374 帧正常（0 NaN / 0 离群 / 0 重复 / 0 越界 / 0 颜色异常）
-- 点云自适应阈值实测：场景尺度 1.138m，离群半径 0.0615m（1-NN 中位数 0.0246m × 2.5），工作空间 `[0.87,-0.21,0.43] ~ [1.89,0.78,0.97]`
-- 修复链路走 `noop`（数据本身干净），产物为完整 `cleaned_dataset`（含 4 路视频），`pointcloud_report.json` / `pointcloud_review_queue.csv` 正常生成
-
-**真实数据故障注入**（复制 1809 帧真实分片，注入 8 类坏帧后重跑点云质检+清洗）：
-
-| 注入 | 命中规则 | 处置 |
-|---|---|---|
-| 1 点 NaN | `pc_non_finite` | repair |
-| 25% 重复点 | `pc_duplicate` | repair |
-| 60 点 @8m | `pc_outliers` + `pc_out_of_bounds` | repair |
-| 30 点 @100m | `pc_out_of_bounds` | repair |
-| 20 点负颜色 | `pc_color_invalid` | repair |
-| 整体 +0.08m | `pc_temporal_jump`（2 帧） | review |
-| 只留 8 点 | `pc_empty_or_sparse` | drop → hold-last-good |
-| 全部同一点 | `pc_degenerate` | drop → hold-last-good |
-
-结果：8 条规则全部命中；`repair 5 / drop 2 / keep 1802`；移除 221 点、补回 221 点；清洗后 **行数不变（1809）、每帧仍 512 点、全部有限、`ARROW:extension:name` 保留**，修复点最大坐标 1.8555m < 工作空间上界 1.89m。
-
-## 已知边界（如实说明）
-
-- 单机单进程，适配 ≤ 数十 GB / 数千 episode；更大规模需按 parquet 文件分片并行（架构上 `_DatasetContext` 与规则函数已无状态，扩展点在 main 的批处理循环）
-- 视频重建用 libx264 重编码（crf20），画质有轻微损失；官方 CLI 场景由其自行处理编码
-- 视频内容检测（黑屏）默认只抽首相机、限 400 次探针，可通过 config 调整
-- `--overrides` 只改变处置动作，不改数据内容（如「补标任务」需在上游完成后重跑质检）
-- `lerobot-edit-dataset` 分支按官方 CLI 契约实现但未在本机实测（未安装 lerobot），不可用时自动回退并在报告标注 `method: manual`
-- 点云只做几何/颜色/时序质量，不做语义级检查（物体缺失、遮挡、标注错误）
-- 固定点数契约下，`drop` 帧用 hold-last-good 占位：能保证训练张量对齐，但占位帧不是真实观测，全部记录在 `pointcloud_cleaning_notes.json`
-- 离群半径/工作空间是**整数据集自适应**；多机器人、多场景混采的数据集建议在 config 里用 `workspace.mode=fixed` 明确包围盒
-- 时序规则只看质心平移，不检测纯旋转（需要位姿/坐标系参考才能判断）
-
-## 面试展示话术
-
-> **背景**：我从爬虫/自动化数据流程转入机器人数据工程。第一个感受是：具身数据的脏不会在训练时报错给你看——NaN 让 loss 爆掉还算幸运，视频和 state 错位、stats.json 过期这类问题是**静默的**，策略学不动你都不知道为什么。
->
-> **我做了什么**：搭了一条 LeRobot v3 质检清洗 Pipeline，核心是三个业务决策：① 阈值自适应——帧数区间和动作跳变阈值都从数据集自身分布（median+MAD）推导，换机器人不用改代码；② 分级处置——能修不删：边界坏帧裁掉、时间轴重建、meta 索引和 stats 重算，只有中段 NaN、视频错位这类不可修的才丢，实测把 8 条待删数据里的 2 条救了回来；③ 人工回路——质检给出建议，人可以 override，覆盖记录在案，质检因此是流程而不是一次性脚本。
->
-> **点云扩展**：在真实 LeRobot 点云数据集上补了 8 条规则（NaN/稀疏/退化/重复/离群/越界/颜色/时序跳变）。关键不是规则本身，而是三个契约：① 离群半径按「每帧 1-NN 距离中位数 × k」自适应，固定比例在稀疏点云上会全帧误报；② 修复后必须还是 N 点，所以用「过滤 → 去重 → 抖动重采样补点」；③ 不可修复帧用 hold-last-good 占位，保住 parquet 行数与视频/state 对齐。真实数据故障注入 8 类全命中，修复后行数、点数、schema 元数据全部不变。
->
-> **结果**：13 类数值脏数据 + 8 类点云脏数据 100% 检出；清洗后复检 0 error，视频帧数与 state 行数逐 episode 对齐；43 个单测保证「源数据零改动」「index 连续」「stats 对齐」「点云定长契约」这些不变量。顺带修掉一个真实误报：夹爪 {-1,+1} 二值维的开合被当成 action 跳变，导致 50/50 episode 全报警——离散维不应参与连续跳变判定。
->
-> **定位**：数据治理工程，不是训练。我关心的是让进训练的每条数据可信任、可回溯、可复现——这也是从爬虫清洗迁移过来的核心能力：规则化、可回滚、可验证。
+兼容 v2.1 布局（episode-per-file、episodes.jsonl、tasks.jsonl）。

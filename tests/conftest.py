@@ -136,6 +136,31 @@ def smooth_episode(n: int = 40, offset: float = 0.0, seed: int = 0) -> dict[str,
     return {"state": state, "action": action}
 
 
+def attach_video(
+    root: Path,
+    windows: dict[int, tuple[float, float]],
+    *,
+    camera: str = "observation.images.top",
+    size: int = 1024,
+) -> Path:
+    """给测试数据集补上视频元数据与一个假 mp4（够 Range 测试用，不含真实编码）。"""
+    ep_path = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    df = pq.read_table(ep_path).to_pandas()
+    df[f"videos/{camera}/chunk_index"] = 0
+    df[f"videos/{camera}/file_index"] = 0
+    df[f"videos/{camera}/from_timestamp"] = [
+        float(windows.get(int(e), (0.0, 0.0))[0]) for e in df["episode_index"]
+    ]
+    df[f"videos/{camera}/to_timestamp"] = [
+        float(windows.get(int(e), (0.0, 0.0))[1]) for e in df["episode_index"]
+    ]
+    pq.write_table(pa.Table.from_pandas(df, preserve_index=False), ep_path)
+    video = root / "videos" / camera / "chunk-000" / "file-000.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x01" * size)
+    return video
+
+
 @pytest.fixture
 def normal_dataset(tmp_path: Path) -> Path:
     episodes = {ep: smooth_episode(40, offset=ep * 0.7, seed=ep) for ep in range(6)}
