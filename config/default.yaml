@@ -77,10 +77,14 @@ defaults:
     video_span_tolerance_ratio: 0.05  # 视频时间窗跨度与 frames/fps 的相对偏差容忍
 
   # ===== action_rules：动作序列合理性 =====
-  # action 跳变：逐维阈值 = max(abs_floor, median|Δ| + mad_k·1.4826·MAD|Δ|)
+  # action 跳变：逐维阈值 = max(abs_floor, median(每集最大|Δ|) + k·1.4826·MAD(每集最大|Δ|))
+  # 以「每集峰值」而非逐帧 |Δ| 建模：步进保持型 action（大量相邻帧完全相同）
+  # 会让逐帧 median 塌到 0，度制机器人（±100°）因此几乎整库误报
   action_jump:
     abs_floor: 1.0              # 绝对下限（弧度/米混用数据集的兜底）
-    mad_k: 12.0                 # 自适应部分的 k 值
+    max_jump_mad_k: 3.0         # 峰值分布的 k 值
+    min_episodes_for_peak: 8    # episode 少于此数时退回逐帧非零 |Δ| 的稳健尺度
+    min_margin_ratio: 0.05      # 峰值同质（MAD=0）时保留的相对余量
     discrete_max_unique: 3      # 取值种类 ≤ 此数的维视为离散（夹爪 ±1），不判跳变
   # 重复采样检测：action 序列量化小数位后做指纹，完全相同即重复 episode
   duplicate_episode:

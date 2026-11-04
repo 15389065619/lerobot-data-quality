@@ -61,7 +61,7 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 
 ## 5. 测试与 CI
 
-- **89 个单测**：数值/清洗/增量/流式 35 个 + 点云 8 个 + 并发一致性 2 个 + 容错续传 6 个 + 配置 8 个 + FZMotion 适配 5 个 + 多模态对齐 6 个 + 预检/版本/策略/Dashboard 19 个
+- **101 个单测**：数值/清洗/增量/流式 37 个 + 点云 8 个 + 并发一致性 2 个 + 容错续传 6 个 + 配置 8 个 + FZMotion 适配 5 个 + ROS Bag 适配 10 个 + 多模态对齐 6 个 + 预检/版本/策略/Dashboard 19 个
 - GitHub Actions 在 **Python 3.10 / 3.11 / 3.12** 三个版本 × 干净 Linux 环境全部通过
 
 ## 6. 已知边界（如实说明）

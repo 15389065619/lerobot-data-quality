@@ -24,6 +24,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 hf = ["huggingface_hub>=0.23"]   # 仅 tools/publish_demo_to_hf.py 需要，发布演示数据集时安装
+rosbag = ["rosbags>=0.9"]        # 仅 ROS Bag 适配器（lerobot_data_quality.loaders.rosbag_loader）需要；
+                                 # 纯 Python 解析库，不引入 ROS 环境。安装：pip install lerobot-data-quality[rosbag]
 
 [project.urls]
 Homepage = "https://github.com/15389065619/lerobot-data-quality"

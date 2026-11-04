@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-89%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -87,7 +87,7 @@ docker run --rm \
 | 规则 | 级别 | 处置 | 说明 |
 |---|---|---|---|
 | `nan_state` / `nan_action` | error | drop / **trim** | NaN/Inf；**只出现在首尾时可裁剪保留**，中段才丢弃 |
-| `action_jump` | warning | review | 逐维自适应阈值；可能是真实动作突变，必须人审 |
+| `action_jump` | warning | review | 逐维阈值取自「每集最大跳变」的稳健包络（不是逐帧 median，步进保持/度制数据不误报）；超出包络即人审 |
 | `frame_count_abnormal` | error | drop | 自适应区间；过短无法构成时序窗口 |
 | `timestamp_not_monotonic` | warning | **repair** | 用 frame_index/fps 重建时间轴 |
 | `timestamp_step_deviation` | info | keep | 掉帧/时钟抖动，仅记录 |
@@ -132,9 +132,28 @@ docker run --rm \
 
 点云阶段放在 `cleaner` **之后**（episode 可能被重编号），在清洗产物 `cleaned_dataset` 上重跑质检并**原地 patch**；若跳过/失败清洗，则退回原数据集**只读**，独立输出到 `outputs/pointcloud_cleaned/`，绝不修改用户源数据。
 
-## FZMotion 风格 CSV 适配（可选）
+## 上游数据源适配（可选）
 
-仓库附带一个**独立可选**的 FZMotion 风格动捕 CSV 适配器（`src/lerobot_data_quality/`），不依赖、也不影响 `pipeline/` 主线；不使用它时整条流水线行为不变。
+仓库附带两个**独立可选**的上游适配器（`src/lerobot_data_quality/`），不依赖、也不影响 `pipeline/` 主线；不使用它们时整条流水线行为不变。输出都与 LeRobot 帧表同构（`episode_index / frame_index / timestamp / observation.state / action`），缺陷**不在加载层裁决**：丢帧表现为时间戳缺口，NaN/跳变原样进 state，交给下游质检规则统一标记。
+
+**ROS Bag 适配器**：用纯 Python 的 rosbags 库（无需 ROS 环境）解析 rosbag1 `.bag` / rosbag2（目录或 `.db3`）/ `.mcap`，把 `/joint_states` 与相机 topic 用 `pandas.merge_asof` 最近邻对齐到同一时间轴（`action` 取下一帧 `state`）。可选依赖：`pip install lerobot-data-quality[rosbag]`。
+
+```bash
+python tools/make_demo_rosbag.py   # 生成演示 bag（100Hz 关节 + 30Hz 相机），
+                                   # 注入乱序 / 重复时间戳 / 相机丢帧三类异常
+```
+
+```python
+from lerobot_data_quality.loaders import RosbagAdapter
+
+df = RosbagAdapter("examples/rosbag_sim/episode_000.bag").to_dataframe()  # topic 名均可配
+# → 300 帧 × 6 关节：乱序排序恢复、重复时间戳去重（均有 warning 留痕）；
+#   相机丢帧窗口（~1.5s，超 50ms 容差）的 camera_timestamp 为 NaN —— 缺口不插值
+```
+
+基准时间轴可配：`base="state"`（默认，关节轴，无信息损失）或 `base="image"`（按相机帧率出帧）；`match_direction="backward"` 可强制严格因果（不取未来状态）。
+
+**FZMotion 风格动捕 CSV 适配器**：把光学动捕长表 CSV 转宽表帧表。
 
 ```bash
 python examples/fzmotion_sim/generate_fzmotion_csv.py   # 生成 120 FPS × 10s × 6 marker 的模拟数据
@@ -146,8 +165,6 @@ from lerobot_data_quality.loaders import load_fzmotion_csv, load_fzmotion_csv_di
 df_one = load_fzmotion_csv("examples/fzmotion_sim/episode_000.csv", episode_index=0)
 df_all = load_fzmotion_csv_dir("examples/fzmotion_sim")   # 多 episode 合并
 ```
-
-输出与 LeRobot 帧表同构（`episode_index / frame_index / timestamp / observation.state / action`）。缺陷**不在加载层裁决**：丢帧表现为时间戳缺口，NaN/跳变原样进 state，交给下游质检规则统一标记。
 
 ## 在线 Dashboard / 训练前预检 / 版本管理 / 策略学习
 
@@ -234,7 +251,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 89 个单测
+python -m pytest tests                                  # 101 个单测
 ```
 
 > 打包与发布配置（`pyproject.toml` + console 脚本 + PyPI Trusted Publishing workflow）已就绪；未上传 PyPI 前请从源码 `pip install -e .` 安装。
@@ -330,7 +347,7 @@ outputs/
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（89 个单测）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（101 个单测）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 

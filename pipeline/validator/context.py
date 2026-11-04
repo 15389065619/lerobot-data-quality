@@ -104,7 +104,7 @@ def _resolve_frame_bounds(counts: np.ndarray, config: dict[str, Any]) -> dict[st
 def _resolve_action_thresholds(
     dataset: LeRobotDatasetView, config: dict[str, Any]
 ) -> tuple[list[float], dict[str, Any]]:
-    """逐维阈值 = max(abs_floor, median|Δ| + mad_k·1.4826·MAD|Δ|)。"""
+    """逐维阈值由数据集自身的「正常运动包络」推导，见 `_thresholds_from_arrays`。"""
     if ACTION_KEY not in dataset.frames.columns:
         return _thresholds_from_arrays([], config)
 
@@ -119,15 +119,32 @@ def _resolve_action_thresholds(
 def _thresholds_from_arrays(
     arrays: list[np.ndarray], config: dict[str, Any]
 ) -> tuple[list[float], dict[str, Any]]:
-    """由若干 episode 的 action 矩阵推导逐维阈值。
+    """由若干 episode 的 action 矩阵推导逐维跳变阈值。
 
-    流式模式只采样部分 episode，因此把「收集 episode」与「算阈值」拆开；
-    内存模式传入全量 episode，结果与原来完全一致。
+    估计对象是「每集最大 |Δ|」而非逐帧 |Δ|：真实数据里 action 常是
+    「保持若干帧 → 跳一步」的步进指令，逐帧分布因此双峰（大量 0 + 运动帧），
+    以 median|Δ| 为中心的自适应尺度会被大量 0 拉崩，导致度制机器人（±100°）
+    几乎每集都被误报。改用每集峰值后，阈值刻画的是「这个数据集里正常 episode
+    的运动包络」，只有明显超出同类 episode 的才判异常。
+
+    episode 太少（< min_episodes_for_peak）时峰值分布的 MAD 极不稳定
+    （n=2 时退化成极差），退回逐帧非零 Δ 的稳健尺度，同时忽略保持帧的 0。
+
+    流式模式只采样部分 episode，因此把「收集 episode」与「算阈值」拆开。
     """
     abs_floor = float(cfg_get(config, "action_jump.abs_floor", 1.0))
-    mad_k = float(cfg_get(config, "action_jump.mad_k", 12.0))
+    mad_k = float(cfg_get(config, "action_jump.max_jump_mad_k", 3.0))
+    min_eps = int(cfg_get(config, "action_jump.min_episodes_for_peak", 8))
+    margin = float(cfg_get(config, "action_jump.min_margin_ratio", 0.05))
+
+    def _threshold(med: float, mad: float) -> float:
+        # MAD=0 时阈值正好落在典型峰值上，float32 舍入噪声就会把「正常」判成异常；
+        # 留 5% 相对余量（可由 min_margin_ratio 调整）
+        spread = max(mad, margin * abs(med))
+        return max(abs_floor, med + mad_k * 1.4826 * spread)
 
     deltas: list[np.ndarray] = []
+    peaks: list[np.ndarray] = []
     for arr in arrays:
         arr = np.asarray(arr, dtype=float)
         if arr.ndim == 1:
@@ -138,21 +155,49 @@ def _thresholds_from_arrays(
         d = d[np.isfinite(d).all(axis=1)]
         if d.size:
             deltas.append(d)
+            peaks.append(d.max(axis=0))
     if not deltas:
-        return [], {"abs_floor": abs_floor, "mad_k": mad_k, "per_dim": []}
+        return [], {"abs_floor": abs_floor, "max_jump_mad_k": mad_k,
+                    "min_margin_ratio": margin, "per_dim": []}
 
-    stacked = np.vstack(deltas)
-    med = np.median(stacked, axis=0)
-    mad = np.median(np.abs(stacked - med), axis=0)
-    thresholds = np.maximum(abs_floor, med + mad_k * 1.4826 * np.where(mad > 0, mad, 0.0))
+    if len(peaks) >= min_eps:
+        stacked = np.vstack(peaks)
+        med = np.median(stacked, axis=0)
+        mad = np.median(np.abs(stacked - med), axis=0)
+        thresholds = np.array([
+            _threshold(float(med[i]), float(mad[i])) for i in range(med.size)])
+        basis, detail = "episode_max", {
+            "episode_count": len(peaks),
+            "episode_max_median": [round(float(m), 4) for m in med],
+            "episode_max_mad": [round(float(m), 4) for m in mad],
+        }
+    else:
+        stacked = np.vstack(deltas)
+        dims = stacked.shape[1]
+        thresholds = np.full(dims, abs_floor, dtype=float)
+        nz_median = np.zeros(dims, dtype=float)
+        for d_i in range(dims):
+            col = stacked[:, d_i]
+            col = col[col > 0]  # 保持帧的 0 不参与尺度估计
+            if col.size == 0:
+                continue
+            m = np.median(col)
+            nz_median[d_i] = m
+            nz_mad = float(np.median(np.abs(col - m)))
+            thresholds[d_i] = _threshold(float(m), nz_mad)
+        basis, detail = "nonzero_delta", {
+            "episode_count": len(peaks),
+            "nonzero_median": [round(float(m), 4) for m in nz_median],
+        }
     return (
         [float(t) for t in thresholds],
         {
             "abs_floor": abs_floor,
-            "mad_k": mad_k,
+            "max_jump_mad_k": mad_k,
+            "min_margin_ratio": margin,
+            "basis": basis,
             "per_dim": [round(float(t), 4) for t in thresholds],
-            "median_delta": [round(float(m), 4) for m in med],
-            "mad_delta": [round(float(m), 4) for m in mad],
+            **detail,
         },
     )
 

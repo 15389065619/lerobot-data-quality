@@ -32,9 +32,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "defaults": {
         # 自适应帧数区间：median ± mad_k * 1.4826 * MAD，再夹到 [floor, ceiling]
         "frame_count": {"mode": "auto", "mad_k_low": 3.0, "mad_k_high": 8.0, "floor": 8, "ceiling": 20000},
-        # action 跳变：逐维阈值 = max(abs_floor, median|Δ| + mad_k * 1.4826 * MAD|Δ|)
+        # action 跳变：逐维阈值 = max(abs_floor, median(每集最大|Δ|) + k * 1.4826 * MAD(每集最大|Δ|))
+        # 以「每集峰值」而非逐帧 |Δ| 建模，避免步进保持型 action 的 median 被大量 0 拉崩
+        # min_episodes_for_peak：episode 数不足时退回逐帧非零 |Δ| 的稳健尺度
         # discrete_max_unique：取值种类 ≤ 该值的维视为二值/离散（如夹爪 ±1），不按连续跳变判定
-        "action_jump": {"abs_floor": 1.0, "mad_k": 12.0, "discrete_max_unique": 3},
+        "action_jump": {
+            "abs_floor": 1.0, "max_jump_mad_k": 3.0,
+            "min_episodes_for_peak": 8, "min_margin_ratio": 0.05,
+            "discrete_max_unique": 3,
+        },
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
         "timestamp": {"step_tolerance_ratio": 0.25},
         # 视频帧对齐容差（浮点累积误差，单位：帧）
