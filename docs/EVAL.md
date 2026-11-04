@@ -2,6 +2,31 @@
 
 所有数字均来自本机真实运行（Windows 11 / Python 3.11 / 同一台机器）。
 
+## 0. 环境与数据集指纹（复现基线）
+
+| 项 | 值 |
+|---|---|
+| 代码版本 | `1933192`（本文全部数字都在该提交上测得） |
+| Python | 3.11.7 |
+| 依赖 | pandas 2.2.3 / pyarrow 26.0.0 / numpy 2.2.3 / matplotlib 3.11.2 |
+| 平台 | Windows 11，纯 CPU（无 GPU） |
+| 演示数据集 | `tools/make_demo_dataset.py` 生成，36 episode / 3008 帧 / 2 相机 / 13 处注入异常 |
+| 点云数据集 | HuggingFace `rishabhrj11/gym-xarm-pointcloud`，v3.0 / 50 episode / 18374 帧 / fps 50 / 4 相机 |
+
+复现命令（仓库根目录执行；前两步会重建本文用到的数据集）：
+
+```bash
+pip install -e .[dev]
+python tools/make_demo_dataset.py                      # 注入缺陷的 demo_dataset
+python main.py --dataset_path demo_dataset --output_dir outputs
+python -m pytest tests -q --cov --cov-branch           # 覆盖率门槛见 pyproject
+
+# 点云数据集（需联网；HF 直连不通时用镜像，下载到 data/gym_xarm_pointcloud）
+set HF_ENDPOINT=https://hf-mirror.com        # PowerShell；bash 用 export
+python -c "from huggingface_hub import snapshot_download; snapshot_download('rishabhrj11/gym-xarm-pointcloud', repo_type='dataset', local_dir='data/gym_xarm_pointcloud')"
+python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_full
+```
+
 ## 1. demo_dataset（36 episode / 3008 帧 / 2 相机）
 
 - 13 处注入异常全部命中，**0 误报**（自适应阈值下正常轨迹不触发跳变告警）
@@ -61,7 +86,8 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 
 ## 5. 测试与 CI
 
-- **101 个单测**：数值/清洗/增量/流式 37 个 + 点云 8 个 + 并发一致性 2 个 + 容错续传 6 个 + 配置 8 个 + FZMotion 适配 5 个 + ROS Bag 适配 10 个 + 多模态对齐 6 个 + 预检/版本/策略/Dashboard 19 个
+- **105 个单测**：数值/清洗/增量/流式/阈值 39 个 + 点云 8 个 + 并发一致性 2 个 + 容错续传 8 个 + 配置 8 个 + FZMotion 适配 5 个 + ROS Bag 适配 10 个 + 多模态对齐 6 个 + 预检/版本/策略/Dashboard 19 个
+- 覆盖率 **65.35%**（branch=true，实测基线），CI 在 Python 3.12 上以 `fail_under=64` 强制门槛，只升不降
 - GitHub Actions 在 **Python 3.10 / 3.11 / 3.12** 三个版本 × 干净 Linux 环境全部通过
 
 ## 6. 已知边界（如实说明）

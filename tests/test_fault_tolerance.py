@@ -74,6 +74,30 @@ def test_loader_and_validator_tolerate_corrupted_file(normal_dataset: Path, work
                for r in by_ep.values())
 
 
+@pytest.mark.parametrize("workers", [1, 4])
+def test_corrupted_shard_recovers_after_repair(normal_dataset: Path, workers: int) -> None:
+    """损坏 → 精确影响全部 6 集；原样修复 → 结论完全恢复，无残留状态。
+
+    断言「精确集数 + 修复后回到干净」而不是「没抛异常」：磁盘半截文件、
+    清单/缓存残留这类问题只有这样才抓得住。
+    """
+    data_file = normal_dataset / "data" / "chunk-000" / "file-000.parquet"
+    original = data_file.read_bytes()
+    _corrupt(data_file)
+
+    broken = validate_dataset(load_dataset(normal_dataset),
+                              load_config(robot_type="test_robot"), workers=workers)
+    assert broken.valid_episodes == 0
+    assert [r.episode_index for r in broken.invalid_episodes] == [0, 1, 2, 3, 4, 5]
+    assert all("episode_read_error" in r.reasons for r in broken.invalid_episodes)
+
+    data_file.write_bytes(original)  # 修复：原始字节写回
+    healed = validate_dataset(load_dataset(normal_dataset),
+                              load_config(robot_type="test_robot"), workers=workers)
+    assert healed.invalid_episodes == []
+    assert healed.valid_episodes == 6
+
+
 def test_pointcloud_clean_tolerates_corrupted_file(tmp_path: Path) -> None:
     """清洗阶段同样容错：损坏分片原样保留，好分片正常重写。"""
     root, f1, _ = _two_file_pc_dataset(tmp_path)

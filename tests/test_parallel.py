@@ -10,6 +10,7 @@ worker 函数的可 pickle 性与 initializer 注入机制。
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,17 @@ from pipeline.validator import validate_dataset
 
 
 # ------------------------------------------------------------------ episode 级
+def _canonical_report_bytes(result) -> bytes:
+    """报告结构的规范化字节串：键排序 + 固定分隔符 + UTF-8。
+
+    直接断言字节相等，比比较某个汇总数字强得多——任何一格 reasons/details/
+    阈值出现差异都会让字节串变化（产物由这份结构序列化而来）。
+    """
+    payload = json.dumps(result.to_dict(), sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":"))
+    return payload.encode("utf-8")
+
+
 def _episodes_with_faults() -> dict[int, dict[str, np.ndarray]]:
     """6 个正常 episode + 1 个 NaN + 1 个与 ep2 完全重复（覆盖全局指纹规则）。"""
     eps = {ep: smooth_episode(40, offset=ep * 0.7, seed=ep) for ep in range(6)}
@@ -43,8 +55,8 @@ def test_episode_validator_parallel_matches_sequential(tmp_path: Path) -> None:
     serial = validate_dataset(dataset, config)
     parallel = validate_dataset(dataset, config, workers=4)
 
-    # 逐位一致：reasons / details / 阈值 / 数据集级问题全部相同
-    assert serial.to_dict() == parallel.to_dict()
+    # 逐位一致：reasons / details / 阈值 / 数据集级问题全部相同（字节级比对）
+    assert _canonical_report_bytes(serial) == _canonical_report_bytes(parallel)
 
     invalid = {r.episode_index: r.reasons for r in parallel.invalid_episodes}
     assert "nan_state" in invalid.get(6, [])
@@ -66,8 +78,8 @@ def test_pointcloud_parallel_matches_sequential(tmp_path: Path) -> None:
     serial = validate_pointcloud_dataset(root, config)
     parallel = validate_pointcloud_dataset(root, config, workers=4)
 
-    # 逐位一致：每帧 reasons / metrics / 跨帧 temporal 判定全部相同
-    assert serial.to_dict() == parallel.to_dict()
+    # 逐位一致：每帧 reasons / metrics / 跨帧 temporal 判定全部相同（字节级比对）
+    assert _canonical_report_bytes(serial) == _canonical_report_bytes(parallel)
 
     freq = parallel.reason_frequency()
     assert freq.get("pc_non_finite", 0) >= 1 and freq.get("pc_duplicate", 0) >= 1

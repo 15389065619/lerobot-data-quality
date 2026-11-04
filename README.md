@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-101%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-105%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -251,7 +251,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 101 个单测
+python -m pytest tests                                  # 105 个单测
 ```
 
 > 打包与发布配置（`pyproject.toml` + console 脚本 + PyPI Trusted Publishing workflow）已就绪；未上传 PyPI 前请从源码 `pip install -e .` 安装。
@@ -347,7 +347,7 @@ outputs/
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（101 个单测）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（105 个单测，覆盖率门槛 64% 由 CI 强制）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 
