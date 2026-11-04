@@ -70,6 +70,41 @@ def test_action_jump_uses_adaptive_threshold(tmp_path):
     assert len(detail["thresholds_used"]) == 3
 
 
+def _step_hold_episode(n_frames: int, seed: int, jump_at: int | None = None,
+                       jump: float = 0.0) -> dict:
+    """度制机器人（±100°）+ 步进保持 action：每 5 帧更新一次，单步约 2°。"""
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(-90, 90, size=(1, 3)).astype(np.float32)
+    action = np.repeat(base, n_frames, axis=0)          # 每帧初值相同
+    step = (np.arange(n_frames) // 5)[:, None]           # 每 5 帧跳 2°，其余帧保持不变
+    action += step * 2.0 * np.array([1, -1, 1], dtype=np.float32)
+    if jump_at is not None:
+        action[jump_at:] += jump
+    return {"state": action.copy(), "action": action}
+
+
+def test_step_hold_degree_action_not_flagged(tmp_path):
+    """步进保持 + 度制 action（相邻帧大量完全相同）：不应整库误报。"""
+    episodes = {ep: _step_hold_episode(120, seed=ep) for ep in range(20)}
+    path = build_dataset(tmp_path / "ds", episodes)
+    _, result = _validate(path)
+
+    flagged = [r.episode_index for r in result.results.values() if "action_jump" in r.reasons]
+    assert flagged == [], f"正常步进保持数据被误报: {flagged}"
+    assert result.resolved_thresholds["action_jump"]["basis"] == "episode_max"
+
+
+def test_step_hold_degree_action_outlier_detected(tmp_path):
+    """同样的数据里注入一集 40° 突跳，只有该集应被标记。"""
+    episodes = {ep: _step_hold_episode(120, seed=ep) for ep in range(20)}
+    episodes[7] = _step_hold_episode(120, seed=7, jump_at=60, jump=40.0)
+    path = build_dataset(tmp_path / "ds", episodes)
+    _, result = _validate(path)
+
+    flagged = [r.episode_index for r in result.results.values() if "action_jump" in r.reasons]
+    assert flagged == [7]
+
+
 def test_frame_count_outlier_detected(tmp_path):
     episodes = {ep: smooth_episode(40, seed=ep) for ep in range(5)}
     episodes[5] = {"state": np.zeros((3, 3), dtype=np.float32),

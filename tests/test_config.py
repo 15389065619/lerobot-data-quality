@@ -77,7 +77,7 @@ def test_robot_override_via_yaml(tmp_path: Path) -> None:
     )
     cfg = load_config(cfg_file, robot_type="so100_follower")
     assert cfg_get(cfg, "action_jump.abs_floor") == 0.5
-    assert cfg_get(cfg, "action_jump.mad_k") == 12.0  # 未覆盖键回退 defaults
+    assert cfg_get(cfg, "action_jump.max_jump_mad_k") == 3.0  # 未覆盖键回退 defaults
 
     other = load_config(cfg_file, robot_type="gym-xarm")
     assert cfg_get(other, "action_jump.abs_floor") == 1.0  # 别的机型用 defaults

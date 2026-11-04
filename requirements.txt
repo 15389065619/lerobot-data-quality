@@ -8,3 +8,7 @@ PyYAML>=6.0       # safe_load/safe_dump 为长期稳定 API；6.0 起提供 Pyth
 
 # 可选：需要「优先调用官方 CLI 清洗」时安装（体积较大，会带上 torch）
 # lerobot>=0.4.0
+
+# 可选：需要解析 ROS Bag（.bag / rosbag2 / .mcap）时安装（纯 Python，无需 ROS 环境）
+# 对应 pyproject 的 extra：pip install lerobot-data-quality[rosbag]
+# rosbags>=0.9

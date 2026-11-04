@@ -31,7 +31,8 @@
       },
       "action_jump": {
         "abs_floor": 1.0,
-        "mad_k": 12.0
+        "max_jump_mad_k": 3.0,
+        "min_episodes_for_peak": 8
       },
       "timestamp": {
         "step_tolerance_ratio": 0.25
@@ -107,7 +108,8 @@
     },
     "action_jump": {
       "abs_floor": 1.0,
-      "mad_k": 12.0,
+      "max_jump_mad_k": 3.0,
+      "basis": "episode_max",
       "per_dim": [
         1.0,
         1.0,
@@ -117,7 +119,7 @@
         1.0,
         1.0
       ],
-      "median_delta": [
+      "episode_max_median": [
         0.0468,
         0.0417,
         0.0451,
@@ -126,7 +128,7 @@
         0.0411,
         0.0453
       ],
-      "mad_delta": [
+      "episode_max_mad": [
         0.0288,
         0.025,
         0.0269,
