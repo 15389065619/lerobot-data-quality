@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 hf = ["huggingface_hub>=0.23"]   # 仅 tools/publish_demo_to_hf.py 需要，发布演示数据集时安装
 rosbag = ["rosbags>=0.9"]        # 仅 ROS Bag 适配器（lerobot_data_quality.loaders.rosbag_loader）需要；
                                  # 纯 Python 解析库，不引入 ROS 环境。安装：pip install lerobot-data-quality[rosbag]
@@ -39,6 +39,20 @@ lerobot-data-quality-precheck = "pipeline.precheck:main"
 lerobot-data-quality-version = "pipeline.versions:main"
 lerobot-data-quality-tune = "pipeline.tuning:main"
 lerobot-data-quality-dashboard = "tools.dashboard_server:main"
+
+# 覆盖率门槛：本机基线 65.35%（branch=true），门槛取 64 留出跨平台/可选依赖
+# （如 CI 未装 rosbags 会跳过 e2e）的余量。只升不降，覆盖率提升后同步抬高此值。
+[tool.coverage.run]
+branch = true
+source = ["pipeline", "src"]
+
+[tool.coverage.report]
+fail_under = 64
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
 
 [tool.setuptools]
 py-modules = ["main"]   # 根目录单文件入口模块
