@@ -122,6 +122,45 @@ def test_frame_count_outlier_detected(tmp_path):
     assert "frame_count_abnormal" not in result.results[0].reasons
 
 
+def test_frame_bounds_are_median_plus_mad_and_hand_checkable():
+    """手工可验算的阈值：10 集帧数 median=100、MAD=1 → 下界 95、上界 112。
+
+    sigma = 1.4826·MAD = 1.4826；下界 100-3·sigma = 95.55（floor→95），
+    上界 100+8·sigma = 111.86（ceil→112）。纯函数直接测，不跑整条流水线。
+    """
+    from pipeline.validator.context import _resolve_frame_bounds
+
+    counts = np.array([100, 102, 98, 101, 99, 100, 103, 97, 100, 100], dtype=float)
+    bounds = _resolve_frame_bounds(counts, load_config(robot_type="test_robot"))
+
+    assert bounds["median"] == 100.0
+    assert bounds["mad"] == 1.0
+    assert bounds["min"] == 95
+    assert bounds["max"] == 112
+
+    # 插入一个 500 帧的离群集：中位数/MAD 不变，区间不应被单点拉宽
+    widened = np.append(counts, 500.0)
+    assert _resolve_frame_bounds(widened, load_config(robot_type="test_robot"))["min"] == 95
+    assert _resolve_frame_bounds(widened, load_config(robot_type="test_robot"))["max"] == 112
+
+
+def test_frame_count_outlier_only_flags_the_outlier(tmp_path):
+    """同一组手工数据跑真规则：只有 500 帧那集被判 too_many，其余 10 集不误报。"""
+    counts = [100, 102, 98, 101, 99, 100, 103, 97, 100, 100, 500]
+    episodes = {ep: smooth_episode(n, seed=ep) for ep, n in enumerate(counts)}
+    path = build_dataset(tmp_path / "ds", episodes)
+    _, result = _validate(path)
+
+    flagged = [r.episode_index for r in result.results.values()
+               if "frame_count_abnormal" in r.reasons]
+    assert flagged == [10]
+
+    detail = result.results[10].details["frame_count_abnormal"]
+    assert detail["direction"] == "too_many"
+    assert detail["min_allowed"] == 95
+    assert detail["max_allowed"] == 112
+
+
 def test_timestamp_regression_and_step_deviation(tmp_path):
     bad = smooth_episode(40, seed=7)
     ts = np.arange(40, dtype=np.float32) / 30
