@@ -89,6 +89,7 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 - **105 个单测**：数值/清洗/增量/流式/阈值 39 个 + 点云 8 个 + 并发一致性 2 个 + 容错续传 8 个 + 配置 8 个 + FZMotion 适配 5 个 + ROS Bag 适配 10 个 + 多模态对齐 6 个 + 预检/版本/策略/Dashboard 19 个
 - 覆盖率 **65.35%**（branch=true，实测基线），CI 在 Python 3.12 上以 `fail_under=64` 强制门槛，只升不降
 - GitHub Actions 在 **Python 3.10 / 3.11 / 3.12** 三个版本 × 干净 Linux 环境全部通过
+- 打包链路本地预演（2026-11-04）：`python -m build` 产出 wheel 181 KB + sdist 177 KB，`twine check` 双产物 PASSED；在全新 venv 中安装 wheel 后 5 个 console 脚本全部生成、`lerobot-data-quality --help` 退出码 0、`import lerobot_data_quality / pipeline / main` 正常。**OIDC 上传这一步需要 PyPI 侧配置好 Trusted Publisher 后由 CI 完成**，本地无法替代
 
 ## 6. 已知边界（如实说明）
 
