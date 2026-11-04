@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8.0    # 测试仅用 tmp_path/monkeypatch/raises/parametrize 等长期稳定 API（最新 9.2.0，实测 9.1.1）
 pytest-cov>=5.0  # 覆盖率门槛由 pyproject 的 [tool.coverage.report] fail_under 执行（branch=true）
+rosbags>=0.9    # 让 tests/test_rosbag_loader_e2e.py 在 CI 里真跑（否则会被 importorskip 静默跳过，覆盖率失真）
