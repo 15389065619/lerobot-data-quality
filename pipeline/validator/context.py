@@ -383,10 +383,44 @@ def _stats_staleness_issue(
 
 
 def _check_index_continuity(dataset: LeRobotDatasetView) -> DatasetIssue | None:
-    """全局 index 必须是 0..N-1 连续；断裂会让 DataLoader 采样与 shard 划分出错。"""
+    """校验 index 语义，判据按 codebase_version 区分。
+
+    v3.0：index 是全局绝对帧号，必须 0..N-1 各出现一次。
+    v2.x：每个 episode 一个 parquet，index 是 episode 内帧号，**每集从 0 起是规范**。
+          用 v3 的「全表唯一」判据会把完全合规的 v2.1 数据判成 index 断裂——
+          这正是 humanoid_everyday_h1（1418 集、每集归零）被误报的原因。
+    """
     if "index" not in dataset.frames.columns:
         return None
     idx = pd.to_numeric(dataset.frames["index"], errors="coerce").to_numpy()
+
+    if str(dataset.codebase_version or "").startswith("v2"):
+        if "episode_index" not in dataset.frames.columns:
+            return None
+        if int(np.isnan(idx).sum()):
+            return DatasetIssue("meta_index_inconsistent", "index 列含 NaN",
+                                {"nan_count": int(np.isnan(idx).sum())}, repair="index")
+        bad: list[int] = []
+        for ep, sub in dataset.frames.groupby("episode_index", sort=True):
+            vals = pd.to_numeric(sub["index"], errors="coerce").to_numpy()
+            vals = vals[~np.isnan(vals)]
+            n = int(vals.size)
+            if n == 0:
+                continue
+            # v2.x 只要求 episode 内连续且不重复：起点为 0（原生每集归零）或
+            # 全局偏移（从 v3 沿用，kuavo4 实测 ep1 为 131..471）都属合法。
+            contiguous = (vals.max() - vals.min() + 1) == n
+            if not contiguous or np.unique(vals).size != n:
+                bad.append(int(ep))
+        if not bad:
+            return None
+        return DatasetIssue(
+            "meta_index_inconsistent",
+            "v2.x 每个 episode 的 index 应在 episode 内连续且不重复",
+            {"bad_episodes": len(bad), "sample": bad[:5]},
+            repair="index",
+        )
+
     unique = np.unique(idx)
     return _index_continuity_issue(
         rows=dataset.num_frames,

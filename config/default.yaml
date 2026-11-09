@@ -42,6 +42,7 @@ severity:
   frame_index_gap: warning            # frame_index 不连续，视频切窗会错位
   video_span_mismatch: warning        # 视频时间窗与 episode 时长不符
   frame_mismatch: error           # 视频帧数与数据行数对不上
+  video_missing: error            # 声明的视频文件不存在（模态丢失，不可修复）
   meta_index_inconsistent: warning    # meta 索引与数据行数不一致
   missing_task: warning           # 缺 task 描述
   static_episode: error           # 整条 episode 几乎不动（空转采集）
@@ -96,6 +97,8 @@ defaults:
     min_episodes_for_peak: 8    # episode 少于此数时退回逐帧非零 |Δ| 的稳健尺度
     min_margin_ratio: 0.05      # 峰值同质（MAD=0）时保留的相对余量
     discrete_max_unique: 3      # 取值种类 ≤ 此数的维视为离散（夹爪 ±1），不判跳变
+    downgrade_ratio: 1.5        # 最坏 |Δ| / 阈值 < 此值 → 降为 info（阈值边缘的正常快动作）
+    escalate_ratio: null        # ≥ 此倍数时升为 error；null = 不升级，沿用 severity 配置
   # 重复采样检测：action 序列量化小数位后做指纹，完全相同即重复 episode
   duplicate_episode:
     enabled: true

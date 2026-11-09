@@ -31,6 +31,7 @@ RULES: tuple[Rule, ...] = (
     Rule("frame_index_gap", "frame_index 不连续", "视频按 frame_index 切窗口，断裂会导致画面与 state 错位", None),
     Rule("video_span_mismatch", "视频时间窗与 episode 时长不符", "帧数可能对得上，但 from/to 时间窗取错，画面与数据不是同一段时间", None),
     Rule("frame_mismatch", "视频帧数与 state 行数不一致", "采集中断导致 mp4 未收尾，按帧对齐会错位", None),
+    Rule("video_missing", "相机视频文件缺失", "该 episode 声明的视频在磁盘上不存在；对应模态完全丢失，无法用修复补齐", None),
     Rule("meta_index_inconsistent", "meta/episodes 与数据不一致", "length/索引漂移；清洗时会按真实行数重建", "index"),
     Rule("meta_episode_mismatch", "meta/episodes 的 episode_index 与数据不一致",
          "两侧编号体系不同（如 meta 用全局 ID、data 用 0..N-1）；task/视频定位整体失效，需先统一编号", None),
@@ -87,18 +88,26 @@ class EpisodeResult:
             "reasons": list(self.reasons),
             "details": self.details,
         }
+        # 分级覆盖必须随结论一起持久化：增量模式用 to_dict→from_dict 复用历史结论，
+        # 丢了 override 就会让同一份数据在二跑时从 info 退回 warning（结论漂移）。
+        if self.severity_overrides:
+            payload["severity_overrides"] = dict(self.severity_overrides)
         if self.ignored_baseline:
             payload["ignored_baseline"] = list(self.ignored_baseline)
         return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EpisodeResult":
-        """从 manifest 反序列化；缺字段时给出安全的默认值。"""
+        """从 manifest 反序列化；缺字段时给出安全的默认值。
+
+        ``severity_overrides`` 缺失（旧版 manifest）时为空，退化为规则默认严重度。
+        """
         return cls(
             episode_index=int(data.get("episode_index", -1)),
             frame_count=int(data.get("frame_count", 0)),
             reasons=list(data.get("reasons") or []),
             details=dict(data.get("details") or {}),
+            severity_overrides=dict(data.get("severity_overrides") or {}),
             ignored_baseline=list(data.get("ignored_baseline") or []),
         )
 

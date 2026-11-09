@@ -125,8 +125,22 @@ def check_action_jump(
         return
     kept_deltas = np.array([deltas[f, d] for f, d in kept], dtype=float)
     worst_pos = int(np.argmax(kept_deltas))
+    # 超阈幅度分级：这个阈值是「每集峰值」的 3σ 上界，本身就在分布尾部，
+    # 所以 1.0~1.5 倍的命中几乎都是「快速但连续」的正常动作，报成 warning 只会制造
+    # 稳定误报（实测 pusht 17/206）。真正的跳变通常远超阈值，按倍数区分。
+    worst_dim = kept[worst_pos][1]
+    exceed_ratio = float(kept_deltas[worst_pos] / max(float(thr[worst_dim]), 1e-9))
+    downgrade_ratio = float(cfg_get(config, "action_jump.downgrade_ratio", 1.5))
+    escalate_ratio = cfg_get(config, "action_jump.escalate_ratio")
+    severity: str | None = None
+    if escalate_ratio is not None and exceed_ratio >= float(escalate_ratio):
+        severity = "error"
+    elif exceed_ratio < downgrade_ratio:
+        severity = "info"
     res.add(
         "action_jump",
+        severity=severity,
+        exceed_ratio=round(exceed_ratio, 2),
         jump_count=len(kept),
         max_delta=round(float(kept_deltas[worst_pos]), 4),
         thresholds_used=[round(float(t), 4) for t in thr],
@@ -135,7 +149,7 @@ def check_action_jump(
         sign_flips_ignored=sign_flips,
         spike_ratio=spike_ratio,
         worst_frame=kept[worst_pos][0],
-        worst_dim=kept[worst_pos][1],
+        worst_dim=worst_dim,
         examples=[
             {"frame": f, "dim": d, "delta": round(float(deltas[f, d]), 4),
              "threshold": round(float(thr[d]), 4)}
@@ -479,15 +493,18 @@ def check_frame_mismatch(
         return
     tol = int(cfg_get(config, "video_frame_tolerance", 1))
     problems: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
 
     for cam in cameras:
-        loc = dataset.video_location(cam, ep_index)
+        # require_exists=False：先拿到候选路径，才能把「文件不存在」（数据缺陷）
+        # 与「meta 无定位信息」（不可评估）分开报。
+        loc = dataset.video_location(cam, ep_index, require_exists=False)
         if loc is None:
             problems.append({"type": "video_unlocatable", "camera": cam})
             continue
         path, from_ts, to_ts = loc
         if not path.is_file():
-            problems.append({"type": "video_missing", "camera": cam, "path": str(path)})
+            missing.append({"camera": cam, "path": str(path)})
             continue
         total = probe_video_frames(path, precise=precise)
         if total is None:
@@ -508,8 +525,29 @@ def check_frame_mismatch(
             problems.append({"type": "count_mismatch", "camera": cam, "video_frames": total,
                              "rows": res.frame_count, "diff": total - res.frame_count})
 
+    if missing:
+        # 文件整缺 = 模态丢失，和「帧数差几帧」是两件事，必须单独成规则，
+        # 否则报告会写「视频帧数与 state 行数不一致」，把人引去查帧率和编码。
+        res.add(
+            "video_missing",
+            cameras=[m["camera"] for m in missing],
+            missing_count=len(missing),
+            expected_cameras=len(cameras),
+            sample_paths=[m["path"] for m in missing[:3]],
+            note="声明的视频文件在磁盘上不存在（或该相机目录为空）",
+        )
+
     if problems:
-        res.add("frame_mismatch", rows=res.frame_count, tolerance=tol, problems=problems)
+        # 全是 unlocatable 说明 meta 给不出路径（编号/模板问题），属不可评估而非数据异常，
+        # 降为 info：既不误删数据，又保留在报告里可追溯。
+        only_unlocatable = all(p["type"] == "video_unlocatable" for p in problems)
+        res.add(
+            "frame_mismatch",
+            severity="info" if only_unlocatable else None,
+            rows=res.frame_count,
+            tolerance=tol,
+            problems=problems,
+        )
 
 
 def check_task(res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView) -> None:

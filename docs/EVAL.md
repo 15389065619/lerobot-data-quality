@@ -97,6 +97,30 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 | `stats_stale` 用 `\|recorded_mean\|` 作分母 | 均值接近 0 的维度把微小漂移放大成 **913 倍** | 分母改用该维自身量级 `max(\|mean\|, std)` → 同数据变为 0.99 |
 | 子集扫描比全量 stats | `--max_episodes 20` 必然偏差，被报成「stats 过期」 | 部分扫描时标记为不可比并写入 `skipped_checks`，只有全量运行才判定 |
 
+### 2.3 本地 17 个数据集全量审计（v3.0 / v2.1 混合，共 4108 episode）
+
+把仓库里全部数据集跑一遍，目的不是看「能不能跑」，而是看**规则在真实分布上是否还成立**。
+
+| 数据集 | episode | 健康度 | 主要结论 |
+|---|---:|---|---|
+| behavior1k_task0042 (14 GB) | 200 | 轻微 | 编号错位自动对齐；195 keep / 5 info / 0 drop |
+| libero_10_image (12.8 GB) | 379 | 轻微 | 378 keep；ep290 仅比自适应下限短 3.8% |
+| humanoid_everyday_h1 (v2.1) | 1418 | 轻微 | **info 声明 4885 ep / 1.66M 帧，实际 1418 ep / 452K 行** |
+| kuavo4_hotel_services (v2.1) | 484 | 严重 | **两路腕部相机视频目录为空，前视仅 156/484** |
+| gym_xarm_pc | 5 | 严重 | **info 声明 50 ep / 18374 帧，实际 5 ep / 1809 行** |
+| chingmu_subset (120 Hz) | 20 | 严重 | 6 个片段帧数超出 120 Hz 动捕的分布区间 |
+| pusht | 206 | 中等 | 17 条 action_jump，超阈 1.06~1.28 倍 |
+| w01_v3 / xarm_lift_medium / gym_xarm_pointcloud / aloha 系 | 1151 | 干净 | 无结构性脏数据 |
+
+这一轮暴露的三处工具缺陷（已修，均有回归测试）：
+
+| 缺陷 | 表现 | 修法 |
+|---|---|---|
+| `video_missing` 分支不可达 | `video_location()` 内部先做 `is_file()` 过滤，文件缺失永远走 `video_unlocatable` → 被记成「帧数不一致」。kuavo4 484/484 全部误标，会把人引去查帧率和编码 | 增加 `require_exists` 参数；缺文件单独成规则 `video_missing`（error），定位失败降 info |
+| v2.1 套用 v3 的 index 契约 | humanoid（每集归零）被判 error 并置顶阻断；kuavo4（全局偏移）却因 index 被重排而放过——同一版本两种结论 | 契约按 `codebase_version` 选择；v2 只要求 episode 内连续不重复，起点不限 |
+| info 计数与实物不符时静默 | gym_xarm_pc 丢了 45/50 个 episode，报告只说「正常 0 / 异常 5」 | Schema 增加 `total_episodes` 与 `total_frames` 两条对账断言 |
+| `action_jump` 命中集中在阈值边缘 | 54 条命中里超阈中位数仅 1.10~1.63 倍，humanoid 14/14 等于 `abs_floor` | 按超阈倍数分级：<1.5 降 info，默认行为不再新增剔除 |
+
 ## 3. 并发加速（同一数据集，workers=1 vs workers=8）
 | 阶段 | workers=1 | workers=8 | 加速比 |
 |---|---|---|---|

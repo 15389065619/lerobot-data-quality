@@ -90,7 +90,9 @@ docker run --rm \
 | 断言 | 判据 | 典型违约后果 |
 |---|---|---|
 | 必备列齐全 | `index / episode_index / frame_index / task_index / timestamp` | 缺 `frame_index` 时 episode 内帧号只能反推 |
-| `index` 全局唯一 | 每集起点须等于前序累计行数，全表 0..N-1 各一次 | 官方 `_build_index_mapping` 用 `dict(zip(index, 位置))`，重复键会让映射塌缩；`delta_window` 判越界会把整段时序窗口压成同一帧——**两者都不抛异常** |
+| `index` 语义（**按版本**） | v3.0：全局 0..N-1 各一次；v2.x：每集内连续不重复（起点可为 0，也可沿用 v3 的全局偏移）。两种版本都额外用**每集唯一值个数 == 行数**兜底 | v3 违约时，官方 `_build_index_mapping` 用 `dict(zip(index, 位置))`，重复键会让映射塌缩；`delta_window` 判越界会把整段时序窗口压成同一帧——**两者都不抛异常**。v2.x 套用 v3 判据则会把合规数据误判为 error。只判「跨度 == 行数」会漏掉 `[0,1,1,3]` 这类**重复与断号互相抵消**的损坏 |
+| `total_episodes` = `meta/episodes` 行数 | 计数对账 | 只在声明里存在的 episode 不会被任何逐条规则发现（实测：info 50 / 实际 5） |
+| `total_frames` = data 实际行数 | 计数对账；`--streaming` 下也取逐文件实读行数，不用 meta 的 `length` 之和自证 | 训练按 `total_frames` 分配全局 index 会末尾越界；`stats.json` 也多半按声明值算，与实测分布不符 |
 | split 长度 = `total_episodes` | `meta/info.json.splits` | 按 split 加载会以为 episode 数等于区间长度 |
 | meta/data episode 编号交集 | 两侧 `episode_index` 集合 | 交集为 0 时 task/视频定位整体落空（详见下节「编号空间对齐」） |
 
@@ -102,14 +104,15 @@ docker run --rm \
 | 规则 | 级别 | 处置 | 说明 |
 |---|---|---|---|
 | `nan_state` / `nan_action` | error | drop / **trim** | NaN/Inf；**只出现在首尾时可裁剪保留**，中段才丢弃 |
-| `action_jump` | warning | review | 逐维阈值取自「每集最大跳变」的稳健包络（不是逐帧 median，步进保持/度制数据不误报）；超出包络即人审 |
+| `action_jump` | warning | review | 逐维阈值取自「每集最大跳变」的稳健包络（不是逐帧 median，步进保持/度制数据不误报）；**超阈倍数 <1.5 时降为 info**——阈值本就在分布尾部，边缘命中多是「快速但连续」的正常动作 |
 | `frame_count_abnormal` | error | drop | 自适应区间；过短无法构成时序窗口 |
 | `timestamp_not_monotonic` | warning | **repair** | 用 frame_index/fps 重建时间轴 |
 | `timestamp_step_deviation` | info | keep | 掉帧/时钟抖动，仅记录 |
 | `timestamp_drift` | warning | review | `timestamp` 为文件内全局时间时，state 首/末与视频窗 `from/to` 偏移超 `alignment.timestamp_drift_frames`；episode 相对时间轴不适用（无绝对位置可比），交由下一条查时长 |
 | `video_span_mismatch` | warning | review | 视频窗跨度与 `frame_count/fps` 偏差超 5%；帧数相等但取错了时间段 |
 | `frame_index_gap` | warning | review | `frame_index` 不是 0..n-1 连续序列，视频按帧号切窗会错位 |
-| `frame_mismatch` | error | drop | 视频帧数≠state 行数（含 mp4 缺失/截断，±1 帧容差） |
+| `frame_mismatch` | error | drop | 视频帧数≠state 行数（mp4 截断，±1 帧容差）；**meta 给不出定位信息时降为 info（不可评估）** |
+| `video_missing` | error | drop | 声明的视频文件在磁盘上不存在、或相机目录为空 → 整路模态丢失，与「帧数差几帧」分开报 |
 | `meta_index_inconsistent` | warning | **repair** | meta length 漂移 / 全局 index 断裂，按真实行数重建 |
 | `missing_task` | warning | review | 任务缺失，可补标 |
 | `static_episode` | error | drop | 空转 episode，无效采集 |
@@ -301,6 +304,10 @@ python main.py --dataset_path demo_dataset --output_dir outputs --incremental
 python main.py --dataset_path big_dataset --output_dir outputs --streaming
 ```
 
+增量复用的结论与全量逐位一致：manifest 里存的是 `EpisodeResult.to_dict()`，其中包含
+`severity_overrides`（例如 `action_jump` 边缘命中降为 info）。少了这一项，同一份数据
+二跑就会从 info 退回 warning，结论在 `keep` 与 `review` 之间漂移。
+
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--dataset_path` / `--output_dir` | 必填 / `outputs` | 数据集根目录 / 输出根目录 |
@@ -350,6 +357,7 @@ outputs/
 | 并发 | 同上 | `--workers 8`：190.1 s → 64.7 s（2.9×），产物与串行逐字节一致 |
 | 容错 + 续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫并全部恢复 |
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 episode / 128 万帧 | meta 用全局 ID、data 用 0..N-1 → 修复前 200/200 error、建议删光；自动对齐后 **195 保留 / 5 复核 / 0 剔除**，实测视频与 state 逐条对齐 |
+| 全仓 17 个数据集审计 | v3.0 / v2.1 混合，4108 episode | 查出 3 处工具缺陷（视频缺失误标、v2.1 套用 v3 index 契约、info 计数静默）与 3 处数据真实缺陷（缺模态、缺 3/4 episode、计数虚报），详见 [docs/EVAL.md §2.3](docs/EVAL.md) |
 
 详细数字、注入表与边界说明见 [docs/EVAL.md](docs/EVAL.md)。
 

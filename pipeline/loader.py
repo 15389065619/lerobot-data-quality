@@ -346,14 +346,23 @@ class LeRobotDatasetView:
         loc = self.video_location(camera, episode_index)
         return loc[0] if loc else None
 
-    def video_location(self, camera: str, episode_index: int) -> tuple[Path, float, float] | None:
-        """返回 (视频文件, from_timestamp, to_timestamp)；无定位信息时 from/to 为 (-1, -1)。"""
+    def video_location(
+        self, camera: str, episode_index: int, *, require_exists: bool = True
+    ) -> tuple[Path, float, float] | None:
+        """返回 (视频文件, from_timestamp, to_timestamp)；无定位信息时 from/to 为 (-1, -1)。
+
+        ``require_exists=False`` 时只要能从 meta/模板推出路径就返回，即使文件不存在。
+        质检需要这个区分：路径推得出来但文件不在 = 视频缺失（数据缺陷），
+        路径根本推不出来 = 不可评估（定位信息缺失）。默认 True 保持清洗器行为不变。
+        """
         row = self.meta_row(episode_index)
         ck, fk = f"videos/{camera}/chunk_index", f"videos/{camera}/file_index"
         ft, tt = f"videos/{camera}/from_timestamp", f"videos/{camera}/to_timestamp"
         if row is not None:
             if ck in self.episodes.columns and fk in self.episodes.columns and pd.notna(row.get(ck)):
-                path = self._video_path_from_template(camera, int(row[ck]), int(row[fk]))
+                path = self._video_path_from_template(
+                    camera, int(row[ck]), int(row[fk]), require_exists=require_exists
+                )
                 if path is not None:
                     from_ts = float(row[ft]) if ft in self.episodes.columns and pd.notna(row.get(ft)) else -1.0
                     to_ts = float(row[tt]) if tt in self.episodes.columns and pd.notna(row.get(tt)) else -1.0
@@ -374,7 +383,7 @@ class LeRobotDatasetView:
                 rel = None
             if rel:
                 path = self.root / rel
-                if path.is_file():
+                if path.is_file() or not require_exists:
                     return path, 0.0, -1.0
         # v2.1：文件名里带 episode 序号，视频按 chunk 分目录存放
         # （videos/chunk-000/<camera>/episode_000000.mp4，也兼容 videos/<camera>/）
@@ -395,7 +404,9 @@ class LeRobotDatasetView:
             return next(iter(files.values())), 0.0, -1.0
         return None
 
-    def _video_path_from_template(self, camera: str, chunk: int, file: int) -> Path | None:
+    def _video_path_from_template(
+        self, camera: str, chunk: int, file: int, *, require_exists: bool = True
+    ) -> Path | None:
         idx = self.video_index.get(camera) or {}
         if (chunk, file) in idx:
             return idx[(chunk, file)]
@@ -405,7 +416,7 @@ class LeRobotDatasetView:
         except (KeyError, IndexError, ValueError):
             return None
         path = self.root / rel
-        return path if path.is_file() else None
+        return path if path.is_file() or not require_exists else None
 
     # ----------------------------------------------------------------- 摘要
     def summary(self) -> dict[str, Any]:
@@ -557,12 +568,27 @@ def load_dataset(
         id_reconciliation=reconciliation,
         data_columns=data_columns,
     )
+    # info.total_frames 必须与 data 的**实际行数**对账。流式模式（--streaming）下
+    # view.num_frames 是 meta 里 length 之和，用它校验等于用 meta 自证，抓不到
+    # data 被截断而 meta/info 内部一致的情况。data_summary 始终来自逐文件实际读取，
+    # 行数取它才成立；仅在无数据文件时退回 num_frames。
+    data_rows_actual = (
+        int(data_summary["rows"].sum())
+        if data_summary is not None and len(data_summary) and "rows" in data_summary.columns
+        else view.num_frames
+    )
     view.schema_contract = audit_schema(
         features=features,
         splits=info.get("splits"),
         total_episodes=info.get("total_episodes") or view.num_episodes,
         data_columns=data_columns,
         data_summary=data_summary,
+        info_total_episodes=info.get("total_episodes"),
+        info_total_frames=info.get("total_frames"),
+        meta_episode_rows=len(view.episodes),
+        data_rows=data_rows_actual,
+        codebase_version=str(version),
+        truncated=bool(view.truncated_to),
     )
     for item in view.schema_contract:
         LOG.warning("Schema 违约 [%s] %s：%s", item["severity"], item["column"], item["rule"])
@@ -832,6 +858,7 @@ def _data_episode_summary(
         if has_index:
             agg["idx_min"] = ("index", "min")
             agg["idx_max"] = ("index", "max")
+            agg["idx_nunique"] = ("index", "nunique")
         out = frames.groupby("episode_index", sort=False).agg(**agg).reset_index()
         out["episode_index"] = out["episode_index"].astype("int64")
         return out
@@ -850,6 +877,10 @@ def _data_episode_summary(
     counts: dict[int, int] = {}
     lows: dict[int, int] = {}
     highs: dict[int, int] = {}
+    # 每集 index 的唯一值个数（按贡献文件分别记）：只判「跨度和行数相等」会漏掉
+    # 「重复与断号互相抵消」——[0,1,1,3] 4 行、跨度 4，却有两个 1、缺一个 2。
+    # 唯一值个数是唯一能戳穿它的廉价证据，与极值同一趟算出。
+    uniques: dict[int, list[int]] = {}
     cols = ["episode_index", "index"] if has_index else ["episode_index"]
     for path in data_files:
         try:
@@ -867,14 +898,25 @@ def _data_episode_summary(
                 counts[ep] = 0
             counts[ep] += int(mask.sum())
             if idx_col is not None:
-                lo, hi = int(idx_col[mask].min()), int(idx_col[mask].max())
+                sub = idx_col[mask]
+                lo, hi = int(sub.min()), int(sub.max())
                 lows[ep] = min(lows.get(ep, lo), lo)
                 highs[ep] = max(highs.get(ep, hi), hi)
+                uniques.setdefault(ep, []).append(int(np.unique(sub).size))
     data = {"episode_index": order, "rows": [counts[e] for e in order]}
     if has_index:
         data["idx_min"] = [lows[e] for e in order]
         data["idx_max"] = [highs[e] for e in order]
-    return pd.DataFrame(data, dtype="int64")
+        # 跨多个文件的 episode 无法在这里合并去重（避免为几百 MB 数据建全量集合），
+        # 记 NaN 表示「未知」，由 schema 侧跳过唯一性判据而不是猜一个值。
+        data["idx_nunique"] = [
+            float(uniques[e][0]) if len(uniques.get(e) or ()) == 1 else float("nan")
+            for e in order
+        ]
+    out = pd.DataFrame(data)
+    for name in out.columns:
+        out[name] = out[name].astype("float64" if name == "idx_nunique" else "int64")
+    return out
 
 
 def _reconcile_episode_ids(
