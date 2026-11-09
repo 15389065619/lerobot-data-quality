@@ -438,6 +438,21 @@ def _field_issue_stats_from_frames(dataset: LeRobotDatasetView) -> dict[str, Any
 
 
 
+def _schema_repair_hint(column: str) -> str:
+    """按违约对象给出可执行的修复动作（列问题与 info 计数问题不是同一类改法）。"""
+    if column.startswith("meta/info.json:"):
+        return (
+            "修复方式：把 info.json 里声明的计数/区间改为与实际数据一致"
+            "（或按实际内容重新导出该数据集），再重跑本流程做回归。"
+        )
+    if column == "index":
+        return (
+            "修复方式：把 index 改写为规范语义（v3.0 为 0..total_frames-1 的全局绝对帧号，"
+            "v2.x 为 episode 内帧号）并同步 info.json.features，再重跑本流程做回归。"
+        )
+    return "修复方式：按上述规则修正该列并重跑本流程做回归。"
+
+
 def _recommendations(
     validation: ValidationResult, decisions: dict[int, Decision], drop_frames: int, total_frames: int,
     dataset: LeRobotDatasetView | None = None,
@@ -479,8 +494,8 @@ def _recommendations(
             continue
         recs.insert(0, (
             f"【阻断】Schema 违约（{item['column']}）：{item['rule']}。"
-            f"实测 {item['actual']}。{item['impact']}"
-            "修复方式：把该列改写为规范语义并同步 info.json.features，再重跑本流程做回归。"
+            f"实测 {item['actual']}。{str(item['impact']).rstrip('。')}。"
+            f"{_schema_repair_hint(str(item['column']))}"
         ))
     if schema and not any(x.get("severity") == "error" for x in schema):
         recs.append(

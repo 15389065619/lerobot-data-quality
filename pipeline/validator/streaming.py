@@ -275,7 +275,14 @@ def _build_context(
     if stale_issue:
         issues.append(stale_issue)
 
-    if "index" in columns:
+    if "index" in columns and str(getattr(dataset, "codebase_version", "") or "").startswith("v2"):
+        # v2.x 每集一个 parquet，index 是 episode 内帧号（每集从 0 起），
+        # 全局唯一性判据不适用；逐集合规性由 Schema 审计按 per-episode 极值判定。
+        skipped["index_continuity"] = (
+            "v2.x 的 index 是 episode 内帧号，不做全局唯一性判定；"
+            "逐集是否 0..rows-1 由 Schema 契约审计负责"
+        )
+    elif "index" in columns:
         continuity = _index_continuity_issue(
             rows=rows,
             count=None,

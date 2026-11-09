@@ -86,6 +86,39 @@ def _non_keep(report: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _check_report_coverage(report: dict[str, Any]) -> str | None:
+    """报告必须覆盖数据集全集，否则严格导出会把未质检的 episode 当合格数据。
+
+    `.invalid_episode_details` 只列非 keep，其余 episode 在导出时会被隐式视为 keep。
+    因此「报告覆盖范围 == 数据集全集」是导出可执行的前提，必须先验。
+    """
+    ds = report.get("dataset") or {}
+    summary = report.get("summary") or {}
+
+    truncated = ds.get("max_episodes_applied")
+    if truncated:
+        return (
+            f"报告只覆盖前 {truncated} 个 episode（--max_episodes 截断），"
+            "其余 episode 从未质检；严格导出会把它们当作合格数据，请用全量报告重跑质检"
+        )
+
+    total = ds.get("total_episodes")
+    scanned = summary.get("total_episodes")
+    if total and scanned and int(scanned) != int(total):
+        return f"报告评估了 {scanned} 个 episode，数据集共 {total} 个，覆盖不完整"
+
+    disposition = summary.get("disposition") or {}
+    if total and disposition:
+        keep = int(disposition.get("keep") or 0)
+        listed = len(report.get("invalid_episode_details") or [])
+        if keep + listed != int(total):
+            return (
+                f"报告明细不完整：keep {keep} + 非 keep 明细 {listed} ≠ 数据集 {total} 个 episode，"
+                "存在未评估的 episode，不能据此导出"
+            )
+    return None
+
+
 def _episode_frame_counts(dataset) -> dict[int, int]:
     series = dataset.frames_by_episode()
     return {int(ep): int(n) for ep, n in series.items()}
@@ -117,12 +150,19 @@ def _verify_export(out_root: Path) -> tuple[bool, dict[str, Any]]:
     lengths = [int(v) for v in table.column("length").to_pylist()]
     table_rows = sum(lengths)
 
+    # 关键：用 data/*.parquet 的实际行数做独立校验。
+    # 只比 info 与 meta/episodes 是「自己写的元数据校验自己」，发现不了数据没写全。
+    data_files = sorted((out_root / "data").rglob("*.parquet"))
+    data_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in data_files)
+    if data_rows != table_rows:
+        issues.append(f"data 实际 {data_rows} 行，与 meta/episodes.length 之和 {table_rows} 不符")
+
     info_path = out_root / "meta" / "info.json"
     info = json.loads(info_path.read_text(encoding="utf-8"))
     if int(info.get("total_episodes", -1)) != len(eps):
         issues.append(f"info.total_episodes={info.get('total_episodes')} 与实际 {len(eps)} 不符")
-    if int(info.get("total_frames", -1)) != table_rows:
-        issues.append(f"info.total_frames={info.get('total_frames')} 与 episodes.length 之和 {table_rows} 不符")
+    if int(info.get("total_frames", -1)) != data_rows:
+        issues.append(f"info.total_frames={info.get('total_frames')} 与 data 实际行数 {data_rows} 不符")
 
     splits = (info.get("splits") or {}).get("train")
     if splits != f"0:{len(eps)}":
@@ -132,7 +172,7 @@ def _verify_export(out_root: Path) -> tuple[bool, dict[str, Any]]:
         "ok": not issues,
         "issues": issues,
         "episodes": len(eps),
-        "frames": table_rows,
+        "frames": data_rows,
         "episode_index_range": f"0..{len(eps) - 1}" if eps else "empty",
     }
 
@@ -269,6 +309,11 @@ def main(argv: list[str] | None = None) -> int:
         report = _load_report(report_path)
     except (FileNotFoundError, ValueError) as exc:
         print(f"[错误] {exc}", file=sys.stderr)
+        return 3
+
+    coverage_error = _check_report_coverage(report)
+    if coverage_error:
+        print(f"[错误] {coverage_error}", file=sys.stderr)
         return 3
 
     source_root = Path(

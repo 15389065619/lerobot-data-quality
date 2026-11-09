@@ -52,6 +52,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # 四元数 q≡-q：同一帧多个维同时符号翻转时视为表示等价
             "sign_flip_tol": 0.25, "sign_flip_min_dims": 2,
             "discrete_max_unique": 3,
+            # 超阈幅度分级：阈值本身在分布尾部，1.0~1.5 倍的命中多为正常快动作
+            "downgrade_ratio": 1.5, "escalate_ratio": None,
         },
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
         "timestamp": {"step_tolerance_ratio": 0.25},
@@ -112,6 +114,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "frame_index_gap": "warning",
         "video_span_mismatch": "warning",
         "frame_mismatch": "error",
+        "video_missing": "error",
         "meta_index_inconsistent": "warning",
         "missing_task": "warning",
         "static_episode": "error",
