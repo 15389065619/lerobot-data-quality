@@ -358,8 +358,10 @@ outputs/
 | 容错 + 续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫并全部恢复 |
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 episode / 128 万帧 | meta 用全局 ID、data 用 0..N-1 → 修复前 200/200 error、建议删光；自动对齐后 **195 保留 / 5 复核 / 0 剔除**，实测视频与 state 逐条对齐 |
 | 全仓 17 个数据集审计 | v3.0 / v2.1 混合，4108 episode | 查出 3 处工具缺陷（视频缺失误标、v2.1 套用 v3 index 契约、info 计数静默）与 3 处数据真实缺陷（缺模态、缺 3/4 episode、计数虚报），详见 [docs/EVAL.md §2.3](docs/EVAL.md) |
+| 清洗前后动作分布（下游代理） | demo_dataset：36 ep / 3008 帧 → 清洗后 28 ep / 2335 帧 | 把复核队列里那条单帧 ±18 碰撞跳变判为 `drop` 后：动作方差 **−10.0%**、归一化跳变（max\|Δ\|/std）**51.1 → 0.34**、超阈帧 **6 → 0**。默认策略（review 未裁决）时三项分别为 −2.4% / 未收窄 / 6→3 —— 差距全在「人有没有裁决」。**未训练模型，这是代理指标不是精度结论**，见 [docs/EVAL.md §9–§10](docs/EVAL.md) |
 
 详细数字、注入表与边界说明见 [docs/EVAL.md](docs/EVAL.md)。
+下游收益的取数与归因由 `tools/analyze_action_distribution.py` 生成（`--raw` / `--cleaned` / `--report` 三份输入，输出可复算的 Markdown 章节，`--update-eval` 幂等写回文档）。
 
 ## 快速导航
 
