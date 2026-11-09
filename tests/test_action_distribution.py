@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -85,7 +86,9 @@ def test_delta_across_parquet_files_is_counted(tmp_path):
     original = data_dir / "file-000.parquet"
     _split_at(original, 10, data_dir / "file-000.parquet", data_dir / "file-001.parquet")
 
-    summary = analyze_dataset(root, threshold=1.0)
+    # 这份夹具的三个维都只取 {0, 5} 两个值，会被离散维过滤当成夹爪通道；
+    # 本用例考的是「跨文件 delta」，所以显式关掉过滤，别让两件事互相干扰。
+    summary = analyze_dataset(root, threshold=1.0, discrete_max_unique=0)
     assert summary["frames"] == n
     assert summary["max_delta"] == pytest.approx(5.0, rel=1e-6)
     assert summary["over_threshold"] == 1
@@ -161,3 +164,239 @@ def test_inject_replaces_existing_block(tmp_path):
     assert text.count(f"<!-- {DEFAULT_SECTION_ID}:BEGIN -->") == 1
     assert text.count(f"<!-- {DEFAULT_SECTION_ID}:END -->") == 1
     assert "旧内容" in text  # 手写部分不能被覆盖
+
+
+# ------------------------------------------------- 代理模式（无语清洗产物）
+def _write_report(tmp_path: Path, raw: Path, dropped: list[int], *, trim: int = 0, repair: int = 0) -> Path:
+    payload = {
+        "dataset": {"path": str(raw)},
+        "summary": {"trim_frames": trim, "repair_frames": repair},
+        "invalid_episode_details": [
+            {"episode_index": ep, "disposition": "drop", "reasons": ["action_jump"]} for ep in dropped
+        ],
+    }
+    path = tmp_path / "quality_report.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_proxy_mode_measures_selection_only(tmp_path):
+    """只做剔除时，用「仅保留集」代替清洗后是等价的；修复效应必须记为未测量。"""
+    episodes = {ep: smooth_episode(25, offset=ep * 0.3, seed=ep) for ep in range(4)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [3])
+
+    cmp = compare(raw, report_path=report, proxy_from_kept=True)
+
+    assert cmp["proxy"] is True
+    assert cmp["cleaned"]["episodes"] == 3
+    assert cmp["dropped_ids"] == [3]
+    assert cmp["metrics"]["frames_dropped"] == 25
+    assert cmp["metrics"]["frames_trimmed"] == 0
+    # 没测过就写「未测量」，不能写 0
+    assert math.isnan(cmp["metrics"]["var_repair_pct"])
+    assert cmp["metrics"]["var_selection_pct"] == pytest.approx(cmp["metrics"]["var_change_pct"])
+
+
+def test_proxy_mode_refuses_when_frames_were_repaired(tmp_path):
+    """一旦有裁剪/修复帧，等价关系不成立，工具必须拒绝而不是继续算。"""
+    episodes = {ep: smooth_episode(20, seed=ep) for ep in range(3)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [2], trim=3)
+
+    with pytest.raises(SystemExit) as exc:
+        compare(raw, report_path=report, proxy_from_kept=True)
+    assert "裁剪" in str(exc.value)
+
+
+def test_proxy_mode_requires_report(tmp_path):
+    """没有报告就无法证明「只有剔除」，此时不许出代理数。"""
+    episodes = {0: smooth_episode(20, seed=1)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    with pytest.raises(SystemExit) as exc:
+        compare(raw, proxy_from_kept=True)
+    assert "需要 --report" in str(exc.value)
+
+
+def test_compare_requires_exactly_one_source(tmp_path):
+    episodes = {0: smooth_episode(20, seed=1)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    cleaned = tmp_path / "cleaned"
+    shutil.copytree(raw, cleaned)
+
+    with pytest.raises(SystemExit):
+        compare(raw)  # 两个都没给
+    with pytest.raises(SystemExit):
+        compare(raw, cleaned, proxy_from_kept=True)  # 两个都给
+
+
+def test_proxy_render_marks_repair_as_not_measured(tmp_path):
+    episodes = {ep: smooth_episode(25, offset=ep * 0.3, seed=ep) for ep in range(4)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [3])
+
+    section = render_section(compare(raw, report_path=report, proxy_from_kept=True))
+
+    assert "代理口径" in section
+    assert "| 修复 | 原始仅保留集 → 清洗后 | n/a |" in section
+    assert "修复效应未测量" in section
+    assert "--proxy-from-kept" in section  # 复现命令要能照抄
+
+
+# ------------------------------------------------- 代理模式（无语清洗产物）
+def _write_report(tmp_path: Path, raw: Path, dropped: list[int], *, trim: int = 0, repair: int = 0) -> Path:
+    payload = {
+        "dataset": {"path": str(raw)},
+        "summary": {"trim_frames": trim, "repair_frames": repair},
+        "invalid_episode_details": [
+            {"episode_index": ep, "disposition": "drop", "reasons": ["action_jump"]} for ep in dropped
+        ],
+    }
+    path = tmp_path / "quality_report.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_proxy_mode_measures_selection_only(tmp_path):
+    """只做剔除时，用「仅保留集」代替清洗后是等价的；修复效应必须记为未测量。"""
+    episodes = {ep: smooth_episode(25, offset=ep * 0.3, seed=ep) for ep in range(4)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [3])
+
+    cmp = compare(raw, report_path=report, proxy_from_kept=True)
+
+    assert cmp["proxy"] is True
+    assert cmp["cleaned"]["episodes"] == 3
+    assert cmp["dropped_ids"] == [3]
+    assert cmp["metrics"]["frames_dropped"] == 25
+    assert cmp["metrics"]["frames_trimmed"] == 0
+    # 没测过就写「未测量」，不能写 0
+    assert math.isnan(cmp["metrics"]["var_repair_pct"])
+    assert cmp["metrics"]["var_selection_pct"] == pytest.approx(cmp["metrics"]["var_change_pct"])
+
+
+def test_proxy_mode_refuses_when_frames_were_repaired(tmp_path):
+    """一旦有裁剪/修复帧，等价关系不成立，工具必须拒绝而不是继续算。"""
+    episodes = {ep: smooth_episode(20, seed=ep) for ep in range(3)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [2], trim=3)
+
+    with pytest.raises(SystemExit) as exc:
+        compare(raw, report_path=report, proxy_from_kept=True)
+    assert "裁剪" in str(exc.value)
+
+
+def test_proxy_mode_requires_report(tmp_path):
+    """没有报告就无法证明「只有剔除」，此时不许出代理数。"""
+    episodes = {0: smooth_episode(20, seed=1)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    with pytest.raises(SystemExit) as exc:
+        compare(raw, proxy_from_kept=True)
+    assert "需要 --report" in str(exc.value)
+
+
+def test_compare_requires_exactly_one_source(tmp_path):
+    episodes = {0: smooth_episode(20, seed=1)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    cleaned = tmp_path / "cleaned"
+    shutil.copytree(raw, cleaned)
+
+    with pytest.raises(SystemExit):
+        compare(raw)  # 两个都没给
+    with pytest.raises(SystemExit):
+        compare(raw, cleaned, proxy_from_kept=True)  # 两个都给
+
+
+def test_proxy_render_marks_repair_as_not_measured(tmp_path):
+    episodes = {ep: smooth_episode(25, offset=ep * 0.3, seed=ep) for ep in range(4)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+    report = _write_report(tmp_path, raw, [3])
+
+    section = render_section(compare(raw, report_path=report, proxy_from_kept=True))
+
+    assert "代理口径" in section
+    assert "| 修复 | 原始仅保留集 → 清洗后 | n/a |" in section
+    assert "修复效应未测量" in section
+    assert "--proxy-from-kept" in section  # 复现命令要能照抄
+
+
+# --------------------------------------------- 离散维（夹爪）不能算跳变
+def _with_gripper(spec: dict, n: int) -> dict:
+    """把第 3 维换成 ±1 的二值夹爪通道：每次开合 |Δ|=2，是正常控制指令。"""
+    action = np.asarray(spec["action"], dtype=np.float32).copy()
+    toggle = np.where((np.arange(n) // 5) % 2 == 0, 1.0, -1.0).astype(np.float32)
+    action[:, 2] = toggle
+    return {"state": spec["state"], "action": action}
+
+
+def test_discrete_gripper_dim_excluded_from_jump_stats(tmp_path):
+    """不排除离散维时，每个 episode 都会「有跳变」——这就是必须排除的理由。"""
+    episodes = {ep: _with_gripper(smooth_episode(40, offset=ep * 0.2, seed=ep), 40) for ep in range(3)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    naive = analyze_dataset(raw, threshold=1.0, discrete_max_unique=0)
+    filtered = analyze_dataset(raw, threshold=1.0)
+
+    # 不过滤：夹爪的 ±2 开合被当成跳变，三条轨迹全部沦陷
+    assert naive["max_delta"] == pytest.approx(2.0)
+    assert naive["over_episodes"] == 3
+    assert naive["discrete_dims"] == []
+
+    # 过滤后：只剩连续维，跳变幅度回到正常量级
+    assert filtered["discrete_dims"] == [2]
+    assert filtered["max_delta"] < 1.0
+    assert filtered["over_threshold"] == 0
+    # 方差仍按全部维算，不受跳变口径影响
+    assert filtered["var"] == pytest.approx(naive["var"], rel=1e-9)
+
+
+def test_ignore_dims_overrides_detection(tmp_path):
+    """显式指定维时以显式为准，便于在别的数据集上严格复现某一口径。"""
+    episodes = {ep: _with_gripper(smooth_episode(40, offset=ep * 0.2, seed=ep), 40) for ep in range(2)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    summary = analyze_dataset(raw, threshold=1.0, ignore_dims=[2], discrete_max_unique=0)
+    assert summary["discrete_dims"] == [2]
+    assert summary["over_threshold"] == 0
+
+
+# --------------------------------------------- 离散维（夹爪）不能算跳变
+def _with_gripper(spec: dict, n: int) -> dict:
+    """把第 3 维换成 ±1 的二值夹爪通道：每次开合 |Δ|=2，是正常控制指令。"""
+    action = np.asarray(spec["action"], dtype=np.float32).copy()
+    toggle = np.where((np.arange(n) // 5) % 2 == 0, 1.0, -1.0).astype(np.float32)
+    action[:, 2] = toggle
+    return {"state": spec["state"], "action": action}
+
+
+def test_discrete_gripper_dim_excluded_from_jump_stats(tmp_path):
+    """不排除离散维时，每个 episode 都会「有跳变」——这就是必须排除的理由。"""
+    episodes = {ep: _with_gripper(smooth_episode(40, offset=ep * 0.2, seed=ep), 40) for ep in range(3)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    naive = analyze_dataset(raw, threshold=1.0, discrete_max_unique=0)
+    filtered = analyze_dataset(raw, threshold=1.0)
+
+    # 不过滤：夹爪的 ±2 开合被当成跳变，三条轨迹全部沦陷
+    assert naive["max_delta"] == pytest.approx(2.0)
+    assert naive["over_episodes"] == 3
+    assert naive["discrete_dims"] == []
+
+    # 过滤后：只剩连续维，跳变幅度回到正常量级
+    assert filtered["discrete_dims"] == [2]
+    assert filtered["max_delta"] < 1.0
+    assert filtered["over_threshold"] == 0
+    # 方差仍按全部维算，不受跳变口径影响
+    assert filtered["var"] == pytest.approx(naive["var"], rel=1e-9)
+
+
+def test_ignore_dims_overrides_detection(tmp_path):
+    """显式指定维时以显式为准，便于在别的数据集上严格复现某一口径。"""
+    episodes = {ep: _with_gripper(smooth_episode(40, offset=ep * 0.2, seed=ep), 40) for ep in range(2)}
+    raw = build_dataset(tmp_path / "raw", episodes)
+
+    summary = analyze_dataset(raw, threshold=1.0, ignore_dims=[2], discrete_max_unique=0)
+    assert summary["discrete_dims"] == [2]
+    assert summary["over_threshold"] == 0

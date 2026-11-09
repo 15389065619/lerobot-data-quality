@@ -18,6 +18,11 @@
    时间戳带来的变化才是修复效应。少了这一份，任何「方差下降」都无法归因；
 3. **清洗后** —— 结果。
 
+大数据集上还有一条省时间的路：`--proxy-from-kept`。当报告证明本次清洗只做整集
+剔除（`trim_frames`、`repair_frames` 均为 0）时，「清洗后」与「原始仅保留集」在
+动作数值上逐帧等价，于是可以跳过生成清洗产物（那一步要把所有视频重新编码，动辄
+几小时），代价是修复效应记为「未测量」而不是 0。
+
 三个指标的口径：
 
 - **方差**：逐维总体方差（ddof=0）跨维平均；另算离差平方和（SSE）用于归因，
@@ -131,9 +136,15 @@ class ActionAccumulator:
     起点，否则分片边界处的跳变会被漏掉（大 episode 跨文件时正是最脏的地方）。
     """
 
-    def __init__(self, threshold: float, keep: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        threshold: float,
+        keep: set[int] | None = None,
+        ignore_dims: list[int] | None = None,
+    ) -> None:
         self.threshold = float(threshold)
         self.keep = keep
+        self.ignore_dims = sorted(int(d) for d in (ignore_dims or []))
         self.episodes: dict[int, _EpisodeAcc] = {}
         self.frames = 0
         self.bad = 0
@@ -207,6 +218,13 @@ class ActionAccumulator:
             seq = sub if acc.last is None else np.vstack((acc.last, sub))
             if len(seq) > 1:
                 delta = np.abs(np.diff(seq, axis=0))
+                if self.ignore_dims:
+                    # 夹爪等二值维的「开合」本身就是 ±2 的跳变，属正常控制指令。
+                    # 规则侧（check_action_jump）也是先置零再比阈值，这里必须同口径，
+                    # 否则「超阈帧数」会退化成「夹爪动作次数」。
+                    dims = [d for d in self.ignore_dims if d < delta.shape[1]]
+                    if dims:
+                        delta[:, dims] = 0.0
                 valid = np.isfinite(delta).all(axis=1)
                 if valid.any():
                     kept = delta[valid]
@@ -299,12 +317,58 @@ class ActionAccumulator:
         }
 
 
+def detect_discrete_dims(
+    data_files: list[Path],
+    max_unique: int,
+    *,
+    sample_rows: int = 200_000,
+) -> list[int]:
+    """找出「离散维」（取值种数 ≤ max_unique），跳变统计要跳过它们。
+
+    夹爪/使能位这类二值通道，一次开合就是 |Δ|=2，按连续维阈值判异常会把每条
+    轨迹都算成跳变。规则侧 `check_action_jump` 已经这么做了
+    （`action_jump.discrete_max_unique`），本脚本必须同口径，否则两边的
+    「跳变」根本不是一件事，放同一篇文档里就是自相矛盾。
+
+    只抽样前若干行判定：离散维是全数据集属性，单个文件即可判定；抽样不到该维
+    变化时最坏结果是漏掉一个离散维（口径偏严），不会凭空清除真实跳变。
+    """
+    if max_unique <= 0 or not data_files:
+        return []
+    samples: list[np.ndarray] = []
+    rows = 0
+    for path in data_files:
+        try:
+            column = pq.read_table(path, columns=[ACTION_KEY]).column(ACTION_KEY)
+        except Exception:  # noqa: BLE001 - 抽样失败按「无离散维」处理，不阻断主流程
+            continue
+        matrix = _to_matrix(column)
+        if matrix.size == 0:
+            continue
+        samples.append(matrix)
+        rows += matrix.shape[0]
+        if rows >= sample_rows:
+            break
+    if not samples:
+        return []
+    stacked = np.vstack(samples)
+    dims: list[int] = []
+    for d in range(stacked.shape[1]):
+        values = stacked[:, d]
+        values = values[np.isfinite(values)]
+        if values.size and len(np.unique(values)) <= max_unique:
+            dims.append(d)
+    return dims
+
+
 def analyze_dataset(
     root: str | Path,
     *,
     keep: set[int] | None = None,
     threshold: float | None = None,
     max_files: int | None = None,
+    discrete_max_unique: int | None = None,
+    ignore_dims: list[int] | None = None,
 ) -> dict[str, Any]:
     """扫描一个数据集的 action 列，返回统计摘要。
 
@@ -313,6 +377,9 @@ def analyze_dataset(
         keep: 只统计这些 episode（用于「原始仅保留集」基线）。
         threshold: 跳变阈值；None 时取配置 `action_jump.abs_floor` 并按 fps 折算。
         max_files: 只读前 N 个数据文件（自测/试跑用，正常不要设）。
+        discrete_max_unique: 取值种数 ≤ 该值的维不计入跳变（0 表示不过滤）；
+            None 时取配置 `action_jump.discrete_max_unique`。
+        ignore_dims: 直接指定要跳过的维（优先于自动检测，便于复现严格口径）。
     """
     view = load_dataset(root, load_frames=False)
     config = load_config(robot_type=view.info.get("robot_type"))
@@ -322,8 +389,13 @@ def analyze_dataset(
         fps = float(view.fps or ref_fps)
         threshold = abs_floor * ref_fps / fps if fps > 0 else abs_floor
 
-    acc = ActionAccumulator(threshold, keep=keep)
     files = view.data_files[:max_files] if max_files else view.data_files
+    if ignore_dims is None:
+        if discrete_max_unique is None:
+            discrete_max_unique = int(cfg_get(config, "action_jump.discrete_max_unique", 3))
+        ignore_dims = detect_discrete_dims(files, discrete_max_unique)
+
+    acc = ActionAccumulator(threshold, keep=keep, ignore_dims=ignore_dims)
     for path in files:
         try:
             schema = pq.read_schema(path)
@@ -339,6 +411,8 @@ def analyze_dataset(
     summary["fps"] = float(view.fps or 0.0)
     summary["codebase_version"] = view.codebase_version
     summary["stats_action_std"] = _stats_std(view.stats)
+    summary["discrete_dims"] = list(ignore_dims)
+    summary["discrete_max_unique"] = int(discrete_max_unique or 0)
     return summary
 
 
@@ -401,22 +475,75 @@ def _episode_ids(root: Path) -> list[int]:
 
 
 # ---------------------------------------------------------------------- 对比
+def _require_drop_only(report: dict[str, Any] | None) -> None:
+    """代理模式下必须先证明「清洗只做剔除」。
+
+    代理模式拿「原始仅保留集」冒充清洗后，这在数学上只在**没有裁剪/修复帧**时成立。
+    报告里 `trim_frames` / `repair_frames` 就是这两类改动的计数；非 0 说明清洗改写
+    了帧内容，此时等价关系不成立，必须老老实实跑一次清洗产物，不能拿代理糊过去。
+    """
+    if report is None:
+        raise SystemExit(
+            "代理模式（--proxy-from-kept）需要 --report：没有报告就无法证明本次清洗"
+            "只有剔除、没有裁剪/修复，等价关系不成立时不能出数。"
+        )
+    summary = report.get("summary") or {}
+    trimmed = int(summary.get("trim_frames") or 0)
+    repaired = int(summary.get("repair_frames") or 0)
+    if trimmed or repaired:
+        raise SystemExit(
+            f"报告显示本次清洗裁剪 {trimmed} 帧、修复 {repaired} 帧，"
+            "「仅保留集」不再等价于清洗后；请先生成清洗产物再用 --cleaned 对比。"
+        )
+
+
 def compare(
     raw_path: str | Path,
-    cleaned_path: str | Path,
+    cleaned_path: str | Path | None = None,
     *,
     report_path: str | Path | None = None,
     threshold: float | None = None,
+    proxy_from_kept: bool = False,
+    discrete_max_unique: int | None = None,
+    ignore_dims: list[int] | None = None,
 ) -> dict[str, Any]:
-    """算三份统计量并给出归因；返回可直接渲染或序列化的字典。"""
-    raw_path, cleaned_path = Path(raw_path), Path(cleaned_path)
+    """算三份统计量并给出归因；返回可直接渲染或序列化的字典。
+
+    `proxy_from_kept=True` 时不需要清洗产物：用「原始仅保留集」代替清洗后。
+    代价是**修复效应无法测量**（只能给 n/a），换来的是大数据集上不必为了一个
+    与视频无关的指标付几小时的重编码。前提由 `_require_drop_only` 强制检查。
+    """
+    raw_path = Path(raw_path)
     report: dict[str, Any] | None = None
     if report_path:
         report = json.loads(Path(report_path).read_text(encoding="utf-8"))
 
-    mapping, map_source = resolve_episode_map(cleaned_path, report)
+    if cleaned_path is None and not proxy_from_kept:
+        raise SystemExit("必须提供 --cleaned，或显式加 --proxy-from-kept 声明本次清洗只做剔除")
+    if cleaned_path is not None and proxy_from_kept:
+        raise SystemExit("--cleaned 与 --proxy-from-kept 只能二选一，否则读数来源不明")
 
-    raw_all = analyze_dataset(raw_path, threshold=threshold)
+    if proxy_from_kept:
+        _require_drop_only(report)
+        mapping, map_source = resolve_episode_map(raw_path / "__proxy_no_notes__", report)
+        map_source = f"{map_source}（代理：仅保留集）"
+        cleaned_label = f"{raw_path.name}/仅保留集（代理）"
+    else:
+        cleaned_path = Path(cleaned_path)
+        mapping, map_source = resolve_episode_map(cleaned_path, report)
+        cleaned_label = str(cleaned_path)
+
+    # 离散维检测要在三份统计里用同一套维，否则「原始/清洗后」的跳变口径不同
+    ignore = ignore_dims
+    if ignore is None:
+        view = load_dataset(raw_path, load_frames=False)
+        if discrete_max_unique is None:
+            config = load_config(robot_type=view.info.get("robot_type"))
+            discrete_max_unique = int(cfg_get(config, "action_jump.discrete_max_unique", 3))
+        ignore = detect_discrete_dims(view.data_files, discrete_max_unique)
+    raw_all = analyze_dataset(
+        raw_path, threshold=threshold, ignore_dims=ignore, discrete_max_unique=discrete_max_unique
+    )
     if not mapping:
         raise SystemExit(
             "无法确定清洗后的 episode 与原始编号的对应关系："
@@ -432,21 +559,31 @@ def compare(
             file=sys.stderr,
         )
 
-    raw_kept = analyze_dataset(raw_path, keep=kept_raw, threshold=threshold)
-    cleaned = analyze_dataset(cleaned_path, threshold=threshold)
-
-    if cleaned["dim"] != raw_all["dim"]:
-        raise SystemExit(f"动作维度不一致：原始 {raw_all['dim']} 维，清洗后 {cleaned['dim']} 维")
-    if cleaned["episodes"] != len(mapping):
-        raise SystemExit(
-            f"清洗后 {cleaned['episodes']} 个 episode，映射表 {len(mapping)} 项，无法对齐"
+    raw_kept = analyze_dataset(
+        raw_path, keep=kept_raw, threshold=threshold, ignore_dims=ignore,
+        discrete_max_unique=discrete_max_unique,
+    )
+    if proxy_from_kept:
+        cleaned = dict(raw_kept, proxy=True)
+    else:
+        cleaned = analyze_dataset(
+            cleaned_path, threshold=threshold, ignore_dims=ignore,
+            discrete_max_unique=discrete_max_unique,
         )
+
+        if cleaned["dim"] != raw_all["dim"]:
+            raise SystemExit(f"动作维度不一致：原始 {raw_all['dim']} 维，清洗后 {cleaned['dim']} 维")
+        if cleaned["episodes"] != len(mapping):
+            raise SystemExit(
+                f"清洗后 {cleaned['episodes']} 个 episode，映射表 {len(mapping)} 项，无法对齐"
+            )
 
     dropped_ids = sorted(set(_episode_ids(raw_path)) - kept_raw)
     dropped_rows = _dropped_rows(raw_all, dropped_ids, report)
     return {
         "raw_path": str(raw_path),
-        "cleaned_path": str(cleaned_path),
+        "cleaned_path": cleaned_label,
+        "proxy": proxy_from_kept,
         "map_source": map_source,
         "threshold": cleaned["threshold"],
         "raw_all": raw_all,
@@ -454,7 +591,7 @@ def compare(
         "cleaned": cleaned,
         "dropped": dropped_rows,
         "dropped_ids": dropped_ids,
-        "metrics": _metrics(raw_all, raw_kept, cleaned),
+        "metrics": _metrics(raw_all, raw_kept, cleaned, proxy=proxy_from_kept),
     }
 
 
@@ -516,16 +653,29 @@ def _pct(after: float, before: float) -> float:
     return (after - before) / before * 100
 
 
-def _metrics(raw_all: dict[str, Any], raw_kept: dict[str, Any], cleaned: dict[str, Any]) -> dict[str, Any]:
-    """总变化 = 选择效应（剔除）+ 修复效应（裁剪/重建），按 SSE 可加性拆分。"""
+def _metrics(
+    raw_all: dict[str, Any],
+    raw_kept: dict[str, Any],
+    cleaned: dict[str, Any],
+    *,
+    proxy: bool = False,
+) -> dict[str, Any]:
+    """总变化 = 选择效应（剔除）+ 修复效应（裁剪/重建），按 SSE 可加性拆分。
+
+    `proxy=True` 时没有清洗产物，修复效应是「未测量」而不是 0：写成 0 等于宣称
+    「清洗没改动作」，那是没测过才敢说的话。
+    """
     d_var = _pct(cleaned["var"], raw_all["var"])
-    repair_var = _pct(cleaned["var"], raw_kept["var"])
+    repair_var = float("nan") if proxy else _pct(cleaned["var"], raw_kept["var"])
     mean_drift = _max_abs_diff(cleaned["per_dim_mean"], raw_all["per_dim_mean"])
-    repair_drift = _max_abs_diff(cleaned["per_dim_mean"], raw_kept["per_dim_mean"])
+    repair_drift = float("nan") if proxy else _max_abs_diff(cleaned["per_dim_mean"], raw_kept["per_dim_mean"])
     return {
         "var_change_pct": d_var,
         "var_repair_pct": repair_var,
-        "var_selection_pct": d_var - repair_var if math.isfinite(d_var) and math.isfinite(repair_var) else float("nan"),
+        "var_selection_pct": d_var if proxy else (
+            d_var - repair_var
+            if math.isfinite(d_var) and math.isfinite(repair_var) else float("nan")
+        ),
         "mean_drift": mean_drift,
         "mean_drift_repair": repair_drift,
         "mean_drift_normalized": mean_drift / raw_all["std"] if raw_all["std"] else float("nan"),
@@ -534,6 +684,7 @@ def _metrics(raw_all: dict[str, Any], raw_kept: dict[str, Any], cleaned: dict[st
         "frames_dropped": raw_all["frames"] - raw_kept["frames"],
         "frames_trimmed": raw_kept["frames"] - cleaned["frames"],
         "sse_dropped_pct": (1 - raw_kept["sse"] / raw_all["sse"]) * 100 if raw_all["sse"] else float("nan"),
+        "proxy": proxy,
     }
 
 
@@ -599,28 +750,58 @@ def render_section(
     """
     raw_all, raw_kept, cleaned = cmp["raw_all"], cmp["raw_kept"], cmp["cleaned"]
     metrics = cmp["metrics"]
+    proxy = bool(cmp.get("proxy"))
     raw_name = Path(cmp["raw_path"]).name
     cleaned_name = Path(cmp["cleaned_path"]).name
     begin, end = _markers(section_id)
     match = re.search(r"##\s*(\d+)\.", title)
     sec = match.group(1) if match else "9"
+    discrete_dims = list(raw_all.get("discrete_dims") or [])
 
     lines = [
         begin,
         title,
         "",
         f"> 原始：`{raw_name}`（{raw_all['episodes']} ep / {_num(raw_all['frames'])} 帧）"
-        f" → 清洗：`{cleaned_name}`（{cleaned['episodes']} ep / {_num(cleaned['frames'])} 帧）",
+        f" → 清洗：`{cleaned_name}`（{cleaned['episodes']} ep / {_num(cleaned['frames'])} 帧）"
+        + (" **（代理口径，见下）**" if proxy else ""),
         "> 中间基线：同一份原始数据，只取清洗后保留的 episode —— 用来把"
         "「剔除」和「修复」两种效应拆开。",
         f"> 跳变阈值：`|Δ|∞ > {_num(cmp['threshold'])}`（`action_jump.abs_floor` 按 fps 折算）；"
         "口径：逐维总体方差（ddof=0）跨维平均。",
-        f"> 复现：`python tools/analyze_action_distribution.py --raw {raw_name} "
-        f"--cleaned <cleaned_dataset> --report <quality_report.json>"
-        f" --update-eval docs/EVAL.md{_section_args(section_id, title)}`",
+        *(
+            [
+                f"> 跳变统计排除 {len(discrete_dims)} 个离散维（取值种数 ≤ "
+                f"{raw_all.get('discrete_max_unique', 3)}）："
+                + "、".join(f"dim{d}" for d in discrete_dims)
+                + " —— 与规则 `action_jump` 同口径；不排除的话夹爪开合（一次 ±2）"
+                "会被当成跳变，每条轨迹都「有跳变」。"
+            ]
+            if discrete_dims
+            else []
+        ),
+        (
+            f"> 复现：`python tools/analyze_action_distribution.py --raw {raw_name} "
+            f"--proxy-from-kept --report <quality_report.json>"
+            f" --update-eval docs/EVAL.md{_section_args(section_id, title)}`"
+            if proxy else
+            f"> 复现：`python tools/analyze_action_distribution.py --raw {raw_name} "
+            f"--cleaned <cleaned_dataset> --report <quality_report.json>"
+            f" --update-eval docs/EVAL.md{_section_args(section_id, title)}`"
+        ),
         "",
         f"### {sec}.1 总量指标",
         "",
+        *(
+            [
+                "> **本节的「清洗后」是代理口径。** 报告记录 `trim_frames=0`、`repair_frames=0`，"
+                "本次清洗只做整集剔除、不改任何一帧的内容，因此「原始仅保留集」与真实清洗产物"
+                "在动作数值上逐帧等价；本节据此省略了清洗产物（生成它需要重编码全部视频，"
+                "耗时数小时，而本节只比较动作数值）。代价是**修复效应无法测量**，表中记为 n/a 而不是 0。"
+            ]
+            if proxy
+            else []
+        ),
         "| 指标 | 原始（全部） | 原始（仅保留集） | 清洗后 | 总变化 |",
         "|---|---|---|---|---|",
         f"| episode 数 | {raw_all['episodes']} | {raw_kept['episodes']} | {cleaned['episodes']} "
@@ -661,14 +842,23 @@ def render_section(
         f"剔除 {len(cmp['dropped'])} 个 episode、{_num(metrics['frames_dropped'])} 帧"
         f"（占帧数 {_num(metrics['frames_dropped'] / raw_all['frames'] * 100 if raw_all['frames'] else float('nan'))}%），"
         f"带走 {_num(_dropped_sse_share(cmp))}% 的离差平方和 |",
-        f"| 修复 | 原始仅保留集 → 清洗后 | {_pct_text(metrics['var_repair_pct'])} | "
-        f"边界裁帧 {_num(metrics['frames_trimmed'])} 帧、时间戳重建；不改动作幅值 |",
+        f"| 修复 | 原始仅保留集 → 清洗后 | "
+        + ("n/a" if proxy else _pct_text(metrics['var_repair_pct']))
+        + " | "
+        + (
+            "未生成清洗产物，修复效应未测量（不是 0） |" if proxy else
+            f"边界裁帧 {_num(metrics['frames_trimmed'])} 帧、时间戳重建；不改动作幅值 |"
+        ),
         f"| **合计** | 原始全部 → 清洗后 | **{_pct_text(metrics['var_change_pct'])}** | "
-        "两项之和（方差对样本构成非线性，故为近似） |",
+        + ("只由剔除构成（无逐帧修复，见 §" + sec + ".5） |" if proxy else
+           "两项之和（方差对样本构成非线性，故为近似） |"),
         "",
         f"均值漂移：逐维均值差的最大值 {_num(metrics['mean_drift'], 5)}"
-        f"（按原始 std 归一化 {_num(metrics['mean_drift_normalized'], 4)}），"
-        f"其中由裁剪/重建贡献 {_num(metrics['mean_drift_repair'], 5)}。",
+        f"（按原始 std 归一化 {_num(metrics['mean_drift_normalized'], 4)}）"
+        + (
+            "；因未生成清洗产物，无法再拆出「裁剪/重建」的贡献。" if proxy else
+            f"，其中由裁剪/重建贡献 {_num(metrics['mean_drift_repair'], 5)}。"
+        ),
         "",
         f"### {sec}.3 被剔除 episode 的尾部贡献",
         "",
@@ -709,7 +899,22 @@ def render_section(
         "- 修复阶段只裁剪边界帧与重建时间戳，不动动作幅值，因此「修复效应」理论上应接近 0；"
         "若它明显非 0，说明清洗改写了动作内容，需要单独解释。",
     ]
-    if cleaned.get("stats_action_std") is not None:
+    if discrete_dims:
+        lines.append(
+            f"- 跳变指标排除了 {len(discrete_dims)} 个离散维（"
+            + "、".join(f"dim{d}" for d in discrete_dims)
+            + f"，取值种数 ≤ {raw_all.get('discrete_max_unique', 3)}）。"
+            "这一条不是可选项：不排除时夹爪一次开合就是 |Δ|=2，"
+            "「超阈帧数」会退化成「夹爪动作次数」，和规则侧的命中完全对不上。"
+        )
+    if proxy:
+        lines.append(
+            "- **「清洗后」是代理值，不是产物。** 本节未生成清洗后的数据集：报告证明本次清洗"
+            "只做整集剔除（`trim_frames` / `repair_frames` 均为 0），故以「原始仅保留集」等价代替。"
+            "若报告里的这两个计数非 0，工具会直接拒绝该模式（见 `_require_drop_only`）——"
+            "等价关系不成立时不允许出数。"
+        )
+    if cleaned.get("stats_action_std") is not None and not proxy:
         lines += [
             "",
             f"> 互校：`stats.json` 里 action 各维 std 的均值为 {_num(cleaned['stats_action_std'])}，"
@@ -728,13 +933,20 @@ def _conclusion(cmp: dict[str, Any], sec: str) -> list[str]:
     out: list[str] = []
 
     var_pct = metrics["var_change_pct"]
+    proxy = bool(cmp.get("proxy"))
+    split = (
+        f"其中选择效应 {_pct_text(metrics['var_selection_pct'])}"
+        f"（本次只做剔除，修复效应未测量）"
+        if proxy else
+        f"其中选择效应 {_pct_text(metrics['var_selection_pct'])}、"
+        f"修复效应 {_pct_text(metrics['var_repair_pct'])}"
+        f"（两项之和与合计略有出入，方差对样本构成非线性，见 §{sec}.2）"
+    )
     if math.isfinite(var_pct) and var_pct < 0:
         out.append(
             f"- 剔除 {len(cmp['dropped'])} 个 episode（{_num(metrics['frames_dropped'])} 帧）后，"
             f"整体动作方差由 {_num(raw_all['var'])} 降至 {_num(cleaned['var'])}，**{_pct_text(var_pct)}**；"
-            f"其中选择效应 {_pct_text(metrics['var_selection_pct'])}、"
-            f"修复效应 {_pct_text(metrics['var_repair_pct'])}"
-            f"（两项之和与合计略有出入，方差对样本构成非线性，见 §{sec}.2）。"
+            f"{split}。"
         )
     elif math.isfinite(var_pct):
         out.append(
@@ -810,10 +1022,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--raw", required=True, help="原始数据集根目录")
-    p.add_argument("--cleaned", required=True, help="清洗后数据集根目录")
+    p.add_argument("--cleaned", default=None, help="清洗后数据集根目录（与 --proxy-from-kept 二选一）")
+    p.add_argument(
+        "--proxy-from-kept",
+        action="store_true",
+        help="不提供清洗产物，用「原始仅保留集」代替清洗后（仅当报告显示 trim/repair 均为 0 时可用）",
+    )
     p.add_argument("--report", default=None, help="质检报告，用于取剔除原因与编号映射")
     p.add_argument("--jump-threshold", type=float, default=None,
                    help="跳变阈值（|Δ|∞ 超过即计数）；默认按配置 abs_floor 与 fps 折算")
+    p.add_argument(
+        "--discrete-max-unique", type=int, default=None,
+        help="取值种数 ≤ N 的动作维不计入跳变（默认取配置 action_jump.discrete_max_unique；0 关闭过滤）",
+    )
+    p.add_argument(
+        "--ignore-dims", default=None,
+        help="直接指定要跳过的动作维，逗号分隔（优先于自动检测，用于严格复现）",
+    )
     p.add_argument("--json-out", default=None, help="同时写出机器可读的 JSON 结果")
     p.add_argument("--update-eval", default=None, help="把章节写进该 Markdown（如 docs/EVAL.md）")
     p.add_argument("--section-id", default=DEFAULT_SECTION_ID,
@@ -832,6 +1057,12 @@ def main(argv: list[str] | None = None) -> int:
             args.cleaned,
             report_path=args.report,
             threshold=args.jump_threshold,
+            proxy_from_kept=args.proxy_from_kept,
+            discrete_max_unique=args.discrete_max_unique,
+            ignore_dims=(
+                [int(x) for x in args.ignore_dims.replace("，", ",").split(",") if x.strip()]
+                if args.ignore_dims else None
+            ),
         )
     except SystemExit as exc:
         print(f"[错误] {exc}", file=sys.stderr)

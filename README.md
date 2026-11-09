@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-181%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -359,9 +359,10 @@ outputs/
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 episode / 128 万帧 | meta 用全局 ID、data 用 0..N-1 → 修复前 200/200 error、建议删光；自动对齐后 **195 保留 / 5 复核 / 0 剔除**，实测视频与 state 逐条对齐 |
 | 全仓 17 个数据集审计 | v3.0 / v2.1 混合，4108 episode | 查出 3 处工具缺陷（视频缺失误标、v2.1 套用 v3 index 契约、info 计数静默）与 3 处数据真实缺陷（缺模态、缺 3/4 episode、计数虚报），详见 [docs/EVAL.md §2.3](docs/EVAL.md) |
 | 清洗前后动作分布（下游代理） | demo_dataset：36 ep / 3008 帧 → 清洗后 28 ep / 2335 帧 | 把复核队列里那条单帧 ±18 碰撞跳变判为 `drop` 后：动作方差 **−10.0%**、归一化跳变（max\|Δ\|/std）**51.1 → 0.34**、超阈帧 **6 → 0**。默认策略（review 未裁决）时三项分别为 −2.4% / 未收窄 / 6→3 —— 差距全在「人有没有裁决」。**未训练模型，这是代理指标不是精度结论**，见 [docs/EVAL.md §9–§10](docs/EVAL.md) |
+| 同一套测量搬到真实规模 | behavior1k_task0042：200 ep / 128 万帧 | 把 5 条 `action_jump` review（超阈倍数仅 1.02–1.35）判 `drop` 后：超阈帧 **5 → 0**、归一化跳变 **3.28 → 2.44**（−25.7%），但动作方差只降 **1.2%**（且全部来自删样本）。结论：方差对边缘命中不敏感，能被稳定观测的是跳变指标 —— 「降方差 X%」这句话不能跨数据集通用，见 [docs/EVAL.md §11](docs/EVAL.md) |
 
 详细数字、注入表与边界说明见 [docs/EVAL.md](docs/EVAL.md)。
-下游收益的取数与归因由 `tools/analyze_action_distribution.py` 生成（`--raw` / `--cleaned` / `--report` 三份输入，输出可复算的 Markdown 章节，`--update-eval` 幂等写回文档）。
+下游收益的取数与归因由 `tools/analyze_action_distribution.py` 生成（`--raw` / `--cleaned` / `--report` 三份输入，输出可复算的 Markdown 章节，`--update-eval` 幂等写回文档；大数据集可用 `--proxy-from-kept` 在有报告证明「只做剔除」时省掉数小时视频重编码）。
 
 ## 快速导航
 
