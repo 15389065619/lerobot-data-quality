@@ -1,0 +1,101 @@
+﻿annotation_id,dataset,source,episode_index,severity,reasons,suggested_disposition,recommended_action,frame_count,detail,video,window,reviewer_disposition,reviewer_note,human_label
+a8daa980116b,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,18,error,missing_task|frame_mismatch,drop,剔除,6778,,,,,,unknown
+af4f436a83e4,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,28,error,missing_task|frame_mismatch,drop,剔除,5936,,,,,,unknown
+8f449116f06b,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,56,error,missing_task|frame_mismatch,drop,剔除,5373,,,,,,unknown
+d1265d84f777,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,61,error,missing_task|frame_mismatch,drop,剔除,6533,,,,,,unknown
+d55355ff94a4,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,67,error,missing_task|frame_mismatch,drop,剔除,4849,,,,,,unknown
+3e3978c43a22,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,83,error,missing_task|frame_mismatch,drop,剔除,8208,,,,,,unknown
+aec6671b1de8,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,89,error,missing_task|frame_mismatch,drop,剔除,7008,,,,,,unknown
+f526e23fb279,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,107,error,missing_task|frame_mismatch,drop,剔除,5812,,,,,,unknown
+1f88ad0e237b,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,119,error,missing_task|frame_mismatch,drop,剔除,7651,,,,,,unknown
+0de033ed9b7a,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,132,error,missing_task|frame_mismatch,drop,剔除,5764,,,,,,unknown
+d8635368d997,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,135,error,missing_task|frame_mismatch,drop,剔除,7318,,,,,,unknown
+38f91ac700c0,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,139,error,missing_task|frame_mismatch,drop,剔除,7150,,,,,,unknown
+77b049ccb580,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,147,error,missing_task|frame_mismatch,drop,剔除,8269,,,,,,unknown
+b630785b47e3,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,164,error,missing_task|frame_mismatch,drop,剔除,5487,,,,,,unknown
+e42c31eaf8fe,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,173,error,missing_task|frame_mismatch,drop,剔除,5738,,,,,,unknown
+c650118ade67,behavior1k_task0042,outputs_stress/behavior1k_task0042_stream3/review_queue.csv,179,error,missing_task|frame_mismatch,drop,剔除,6328,,,,,,unknown
+3d5fc5a86fff,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,420460,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,6518.27-6729.53s,,,unknown
+4a46faf5d3c2,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,420690,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,8052.50-8251.23s,,,unknown
+f600a01c4340,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,420960,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,11756.97-11936.07s,,,unknown
+0d986842516f,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421070,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,14048.27-14270.67s,,,unknown
+040daa192171,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421110,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,14682.30-14898.87s,,,unknown
+542602b60ec8,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421130,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,15179.20-15338.20s,,,unknown
+da293a453ce5,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421160,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,15523.10-15676.57s,,,unknown
+d1d97b11656c,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421420,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,20117.60-20427.13s,,,unknown
+3f0a72dde915,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,421450,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-000.mp4,20702.17-20907.50s,,,unknown
+9e8eda7f0c42,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,422240,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-001.mp4,2497.03-2699.77s,,,unknown
+50c9f49a45bf,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,422250,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-001.mp4,2699.77-2831.70s,,,unknown
+ed25df458f4c,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,422330,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-001.mp4,3790.40-4038.37s,,,unknown
+838af3a77015,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,422920,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-001.mp4,10824.43-10976.70s,,,unknown
+de71a928b5ec,behavior1k_task0042,outputs_stress/behavior1k_task0042_full/review_queue.csv,422970,error,episode_read_error,drop,剔除,0,,G:\Lerobot\data\stress\behavior1k_task0042\videos\observation.images.rgb.left_wrist\chunk-000\file-001.mp4,11544.77-11734.50s,,,unknown
+285a871a825e,cleaned_dataset,outputs_run2/recheck/review_queue.csv,16,warning,missing_task,review,人工复核后决定,62,,G:\Lerobot\outputs_run2\cleaned_dataset\videos\observation.images.top\chunk-000\file-001.mp4,9.53-11.60s,,,unknown
+049d071c6aaa,demo_dataset,outputs_run2/review_queue.csv,5,error,nan_state,repair,裁掉首3帧/尾0帧后保留,102,"nan_state:{""nan_count"": 3, ""inf_count"": 0}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,16.63-20.03s,,,unknown
+44655526b806,demo_dataset,outputs_run2/review_queue.csv,9,error,static_episode,drop,剔除,64,static_episode:该 episode 数值几乎无变化，疑似未执行任务,G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,27.00-29.13s,,,unknown
+d9ae4455eb4f,demo_dataset,outputs_run2/review_queue.csv,11,error,frame_count_abnormal,drop,剔除,5,"frame_count_abnormal:{""direction"": ""too_few""}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,31.23-31.40s,,,unknown
+9a6d6cfb5088,demo_dataset,outputs_run2/review_queue.csv,13,error,duplicate_episode,drop,剔除,95,"duplicate_episode:{""duplicate_of"": 2}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,35.17-38.33s,,,unknown
+3450f32eccfb,demo_dataset,outputs_run2/review_queue.csv,15,warning,timestamp_not_monotonic,repair,用 frame_index/fps 重建时间轴,106,"timestamp_not_monotonic:{""violations"": 1}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,41.00-44.53s,,,unknown
+adfd27dd0de8,demo_dataset,outputs_run2/review_queue.csv,17,error,blank_video,drop,剔除,104,"blank_video:{""bad_ratio"": 1.0}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-000.mp4,46.20-49.67s,,,unknown
+fccbab5064a4,demo_dataset,outputs_new/demo/review_queue.csv,19,error,video_span_mismatch|frame_mismatch,drop,剔除,77,,G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,1.63-3.20s,,,unknown
+66cf0125e364,demo_dataset,outputs_run2/review_queue.csv,27,error,nan_action|action_jump,drop,剔除,76,"nan_action:{""nan_count"": 0, ""inf_count"": 1} | action_jump:{""jump_count"": 2, ""max_delta"": Infinity}",G:\Lerobot\demo_dataset\videos\observation.images.top\chunk-000\file-001.mp4,22.43-24.97s,,,unknown
+84de72bd3850,g1_place_grape_error,outputs_real/g1_grape_error/review_queue.csv,27,error,frame_mismatch,drop,剔除,871,,,,,,unknown
+e361aa7a9936,g1_place_grape_error,outputs_real/g1_grape_error/review_queue.csv,35,error,frame_mismatch,drop,剔除,683,,,,,,unknown
+62edc9d3b703,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,45,error,frame_mismatch,drop,剔除,309,,,,,,unknown
+29315e72f7b4,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,60,error,frame_mismatch,drop,剔除,295,,,,,,unknown
+bea6c39d5478,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,64,error,frame_mismatch,drop,剔除,320,,,,,,unknown
+1b2e90247b63,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,75,error,frame_mismatch,drop,剔除,235,,,,,,unknown
+27f247ffe3e8,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,77,error,frame_mismatch,drop,剔除,255,,,,,,unknown
+edb76caa127c,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,89,error,frame_mismatch,drop,剔除,267,,,,,,unknown
+fef152ed4d6d,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,139,error,frame_mismatch,drop,剔除,171,,,,,,unknown
+f493fc224a3b,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,160,error,frame_mismatch,drop,剔除,322,,,,,,unknown
+19160543ba4d,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,166,error,frame_mismatch,drop,剔除,267,,,,,,unknown
+5ea076751adb,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,169,error,frame_mismatch,drop,剔除,226,,,,,,unknown
+5fe50fa3fc25,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,172,error,frame_mismatch,drop,剔除,251,,,,,,unknown
+275d098dbeaa,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,206,error,frame_mismatch,drop,剔除,246,,,,,,unknown
+934b9e608b69,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,213,error,frame_mismatch,drop,剔除,277,,,,,,unknown
+3d656e2bd07f,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,225,error,frame_mismatch,drop,剔除,314,,,,,,unknown
+3f1311611774,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,237,error,frame_mismatch,drop,剔除,193,,,,,,unknown
+b4e68c6508d9,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,253,error,frame_mismatch,drop,剔除,202,,,,,,unknown
+c8a5f6253bfc,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,265,error,frame_mismatch,drop,剔除,180,,,,,,unknown
+287ae38eebdc,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,297,error,frame_mismatch,drop,剔除,214,,,,,,unknown
+0b0e2a1cf76b,humanoid_everyday_h1,outputs_real/h1_300ep_fixed/review_queue.csv,298,error,frame_mismatch,drop,剔除,200,,,,,,unknown
+ca7194b7fdf1,libero_10_image,outputs_manual_verify2/review_queue.csv,14,warning,frame_count_abnormal,review,人工复核后决定,257,"frame_count_abnormal:{""direction"": ""too_few""}",,,,,unknown
+04690c6c5f1a,libero_10_image,outputs_manual_verify2/review_queue.csv,15,warning,frame_count_abnormal,review,人工复核后决定,242,"frame_count_abnormal:{""direction"": ""too_few""}",,,,,unknown
+a69f80386ff0,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,19,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,249,,,,,,unknown
+1ffc7bb8112a,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,67,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,388,,,,,,unknown
+b4ed0d31e197,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,74,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,264,,,,,,unknown
+2adc6910dec3,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,83,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,292,,,,,,unknown
+d5a8f9cdfd80,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,87,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,263,,,,,,unknown
+7d7ce4559302,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,112,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,263,,,,,,unknown
+2ca706f6bd26,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,125,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,242,,,,,,unknown
+652509b5b887,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,148,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,289,,,,,,unknown
+3fc357d1fa21,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,156,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,255,,,,,,unknown
+d30db9619a9a,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,160,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,258,,,,,,unknown
+9dbcd33f58e6,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,162,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,272,,,,,,unknown
+df27affeb056,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,164,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,310,,,,,,unknown
+5aa67e19d8a8,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,193,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,265,,,,,,unknown
+06ec257fb8fd,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,200,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,343,,,,,,unknown
+29eff0d8516d,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,202,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,232,,,,,,unknown
+f14f22f3346c,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,220,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,275,,,,,,unknown
+4221173b18df,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,222,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,243,,,,,,unknown
+322ac1052210,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,244,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,246,,,,,,unknown
+22291f36d87a,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,265,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,252,,,,,,unknown
+013109b9a63d,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,267,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,232,,,,,,unknown
+846f9b54a243,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,293,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,305,,,,,,unknown
+956a1a96d5c7,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,297,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,236,,,,,,unknown
+6ba6d486409a,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,300,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,237,,,,,,unknown
+5e78f871f6ce,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,316,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,396,,,,,,unknown
+73fb832a63a5,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,337,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,227,,,,,,unknown
+58c03e499f3b,libero_10_image,outputs_stress/libero_10_image_stream/review_queue.csv,376,error,frame_mismatch,review,人工复核（疑似系统性误判，已阻止批量剔除）,458,,,,,,unknown
+2d3d9f5a589b,pusht,outputs_new/pusht/review_queue.csv,10,warning,action_jump,review,人工复核后决定,188,"action_jump:{""jump_count"": 1, ""max_delta"": 91.0}",G:\Lerobot\data\public\pusht\videos\observation.image\chunk-000\file-000.mp4,134.70-153.50s,,,unknown
+1571e90dfd01,pusht,outputs_public/pusht_w4/review_queue.csv,97,warning,action_jump,review,人工复核后决定,111,"action_jump:{""jump_count"": 1, ""max_delta"": 102.0}",G:\Lerobot\data\public\pusht\videos\observation.image\chunk-000\file-000.mp4,1158.30-1169.40s,,,unknown
+5b06c4be14a1,pusht,outputs_public/pusht_w4/review_queue.csv,107,warning,action_jump,review,人工复核后决定,197,"action_jump:{""jump_count"": 2, ""max_delta"": 132.0}",G:\Lerobot\data\public\pusht\videos\observation.image\chunk-000\file-000.mp4,1264.60-1284.30s,,,unknown
+f410ffdf2ac1,pusht,outputs_public/pusht_w4/review_queue.csv,116,warning,action_jump,review,人工复核后决定,178,"action_jump:{""jump_count"": 4, ""max_delta"": 78.0}",G:\Lerobot\data\public\pusht\videos\observation.image\chunk-000\file-000.mp4,1381.10-1398.90s,,,unknown
+7ac19b606118,pusht,outputs_public/pusht_w4/review_queue.csv,156,warning,action_jump,review,人工复核后决定,90,"action_jump:{""jump_count"": 1, ""max_delta"": 77.0}",G:\Lerobot\data\public\pusht\videos\observation.image\chunk-000\file-000.mp4,1913.50-1922.50s,,,unknown
+0ce230c57aa6,svla_so101_pickplace,outputs_public/svla_tuned/review_queue.csv,1,warning,action_jump,review,人工复核后决定,266,"action_jump:{""jump_count"": 6, ""max_delta"": 8.5781}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,10.10-18.97s,,,unknown
+38408ee53040,svla_so101_pickplace,outputs_public/svla_stream/review_queue.csv,26,warning,action_jump,review,人工复核后决定,199,"action_jump:{""jump_count"": 165, ""max_delta"": 6.8779}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,193.93-200.57s,,,unknown
+b5655407e2c2,svla_so101_pickplace,outputs_public/svla_stream/review_queue.csv,28,warning,action_jump,review,人工复核后决定,224,"action_jump:{""jump_count"": 167, ""max_delta"": 8.4211}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,207.33-214.80s,,,unknown
+661a25bd6405,svla_so101_pickplace,outputs_public/svla_tuned/review_queue.csv,29,warning,action_jump,review,人工复核后决定,223,"action_jump:{""jump_count"": 11, ""max_delta"": 9.6842}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,214.80-222.23s,,,unknown
+080faa13605a,svla_so101_pickplace,outputs_public/svla_tuned/review_queue.csv,38,warning,action_jump,review,人工复核后决定,256,"action_jump:{""jump_count"": 5, ""max_delta"": 10.51}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,289.53-298.07s,,,unknown
+a928b3b16a9c,svla_so101_pickplace,outputs_public/svla_stream/review_queue.csv,42,warning,action_jump,review,人工复核后决定,263,"action_jump:{""jump_count"": 209, ""max_delta"": 8.8421}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,325.97-334.73s,,,unknown
+174a137d6656,svla_so101_pickplace,outputs_public/svla_tuned/review_queue.csv,43,warning,action_jump,review,人工复核后决定,281,"action_jump:{""jump_count"": 4, ""max_delta"": 8.7326}",G:\Lerobot\data\public\svla_so101_pickplace\videos\observation.images.up\chunk-000\file-000.mp4,334.73-344.10s,,,unknown
