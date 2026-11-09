@@ -309,6 +309,33 @@ def test_fresh_stats_not_flagged(normal_dataset):
     assert all(i.code != "stats_stale" for i in result.dataset_issues)
 
 
+def test_near_zero_mean_does_not_amplify_small_drift():
+    """回归（POSTMORTEM 案例 2）：分母取 |mean| 时，近零均值维度会把微小漂移放大成假阳性。
+
+    旧式：|0.02 - 0.0001| / |0.0001| ≈ 199 倍 → 远超 5% 容忍，报 stats_stale，但绝对漂移只有 0.02。
+    现式：分母取该维自身量级 max(|mean|, std) = 1.0 → 0.02 < 0.05 → 不报。
+    """
+    from pipeline.validator.context import _stats_staleness_issue
+
+    stats = {"observation.state": {"mean": [1e-4] * JOINTS, "std": [1.0] * JOINTS}}
+    assert _stats_staleness_issue(
+        stats, np.full(JOINTS, 0.02), load_config(robot_type="test_robot")
+    ) is None
+
+
+def test_real_stats_drift_is_reported_at_true_magnitude():
+    """同一公式不能把真实过期一起放过：0.2 的漂移相对 std=1.0 必须报，且幅度是 0.2 量级。"""
+    from pipeline.validator.context import _stats_staleness_issue
+
+    stats = {"observation.state": {"mean": [1e-4] * JOINTS, "std": [1.0] * JOINTS}}
+    issue = _stats_staleness_issue(
+        stats, np.full(JOINTS, 0.2), load_config(robot_type="test_robot")
+    )
+    assert issue is not None and issue.code == "stats_stale"
+    # 旧式会给出 2000 量级，这里要求是可解释的「绝对漂移 / 该维尺度」
+    assert 0.19 <= issue.detail["max_relative_deviation"] <= 0.21
+
+
 def test_fixed_mode_overrides_adaptive_threshold(tmp_path):
     episodes = {ep: smooth_episode(40, seed=ep) for ep in range(4)}
     episodes[4] = smooth_episode(12, seed=99)

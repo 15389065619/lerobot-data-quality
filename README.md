@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-179%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-181%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -270,7 +270,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 179 个单测
+python -m pytest tests                                  # 181 个单测
 ```
 
 > 打包与发布配置（`pyproject.toml` + console 脚本 + PyPI Trusted Publishing workflow）已就绪；未上传 PyPI 前请从源码 `pip install -e .` 安装。
@@ -368,11 +368,12 @@ outputs/
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构设计说明书：业务痛点、架构图、契约思维、为何规则而非 ML、扩展性 |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | 与 LeRobot 官方工具 / ROS 工具链 / OpenVLA 数据管线的对比与选型建议 |
 | [docs/EVAL.md](docs/EVAL.md) | 全量实测记录、故障注入表、已知边界 |
+| [docs/POSTMORTEM.md](docs/POSTMORTEM.md) | 四次判定错误复盘：现象 → 怀疑 → 证据证伪 → 修复 → 防回归用例，以及人工审核为何不可省 |
 | [docs/INTERVIEW.md](docs/INTERVIEW.md) | 项目讲解话术与高频追问的回答要点 |
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（179 个单测，覆盖率门槛 64% 由 CI 强制）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（181 个单测，覆盖率门槛 64% 由 CI 强制）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 

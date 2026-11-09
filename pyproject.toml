@@ -41,7 +41,7 @@ lerobot-data-quality-tune = "pipeline.tuning:main"
 lerobot-data-quality-dashboard = "tools.dashboard_server:main"
 
 # 覆盖率门槛：本机基线 65.35%（branch=true），门槛取 64 留出跨平台差异的余量
-# （dev 依赖含 rosbags，CI 与本地一样会跑全部 105 条）。只升不降，覆盖率提升后同步抬高此值。
+# （dev 依赖含 rosbags，CI 与本地一样会跑全部用例）。只升不降，覆盖率提升后同步抬高此值。
 [tool.coverage.run]
 branch = true
 source = ["pipeline", "src"]
