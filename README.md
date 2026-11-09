@@ -82,7 +82,22 @@ docker run --rm \
 | 全解码统计视频帧数在几十 GB 数据集上不可行 | 视频探针优先读容器元数据（nb_frames / duration×fps），必要时才精确解码 |
 | 结论要可追溯 | 报告带**数据集指纹**（内容哈希）、**配置与自适应阈值快照**（含推导依据）、**修复动作清单**，可 diff 历次报告 |
 
-## 质检规则（17 条 + 1 条数据集级）
+## Schema 契约审计（磁盘布局合规性）
+
+除逐 episode 质检外，加载阶段还会做一次**只读元数据的 Schema 审计**（读 2 列，14 GB 数据集约 1.3 s）。
+它回答的是「这份数据能不能被官方 loader 正确读」，与「样本好不好」是两件事。
+
+| 断言 | 判据 | 典型违约后果 |
+|---|---|---|
+| 必备列齐全 | `index / episode_index / frame_index / task_index / timestamp` | 缺 `frame_index` 时 episode 内帧号只能反推 |
+| `index` 全局唯一 | 每集起点须等于前序累计行数，全表 0..N-1 各一次 | 官方 `_build_index_mapping` 用 `dict(zip(index, 位置))`，重复键会让映射塌缩；`delta_window` 判越界会把整段时序窗口压成同一帧——**两者都不抛异常** |
+| split 长度 = `total_episodes` | `meta/info.json.splits` | 按 split 加载会以为 episode 数等于区间长度 |
+| meta/data episode 编号交集 | 两侧 `episode_index` 集合 | 交集为 0 时 task/视频定位整体落空（详见下节「编号空间对齐」） |
+
+违约项写进报告的 `dataset.schema_contract`，`error` 级会以【阻断】形式排在任何剔除建议之前；
+终端报告的「Schema 违约」一行会直接列出违规列名。
+
+
 
 | 规则 | 级别 | 处置 | 说明 |
 |---|---|---|---|
@@ -102,6 +117,7 @@ docker run --rm \
 | `duplicate_episode` | error | drop | action 序列指纹重复 |
 | `joint_limit_violation` | error | drop | 超出关节限位（配置提供 limits 时启用） |
 | `episode_read_error` | error | drop | parquet 损坏或 meta 有记录但无数据行 |
+| `meta_episode_mismatch`（数据集级） | warning | **repair（自动对齐）** | meta 与 data 的 episode 编号体系不同（meta 用全局 ID、data 用 0..N-1）：按顺序映射并做「行数 + 视频窗口」双重校验，两项一致率均 ≥99% 才接受；证据不足则标记**不可评估**，不判数据坏、不剔除 |
 | `stats_stale`（数据集级） | warning | **repair** | stats.json 与实测偏差过大 → 重算 |
 
 严重度与阈值都可在 `config/default.yaml` 按 robot_type 覆盖（`robots: {so100_follower: {...}}`）。
@@ -333,6 +349,7 @@ outputs/
 | 真实点云数据集 | 50 episode / 18374 帧 | 8 步全跑通；点云 18374 帧全正常；故障注入 8 类规则全命中，修复后行数/点数/schema 全不变 |
 | 并发 | 同上 | `--workers 8`：190.1 s → 64.7 s（2.9×），产物与串行逐字节一致 |
 | 容错 + 续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫并全部恢复 |
+| 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 episode / 128 万帧 | meta 用全局 ID、data 用 0..N-1 → 修复前 200/200 error、建议删光；自动对齐后 **195 保留 / 5 复核 / 0 剔除**，实测视频与 state 逐条对齐 |
 
 详细数字、注入表与边界说明见 [docs/EVAL.md](docs/EVAL.md)。
 

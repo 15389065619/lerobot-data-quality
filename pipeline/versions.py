@@ -8,12 +8,12 @@
 - **回滚是显式动作**：默认只输出「将要改哪些文件」的 plan，必须加 ``--apply`` 才写盘，
   且不会删除目标版本里不存在的文件（除非 ``--delete-extra``）。
 
-用法：
-    python -m pipeline.versions commit  --dataset_path data/gym_xarm --note "清洗前基线"
-    python -m pipeline.versions log     --dataset_path data/gym_xarm
-    python -m pipeline.versions diff    --dataset_path data/gym_xarm
-    python -m pipeline.versions restore --dataset_path data/gym_xarm --version <id>          # 只看 plan
-    python -m pipeline.versions restore --dataset_path data/gym_xarm --version <id> --apply  # 真回滚
+用法（--dataset_path 是父级参数，必须写在子命令之前）：
+    python -m pipeline.versions --dataset_path data/gym_xarm commit  --note "清洗前基线"
+    python -m pipeline.versions --dataset_path data/gym_xarm log
+    python -m pipeline.versions --dataset_path data/gym_xarm diff
+    python -m pipeline.versions --dataset_path data/gym_xarm restore --version <id>          # 只看 plan
+    python -m pipeline.versions --dataset_path data/gym_xarm restore --version <id> --apply  # 真回滚
 """
 
 from __future__ import annotations

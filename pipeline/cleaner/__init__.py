@@ -25,7 +25,7 @@ from typing import Any, Iterable
 
 from ..loader import LeRobotDatasetView
 from .cli import try_cli
-from .manual import copy_untouched, manual_clean
+from .manual import copy_untouched, manual_clean, reindex_untouched
 from .meta import write_notes
 from .types import CLEANED_DIRNAME, NOTES_FILENAME, CleaningResult
 from .util import assert_safe_output, verify
@@ -43,18 +43,27 @@ def clean_dataset(
     *,
     prefer_cli: bool = True,
     overwrite: bool = True,
+    dataset_issues: Iterable[Any] | None = None,
+    out_root: str | Path | None = None,
+    link_mode: str = "copy",
 ) -> CleaningResult:
     """按处置结果清洗：drop 的删除，repair 的修补，其余保留。
 
     Args:
         dispositions: {episode_index: Decision 或 disposition 字符串}；也接受 [ep, ...]
             表示这些 episode 全部剔除（兼容旧用法）。
+        dataset_issues: 数据集级问题（validator 的 DatasetIssue 或同结构 dict）。
+            其中 ``meta_index_inconsistent`` 表示全局 index 断裂，即使没有
+            episode 需要删除/修复，也会按真实行数重建 index。
+        out_root: 产出数据集的根目录。默认 ``output_dir/cleaned_dataset``；
+            独立导出脚本可直接指定目标目录。
+        link_mode: 视频整文件保留时的物化方式，``copy`` 或 ``hardlink``。
     """
     output_dir = Path(output_dir).expanduser().resolve()
-    out_root = output_dir / CLEANED_DIRNAME
-    assert_safe_output(dataset.root, out_root)
+    root = Path(out_root).expanduser().resolve() if out_root else output_dir / CLEANED_DIRNAME
+    assert_safe_output(dataset.root, root)
 
-    dropped, trim_plan, rebuild_ts = _parse_dispositions(dispositions)
+    dropped, trim_plan, rebuild_ts, repair_index = _parse_dispositions(dispositions)
     all_eps = dataset.episode_indices
     kept = [e for e in all_eps if e not in set(dropped)]
     repairs = {
@@ -62,17 +71,23 @@ def clean_dataset(
         "timestamps": sorted(rebuild_ts),
     }
     has_repairs = bool(trim_plan or rebuild_ts)
+    index_repair = repair_index or _has_index_issue(dataset_issues)
 
     if not dropped and not has_repairs:
+        if index_repair:
+            LOG.info("检测到全局 index 不一致：按真实行数重建 index（视频与 meta 保持不变）")
+            result = reindex_untouched(dataset, root, overwrite=overwrite)
+            write_notes(result, root)
+            return result
         LOG.info("没有需要清洗的 episode，仍产出一份结构完整的数据集副本")
-        result = copy_untouched(dataset, out_root, overwrite=overwrite)
-        write_notes(result, out_root)
+        result = copy_untouched(dataset, root, overwrite=overwrite)
+        write_notes(result, root)
         return result
 
     result: CleaningResult | None = None
     expected_frames: int | None = None
     if prefer_cli and not has_repairs:
-        result = try_cli(dataset, dropped or [], out_root, overwrite=overwrite,
+        result = try_cli(dataset, dropped or [], root, overwrite=overwrite,
                          kept=kept, repairs=repairs)
         if result is None:
             LOG.info("lerobot-edit-dataset 不可用或执行失败，回退到内置清洗实现")
@@ -82,25 +97,27 @@ def clean_dataset(
 
     if result is None:
         result, expected_frames = manual_clean(
-            dataset, kept, out_root, overwrite=overwrite,
+            dataset, kept, root, overwrite=overwrite,
             trim_plan=trim_plan, rebuild_ts=rebuild_ts, repairs=repairs,
+            link_mode=link_mode,
         )
 
-    result.verification = verify(out_root, expected_episodes=result.kept_episodes,
+    result.verification = verify(root, expected_episodes=result.kept_episodes,
                                  expected_frames=expected_frames)
     if result.verification.get("ok") is False:
         result.warnings.append(f"产出物校验未通过: {result.verification}")
-    write_notes(result, out_root)
+    write_notes(result, root)
     return result
 
 
 def _parse_dispositions(
     dispositions: dict[int, Any] | Iterable[int],
-) -> tuple[list[int], dict[int, dict[str, int]], set[int]]:
-    """归一化成 (要删的, 裁帧方案, 要重建时间轴的)。"""
+) -> tuple[list[int], dict[int, dict[str, int]], set[int], bool]:
+    """归一化成 (要删的, 裁帧方案, 要重建时间轴的, 是否需要重建 index)。"""
     dropped: list[int] = []
     trim_plan: dict[int, dict[str, int]] = {}
     rebuild_ts: set[int] = set()
+    repair_index = False
 
     if isinstance(dispositions, dict):
         for ep, item in dispositions.items():
@@ -116,7 +133,17 @@ def _parse_dispositions(
                 elif repair == "timestamps":
                     rebuild_ts.add(ep)
                 elif repair == "index":
-                    pass  # 索引重建是清洗的默认行为，无需额外参数
+                    # 没有裁帧/时间轴修复时，仍需真正重建 index（否则该处置形同 noop）
+                    repair_index = True
     else:
         dropped = sorted({int(e) for e in dispositions})
-    return sorted(dropped), trim_plan, rebuild_ts
+    return sorted(dropped), trim_plan, rebuild_ts, repair_index
+
+
+def _has_index_issue(dataset_issues: Iterable[Any] | None) -> bool:
+    """数据集级 meta_index_inconsistent = 全局 index 断裂，需要重建。"""
+    for issue in dataset_issues or ():
+        code = issue.get("code") if isinstance(issue, dict) else getattr(issue, "code", None)
+        if code == "meta_index_inconsistent":
+            return True
+    return False

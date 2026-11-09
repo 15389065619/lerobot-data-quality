@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -9,7 +11,7 @@ from pipeline.config import load_config
 from pipeline.loader import load_dataset
 from pipeline.validator import validate_dataset
 
-from conftest import build_dataset, smooth_episode
+from conftest import JOINTS, build_dataset, smooth_episode
 
 
 def _validate(path, **overrides):
@@ -103,6 +105,84 @@ def test_step_hold_degree_action_outlier_detected(tmp_path):
 
     flagged = [r.episode_index for r in result.results.values() if "action_jump" in r.reasons]
     assert flagged == [7]
+
+
+def _bump_episode(seed: int, kind: str = "normal", n: int = 50) -> dict:
+    """带连续缓动的轨迹：kind=fast 用正弦包络制造「快速但连续」的峰值，kind=spike 制造单帧突跳。"""
+    action = np.zeros((n, 3), dtype=np.float32)
+    action[:, 0] = np.arange(n) * 0.1
+    if kind == "fast":
+        # sin² 包络：两端速度自然收敛到 0，模拟真实的「加速—匀速—减速」快速摆动
+        action[10:31, 0] += 30.0 * np.sin(np.pi * np.arange(21) / 20) ** 2
+    elif kind == "spike":
+        action[25, 0] += 3.0
+    return {"state": action.copy(), "action": action}
+
+
+def test_action_jump_ignores_smooth_fast_motion(tmp_path):
+    """峰值超阈值但邻近帧同样大的快速连续运动，不应判为跳变；单帧尖峰仍要命中。"""
+    episodes = {ep: _bump_episode(ep) for ep in range(20)}
+    episodes[20] = _bump_episode(20, "fast")
+    episodes[21] = _bump_episode(21, "spike")
+    path = build_dataset(tmp_path / "ds", episodes)
+    _, result = _validate(path)
+
+    assert "action_jump" not in result.results[20].reasons, "连续快速运动被误报为跳变"
+    assert "action_jump" in result.results[21].reasons
+    detail = result.results[21].details["action_jump"]
+    assert detail["spike_ratio"] == 3.0
+    assert detail["max_delta"] > 2.5
+
+
+def _quat_episode(seed: int, flip: bool = False, spike: bool = False, n: int = 50) -> dict:
+    """JOINTS 个连续维模拟 root 四元数分量，翻转时整体取反（q≡-q）。"""
+    t = np.arange(n)
+    action = np.zeros((n, JOINTS), dtype=np.float32)
+    for d, amp in enumerate([0.9, 0.7, 0.5][:JOINTS]):
+        action[:, d] = amp * np.sin(0.1 * t + d)
+    if flip:
+        action[25:, :] *= -1
+    if spike:
+        action[25, 0] += 2.0
+    return {"state": action.copy(), "action": action}
+
+
+def test_action_jump_ignores_quaternion_sign_flip(tmp_path):
+    """四元数整体取反（q≡-q）不应判为跳变；单维突跳仍要命中。"""
+    episodes = {ep: _quat_episode(ep) for ep in range(20)}
+    episodes[20] = _quat_episode(20, flip=True)
+    episodes[21] = _quat_episode(21, spike=True)
+    path = build_dataset(tmp_path / "ds", episodes)
+    _, result = _validate(path)
+
+    assert "action_jump" not in result.results[20].reasons, "四元数符号翻转被误报为跳变"
+    assert "action_jump" in result.results[21].reasons
+
+
+def test_action_jump_thresholds_scale_with_fps():
+    """abs_floor 以 30Hz 标定，120Hz 数据集折算为 1/4，避免规则在光捕数据上失效或过松。"""
+    from pipeline.config import load_config
+    from pipeline.validator.context import _thresholds_from_arrays
+
+    cfg = load_config(robot_type="test_robot")
+    arrays = [np.zeros((50, 3), dtype=np.float32) for _ in range(3)]
+    _, meta30 = _thresholds_from_arrays(arrays, cfg, fps=30.0)
+    _, meta120 = _thresholds_from_arrays(arrays, cfg, fps=120.0)
+    assert meta30["abs_floor_effective"] == 1.0
+    assert meta120["abs_floor_effective"] == 0.25
+    assert meta120["fps"] == 120.0
+
+
+def test_thresholds_tolerate_mixed_action_dims():
+    """跨 episode 维度不一致不应抛 ValueError（否则整次质检零报告）。"""
+    from pipeline.validator.context import _thresholds_from_arrays
+
+    cfg = {"defaults": {"action_jump": {}}}
+    arrays = [np.zeros((10, 6)), np.zeros((10, 7)), np.ones((10, 6))]
+    thresholds, meta = _thresholds_from_arrays(arrays, cfg)
+
+    assert len(thresholds) == 6
+    assert meta["dim_mismatch_episodes"] == 1
 
 
 def test_frame_count_outlier_detected(tmp_path):
@@ -256,3 +336,147 @@ def test_skip_reason_recorded_when_no_video(normal_dataset):
     """无视频特征时必须如实记录跳过的检查，不能假装检查过。"""
     _, result = _validate(normal_dataset)
     assert "frame_mismatch" in result.skipped_checks
+
+
+def test_v21_video_in_chunk_dir_is_located(tmp_path):
+    """v2.1 标准布局 videos/chunk-000/<camera>/episode_XXXXXX.mp4 必须能定位。"""
+    root = tmp_path / "ds21"
+    (root / "meta").mkdir(parents=True)
+    video = root / "videos" / "chunk-000" / "observation.images.top" / "episode_000000.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    info = {
+        "codebase_version": "v2.1",
+        "robot_type": "test_robot",
+        "total_episodes": 1,
+        "total_frames": 4,
+        "fps": 30,
+        "chunks_size": 1000,
+        "data_path": "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet",
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [2]},
+            "action": {"dtype": "float32", "shape": [2]},
+            "observation.images.top": {"dtype": "video", "shape": [240, 320, 3]},
+        },
+    }
+    (root / "meta" / "info.json").write_text(json.dumps(info), encoding="utf-8")
+    (root / "meta" / "episodes.jsonl").write_text(
+        json.dumps({"episode_index": 0, "tasks": ["pick"], "length": 4}) + "\n", encoding="utf-8"
+    )
+
+    dataset = load_dataset(root, load_frames=False)
+    loc = dataset.video_location("observation.images.top", 0)
+    assert loc is not None
+    assert loc[0] == video
+
+
+def test_v21_video_path_template_with_short_dir(tmp_path):
+    """v2.1 常见写法：info.json 给 video_path 模板，目录名省略 observation.images. 前缀。"""
+    root = tmp_path / "ds21_tmpl"
+    (root / "meta").mkdir(parents=True)
+    video = root / "videos" / "chunk-000" / "egocentric" / "episode_000005.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    info = {
+        "codebase_version": "v2.1",
+        "robot_type": "test_robot",
+        "total_episodes": 6,
+        "total_frames": 24,
+        "fps": 30,
+        "chunks_size": 1000,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "video_path": "videos/chunk-{episode_chunk:03d}/egocentric/episode_{episode_index:06d}.mp4",
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [2]},
+            "action": {"dtype": "float32", "shape": [2]},
+            "observation.images.egocentric": {"dtype": "video", "shape": [240, 320, 3]},
+        },
+    }
+    (root / "meta" / "info.json").write_text(json.dumps(info), encoding="utf-8")
+    (root / "meta" / "episodes.jsonl").write_text(
+        json.dumps({"episode_index": 5, "tasks": ["walk"], "length": 4}) + "\n", encoding="utf-8"
+    )
+
+    dataset = load_dataset(root, load_frames=False)
+    loc = dataset.video_location("observation.images.egocentric", 5)
+    assert loc is not None
+    assert loc[0] == video
+
+
+def test_meta_episode_index_mismatch_is_reported(tmp_path):
+    """behavior1k 实测：meta 用全局 ID、data 用 0..N-1 时，必须报数据集级
+    meta_episode_mismatch，而不是只得到一堆 missing_task/video_unlocatable。"""
+    import pyarrow.parquet as pq
+
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(40, seed=11),
+                                           1: smooth_episode(40, seed=12)})
+    meta_path = path / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    tbl = pq.read_table(meta_path)
+    tbl = tbl.set_column(
+        tbl.schema.get_field_index("episode_index"), "episode_index",
+        [[420010, 420020]],
+    )
+    pq.write_table(tbl, meta_path)
+
+    _, result = _validate(path)
+    codes = {i.code for i in result.dataset_issues}
+    assert "meta_episode_mismatch" in codes
+    issue = next(i for i in result.dataset_issues if i.code == "meta_episode_mismatch")
+    assert issue.detail["overlap"] == 0
+    assert issue.detail["data_episodes"] == 2
+    assert issue.detail["meta_episodes"] == 2
+
+
+def test_missing_frame_index_is_tolerated(tmp_path):
+    """部分 v3 数据集（behavior1k）没有 frame_index 列：加载与质检都不能崩。"""
+    import pyarrow.parquet as pq
+
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(40, seed=21),
+                                           1: smooth_episode(40, seed=22)})
+    data_path = path / "data" / "chunk-000" / "file-000.parquet"
+    tbl = pq.read_table(data_path)
+    tbl = tbl.drop(["frame_index"])
+    pq.write_table(tbl, data_path)
+
+    dataset, result = _validate(path)
+    assert "frame_index" not in dataset.frames.columns
+    assert result.valid_episodes + len(result.invalid_episodes) == 2
+    assert "meta_episode_mismatch" not in {i.code for i in result.dataset_issues}
+
+
+def test_image_features_are_not_treated_as_video(tmp_path):
+    """dtype=image 的特征逐帧嵌在 parquet 里，没有 mp4 文件。
+
+    以前 video_features 把 image 也算进去，video_location 必然定位失败，
+    整批 episode 报 frame_mismatch（libero_10_image 实测 379/379 误报）。
+    """
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(20, seed=31),
+                                           1: smooth_episode(20, seed=32)})
+    info_path = path / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["features"]["observation.images.image"] = {"dtype": "image", "shape": [128, 128, 3]}
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+
+    dataset, result = _validate(path)
+    assert dataset.video_features == []
+    assert dataset.image_features == ["observation.images.image"]
+    assert "没有视频特征" in result.skipped_checks["frame_mismatch"]
+    assert result.valid_episodes == 2
+    assert all("frame_mismatch" not in r.reasons for r in result.results.values())
+
+
+def test_streaming_stats_skipped_when_sampling_partial(tmp_path):
+    """流式只采样 N 个 episode 时，子集均值不能拿来判定全量 stats 过期。
+
+    libero_10_image（379 集，采样 200）实测偏差 2.5e-08 却报 stats_stale。
+    """
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(20, seed=41),
+                                           1: smooth_episode(20, seed=42)})
+    dataset = load_dataset(path)
+    config = load_config(robot_type="test_robot", overrides={"stale_stats": {"sample_episodes": 1}})
+    result = validate_dataset(dataset, config, streaming=True)
+
+    assert all(i.code != "stats_stale" for i in result.dataset_issues)
+    assert any("不可比" in why for why in result.skipped_checks.values())

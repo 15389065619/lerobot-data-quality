@@ -49,6 +49,7 @@ class EpisodeDatasetStub:
         has_task_index_col: bool,
         has_tasks_meta: bool,
         fps: float,
+        locator_available: bool = True,
     ) -> None:
         self.joint_names = joint_names
         self._episodes_meta = episodes_meta
@@ -56,6 +57,9 @@ class EpisodeDatasetStub:
         self._has_task_index_col = has_task_index_col
         self._has_tasks_meta = has_tasks_meta
         self.fps = fps
+        # 编号空间能否对齐：对不上时定位类规则在 worker 里也要跳过，否则并行与
+        # 串行结论会不一致（串行跳过、worker 报 error）
+        self.locator_available = locator_available
 
     @property
     def episodes(self) -> pd.DataFrame:
@@ -94,6 +98,13 @@ def build_episode_shared(
     else:
         # 没有 length 列时 check_meta_consistency 直接跳过；空表保持同样语义
         episodes_meta = pd.DataFrame()
+    if len(episodes_meta) and getattr(dataset, "meta_id_map", None):
+        # meta 用全局编号、data 用 0..N-1 时，worker 侧也统一到数据侧编号，
+        # 保证 check_meta_consistency 的 join 与串行视图（view.meta_row）口径一致
+        inv = {int(m): int(d) for d, m in dataset.meta_id_map.items()}
+        episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(inv)].copy()
+        episodes_meta["episode_index"] = episodes_meta["episode_index"].map(inv).astype("int64")
+        episodes_meta = episodes_meta.sort_values("episode_index").reset_index(drop=True)
     return {
         "config": config,
         "frame_bounds": ctx.frame_bounds,
@@ -106,6 +117,7 @@ def build_episode_shared(
             "has_task_index_col": "task_index" in dataset.frames.columns,
             "has_tasks_meta": bool(dataset.tasks),
             "fps": float(dataset.fps),
+            "locator_available": bool(getattr(dataset, "locator_available", True)),
         },
     }
 

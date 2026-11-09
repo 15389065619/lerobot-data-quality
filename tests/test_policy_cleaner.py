@@ -6,6 +6,7 @@ import csv
 import json
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -158,6 +159,78 @@ def test_no_findings_copies_dataset(tmp_path):
     assert (tmp_path / "out" / "cleaned_dataset" / "meta" / "info.json").is_file()
 
 
+def test_cleaner_rebuilds_global_index_when_inconsistent(tmp_path):
+    """模拟 v2.1 导出：index 每个 episode 从 0 重新编号，清洗应重建为全局连续。"""
+    episodes = {ep: smooth_episode(20, seed=ep) for ep in range(3)}
+    path = build_dataset(tmp_path / "ds", episodes)
+    data = path / "data" / "chunk-000" / "file-000.parquet"
+    table = pq.read_table(data)
+    frame_idx = np.asarray(table.column("frame_index").to_pylist(), dtype=np.int64)
+    table = table.set_column(
+        table.schema.get_field_index("index"),
+        table.schema.field("index"),
+        pa.array(frame_idx),
+    )
+    pq.write_table(table, data)
+
+    dataset = load_dataset(path)
+    result = validate_dataset(dataset, load_config(robot_type="test_robot"))
+    assert any(i.code == "meta_index_inconsistent" for i in result.dataset_issues)
+
+    decisions = policy_mod.decide(result)
+    cleaning = cleaner_mod.clean_dataset(
+        dataset, decisions, tmp_path / "out", prefer_cli=False,
+        dataset_issues=result.dataset_issues,
+    )
+    assert cleaning.method == "index-repair-copy"
+    assert cleaning.repaired_episodes == [0, 1, 2]
+
+    cleaned = load_dataset(tmp_path / "out" / "cleaned_dataset")
+    assert cleaned.frames["index"].tolist() == list(range(cleaned.num_frames))
+
+
+def test_index_repair_backfills_missing_frame_index(tmp_path):
+    """behavior1k 场景：既没有 frame_index，index 又每集从 0 重启。
+
+    只修 index 不够——episode 内帧号仍然无从得知，下游切窗只能自己猜；
+    重建时应一并补出 frame_index=0..length-1。
+    """
+    episodes = {ep: smooth_episode(15, seed=ep) for ep in range(2)}
+    path = build_dataset(tmp_path / "ds", episodes)
+    data = path / "data" / "chunk-000" / "file-000.parquet"
+    table = pq.read_table(data)
+    frame_idx = np.asarray(table.column("frame_index").to_pylist(), dtype=np.int64)
+    table = table.set_column(
+        table.schema.get_field_index("index"),
+        table.schema.field("index"),
+        pa.array(frame_idx),
+    )
+    table = table.drop(["frame_index"])
+    pq.write_table(table, data)
+
+    dataset = load_dataset(path)
+    assert "frame_index" not in dataset.frames.columns
+    result = validate_dataset(dataset, load_config(robot_type="test_robot"))
+    assert any(i.code == "meta_index_inconsistent" for i in result.dataset_issues)
+
+    cleaning = cleaner_mod.clean_dataset(
+        dataset, policy_mod.decide(result), tmp_path / "out", prefer_cli=False,
+        dataset_issues=result.dataset_issues,
+    )
+    assert cleaning.method == "index-repair-copy"
+
+    out_root = tmp_path / "out" / "cleaned_dataset"
+    cleaned = load_dataset(out_root)
+    assert "frame_index" in cleaned.frames.columns
+    assert cleaned.frames["index"].tolist() == list(range(cleaned.num_frames))
+    for ep, group in cleaned.frames.groupby("episode_index"):
+        assert group["frame_index"].tolist() == list(range(len(group)))
+
+    info = json.loads((out_root / "meta" / "info.json").read_text(encoding="utf-8"))
+    assert "frame_index" in info["features"]
+    assert info["splits"] == {"train": "0:2"}
+
+
 def test_report_contains_business_sections(tmp_path):
     dataset, result, decisions = _run(_mixed_dataset(tmp_path))
     report = build_report(dataset, result, decisions, dataset_path=tmp_path / "ds")
@@ -212,3 +285,103 @@ def test_attribution_groups_by_collector(tmp_path):
     groups = {g["value"]: g for g in dims["meta/collector"]["groups"]}
     assert groups["bob"]["invalid"] == 1
     assert groups["alice"]["invalid"] == 0
+
+
+def test_short_episode_is_warning_and_review(tmp_path):
+    """帧数过短可能只是任务步数少的合法数据（LIBERO），不该按 error 直接剔除。
+
+    三条 40 帧的 episode 让 MAD=0、区间收紧为 [40,40]，再用 15 帧 / 60 帧分别
+    构造过短与过长两种情况。
+    """
+    episodes = {
+        0: smooth_episode(40, seed=51),
+        1: smooth_episode(40, seed=52),
+        2: smooth_episode(40, seed=53),
+        3: smooth_episode(15, seed=54),
+        4: smooth_episode(60, seed=55),
+    }
+    path = build_dataset(tmp_path / "ds", episodes)
+    dataset, result, decisions = _run(path)
+
+    short = result.results[3]
+    assert "frame_count_abnormal" in short.reasons
+    assert result.severity_of(short) == "warning"
+    assert decisions[3].disposition == "review"
+    detail = short.details["frame_count_abnormal"]
+    assert detail["direction"] == "too_few"
+    assert detail["direction_label"] == "过短"
+    assert detail["frame_count"] == 15
+    assert detail["min_allowed"] == 40 and detail["max_allowed"] == 40
+
+    long = result.results[4]
+    assert "frame_count_abnormal" in long.reasons
+    assert result.severity_of(long) == "error"
+    assert decisions[4].disposition == "drop"
+    assert long.details["frame_count_abnormal"]["direction"] == "too_many"
+    assert long.details["frame_count_abnormal"]["direction_label"] == "过长"
+
+
+def test_report_check_severity_reflects_direction(tmp_path):
+    """报告汇总表的级别应跟随逐 episode 的方向分级，而不是静态配置的 error。"""
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(15, seed=91),
+                                           1: smooth_episode(15, seed=92)})
+    dataset, result, decisions = _run(path, frame_count={"min": 30})
+
+    report = build_report(dataset, result, decisions, dataset_path=path)
+    check = next(c for c in report["checks"] if c["code"] == "frame_count_abnormal")
+    assert check["severity"] == "warning"
+    assert check["affected_episodes"] == 2
+    for item in report["invalid_episode_details"]:
+        assert item["severity"] == "warning"
+        assert item["details"]["frame_count_abnormal"]["direction_label"] == "过短"
+
+
+def test_manual_frame_bounds_override_auto(tmp_path):
+    """业务硬约束（如光捕 1~2 分钟）优先于统计学区间，并记录为 manual 模式。"""
+    episodes = {
+        0: smooth_episode(40, seed=61),
+        1: smooth_episode(40, seed=62),
+        2: smooth_episode(15, seed=63),
+        3: smooth_episode(60, seed=64),
+    }
+    path = build_dataset(tmp_path / "ds", episodes)
+    dataset, result, decisions = _run(path, frame_count={"min": 30, "max": 50})
+
+    bounds = result.resolved_thresholds["frame_count"]
+    assert bounds["mode"] == "manual"
+    assert bounds["min"] == 30 and bounds["max"] == 50
+    assert bounds["source"] == {"min": "manual", "max": "manual"}
+    assert bounds["configured"] == {"min": 30, "max": 50}
+
+    short = result.results[2]
+    assert short.details["frame_count_abnormal"]["direction_label"] == "过短"
+    assert result.severity_of(short) == "warning"
+    assert decisions[2].disposition == "review"
+
+    long = result.results[3]
+    assert long.details["frame_count_abnormal"]["direction_label"] == "过长"
+    assert result.severity_of(long) == "error"
+    assert decisions[3].disposition == "drop"
+
+
+def test_manual_frame_bounds_single_side(tmp_path):
+    """只给一侧时，另一侧仍按数据集分布推导，来源分侧记录。"""
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(20, seed=71),
+                                           1: smooth_episode(20, seed=72),
+                                           2: smooth_episode(40, seed=73)})
+    dataset, result, decisions = _run(path, frame_count={"max": 30})
+
+    bounds = result.resolved_thresholds["frame_count"]
+    assert bounds["mode"] == "manual"
+    assert bounds["max"] == 30
+    assert bounds["source"] == {"min": "auto", "max": "manual"}
+    # 40 帧超上限：error + drop
+    assert result.severity_of(result.results[2]) == "error"
+    assert decisions[2].disposition == "drop"
+
+
+def test_manual_frame_bounds_invalid_range(tmp_path):
+    """min > max 属于配置错误，应直接报错而不是产出自相矛盾的区间。"""
+    path = build_dataset(tmp_path / "ds", {0: smooth_episode(20, seed=81)})
+    with pytest.raises(ValueError, match="不能大于"):
+        _run(path, frame_count={"min": 100, "max": 50})

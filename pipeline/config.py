@@ -8,6 +8,7 @@
     defaults: { ... }                 # 所有机器人共用的基线
     robots: {so100_follower: {...}}   # 按 robot_type 覆盖（深层 merge）
     severity: {nan_state: error}
+    baseline_whitelist: [<fingerprint>, ...]   # 已确认的已知误报（见 baseline.py）
 
 merge 规则：代码内置 DEFAULT_CONFIG <- 配置文件 <- robots[robot_type] <- 调用方显式覆盖（CLI）。
 配置文件缺失或某个键缺失时，自动回退到代码里的默认值（cfg_get 的 default 参数），
@@ -31,7 +32,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "version": CONFIG_VERSION,
     "defaults": {
         # 自适应帧数区间：median ± mad_k * 1.4826 * MAD，再夹到 [floor, ceiling]
-        "frame_count": {"mode": "auto", "mad_k_low": 3.0, "mad_k_high": 8.0, "floor": 8, "ceiling": 20000},
+        # min/max 为业务硬约束（单位：帧）：任一非空即进入 manual 模式，显式值优先，
+        # 未指定的一侧仍按数据集分布推导。
+        "frame_count": {
+            "mode": "auto", "mad_k_low": 3.0, "mad_k_high": 8.0,
+            "floor": 8, "ceiling": 20000, "min": None, "max": None,
+        },
         # action 跳变：逐维阈值 = max(abs_floor, median(每集最大|Δ|) + k * 1.4826 * MAD(每集最大|Δ|))
         # 以「每集峰值」而非逐帧 |Δ| 建模，避免步进保持型 action 的 median 被大量 0 拉崩
         # min_episodes_for_peak：episode 数不足时退回逐帧非零 |Δ| 的稳健尺度
@@ -39,6 +45,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "action_jump": {
             "abs_floor": 1.0, "max_jump_mad_k": 3.0,
             "min_episodes_for_peak": 8, "min_margin_ratio": 0.05,
+            # 超阈值后还需相对邻域突跳（连续快动作的峰值通常是邻域的 1~2.5 倍）
+            "spike_ratio": 3.0, "spike_window": 3,
+            # abs_floor 按 ref_fps 标定，实际使用时按数据集 fps 折算（每秒位移等价）
+            "ref_fps": 30.0,
+            # 四元数 q≡-q：同一帧多个维同时符号翻转时视为表示等价
+            "sign_flip_tol": 0.25, "sign_flip_min_dims": 2,
             "discrete_max_unique": 3,
         },
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
@@ -86,6 +98,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "robots": {},
+    # 基线白名单：md5(dataset_name|episode_index|rule_code) 的已知误报，
+    # 命中后该告警被摘除，不再影响健康度（见 pipeline/baseline.py）
+    "baseline_whitelist": [],
     "severity": {
         "nan_state": "error",
         "nan_action": "error",
@@ -106,6 +121,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "episode_read_error": "error",
         # 数据集级问题
         "stats_stale": "warning",
+        "meta_episode_mismatch": "error",
         # 点云规则
         "pc_non_finite": "error",
         "pc_empty_or_sparse": "error",
@@ -170,8 +186,17 @@ def load_config(
         "robot_type": robot_type,
         "defaults": effective,
         "severity": cfg.get("severity", {}),
+        "baseline_whitelist": list(cfg.get("baseline_whitelist") or []),
         "source_file": str(path) if path else None,
     }
+
+
+def read_config_file(path: str | Path) -> dict[str, Any]:
+    """读取原始配置文件（不含默认值合并），供写回白名单等场景使用。"""
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(f"配置文件不存在: {p}")
+    return _load_config_file(p)
 
 
 def cfg_get(config: dict[str, Any], dotted: str, default: Any = None) -> Any:
@@ -196,6 +221,7 @@ def snapshot(config: dict[str, Any]) -> dict[str, Any]:
         "source_file": config.get("source_file"),
         "effective": config.get("defaults", {}),
         "severity": config.get("severity", {}),
+        "baseline_whitelist": list(config.get("baseline_whitelist") or []),
     }
 
 

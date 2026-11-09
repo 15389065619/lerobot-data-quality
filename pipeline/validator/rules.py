@@ -86,20 +86,60 @@ def check_action_jump(
     if not over.any():
         return
     frames, dims = np.where(over)
-    finite_deltas = np.where(np.isfinite(deltas[:, :dim]), deltas[:, :dim], 0.0)
-    worst = np.unravel_index(int(np.argmax(finite_deltas)), finite_deltas.shape)
+    # 超过阈值只是「必要」条件：阈值本身是「每集峰值」的 3σ 上界，
+    # 而峰值是重尾统计量，干净数据里总会有几集因为「快速但连续」的摆动略微越界。
+    # 真正的跳变是相对邻近帧的突跳，因此再要求 |Δ| 至少是邻域中位数的 spike_ratio 倍，
+    # 这样连续加速/减速的运动包络不会被当成跳变，单帧尖峰仍会命中。
+    spike_ratio = float(cfg_get(config, "action_jump.spike_ratio", 3.0))
+    window = int(cfg_get(config, "action_jump.spike_window", 3))
+    # 四元数 q 与 -q 表示同一姿态：整体取反会让 4 个分量在同一帧同时出现 ~2|x| 的跳变。
+    # 这是表示等价而非数据缺陷（120Hz 光捕数据里很常见），需要逐帧成组识别后排除；
+    # 只翻转单个维度的仍按真实跳变处理。
+    flip_tol = float(cfg_get(config, "action_jump.sign_flip_tol", 0.25))
+    flip_min_dims = int(cfg_get(config, "action_jump.sign_flip_min_dims", 2))
+    head, tail = arr[:-1, :dim], arr[1:, :dim]
+    finite = np.isfinite(head) & np.isfinite(tail)
+    with np.errstate(invalid="ignore"):
+        step = np.abs(tail - head)
+        residual = np.abs(head + tail)
+        # 跳变量主要由「正负号反了」贡献：残差 |x_t + x_{t-1}| 远小于步长 |x_t - x_{t-1}|
+        mirror = (residual <= flip_tol * step) & (step > 0)
+    mirror &= finite
+    # 只有同一帧上「多个维同时镜像翻转」才算四元数整体取反，单维翻转仍按真实跳变处理
+    flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
+    kept: list[tuple[int, int]] = []
+    sign_flips = 0
+    for f, d in zip(frames.tolist(), dims.tolist()):
+        if flip_mask[f, d]:
+            sign_flips += 1
+            continue
+        lo, hi = max(0, f - window), min(deltas.shape[0], f + window + 1)
+        neighbours = np.delete(deltas[lo:hi, d], f - lo)
+        neighbours = neighbours[np.isfinite(neighbours)]
+        ref = float(np.median(neighbours)) if neighbours.size else 0.0
+        # 邻域全静止（ref≈0）时任何超阈值的跳变都算尖峰
+        if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
+            kept.append((int(f), int(d)))
+    smooth_ignored = int(frames.size) - len(kept) - sign_flips
+    if not kept:
+        return
+    kept_deltas = np.array([deltas[f, d] for f, d in kept], dtype=float)
+    worst_pos = int(np.argmax(kept_deltas))
     res.add(
         "action_jump",
-        jump_count=int(over.sum()),
-        max_delta=round(float(np.max(deltas[:, :dim])), 4),
+        jump_count=len(kept),
+        max_delta=round(float(kept_deltas[worst_pos]), 4),
         thresholds_used=[round(float(t), 4) for t in thr],
         discrete_dims=[int(x) for x in discrete_dims],
-        worst_frame=int(worst[0]),
-        worst_dim=int(worst[1]),
+        smooth_peaks_ignored=smooth_ignored,
+        sign_flips_ignored=sign_flips,
+        spike_ratio=spike_ratio,
+        worst_frame=kept[worst_pos][0],
+        worst_dim=kept[worst_pos][1],
         examples=[
-            {"frame": int(f), "dim": int(d), "delta": round(float(deltas[f, d]), 4),
+            {"frame": f, "dim": d, "delta": round(float(deltas[f, d]), 4),
              "threshold": round(float(thr[d]), 4)}
-            for f, d in list(zip(frames, dims))[:5]
+            for f, d in kept[:5]
         ],
     )
 
@@ -173,16 +213,25 @@ def check_duplicate(res: EpisodeResult, arr: np.ndarray, ctx: DatasetContext, co
 
 # ------------------------------------------------------------------ 结构类检查
 def check_frame_count(res: EpisodeResult, bounds: dict[str, Any], config: dict[str, Any]) -> None:
+    """帧数区间检查。
+
+    方向决定严重度：过短降为 warning 交人工复核——任务步数本就少的合法数据
+    （如 LIBERO）容易被自适应下限误杀；过长通常意味着拼接失败或未正确切分，
+    保持 error 并剔除。
+    """
     n = res.frame_count
     low, high = int(bounds["min"]), int(bounds["max"])
     if low <= n <= high:
         return
+    too_short = n < low
     res.add(
         "frame_count_abnormal",
+        severity="warning" if too_short else None,
         frame_count=n,
         min_allowed=low,
         max_allowed=high,
-        direction="too_few" if n < low else "too_many",
+        direction="too_few" if too_short else "too_many",
+        direction_label="过短" if too_short else "过长",
         how_derived=f"median={bounds.get('median')} mad={bounds.get('mad')} mode={bounds.get('mode')}",
     )
 
@@ -390,13 +439,24 @@ def _check_frame_index_gap(ep_df: pd.DataFrame, res: EpisodeResult) -> None:
 def check_meta_consistency(res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView) -> None:
     if "length" not in dataset.episodes.columns:
         return
-    row = dataset.episodes.loc[dataset.episodes["episode_index"] == ep_index, "length"]
-    if not len(row) or pd.isna(row.iloc[0]):
-        return
-    try:
-        meta_length = int(row.iloc[0])
-    except (TypeError, ValueError):
-        return
+    # 走 view.meta_row 而不是直接比较：两侧编号空间不同时由视图负责换算
+    meta_row = getattr(dataset, "meta_row", None)
+    if callable(meta_row):
+        row_obj = meta_row(ep_index)
+        if row_obj is None or pd.isna(row_obj.get("length")):
+            return
+        try:
+            meta_length = int(row_obj["length"])
+        except (TypeError, ValueError):
+            return
+    else:
+        row = dataset.episodes.loc[dataset.episodes["episode_index"] == ep_index, "length"]
+        if not len(row) or pd.isna(row.iloc[0]):
+            return
+        try:
+            meta_length = int(row.iloc[0])
+        except (TypeError, ValueError):
+            return
     if meta_length != res.frame_count:
         res.add(
             "meta_index_inconsistent",
@@ -412,6 +472,10 @@ def check_frame_mismatch(
     cameras: list[str], precise: bool, config: dict[str, Any],
 ) -> None:
     if not FFPROBE:
+        return
+    # 编号空间对不上时，meta 里根本没有该 episode 的视频窗口 → 定位必然失败。
+    # 这属于「不可评估」，不是数据异常；报成 error 会让整批数据被误删。
+    if not dataset.locator_available:
         return
     tol = int(cfg_get(config, "video_frame_tolerance", 1))
     problems: list[dict[str, Any]] = []
@@ -449,6 +513,8 @@ def check_frame_mismatch(
 
 
 def check_task(res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView) -> None:
+    if not dataset.locator_available:
+        return  # 同上：任务信息定位不到 ≠ 任务缺失
     if dataset.task_of(ep_index):
         return
     if "task_index" not in dataset.frames.columns and not dataset.tasks:
