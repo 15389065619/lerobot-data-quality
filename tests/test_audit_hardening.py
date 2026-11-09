@@ -452,3 +452,80 @@ def test_loader_exposes_index_uniqueness(tmp_path):
     assert items, view.schema_contract
     assert items[0]["severity"] == "error"
     assert "重复" in items[0]["rule"]
+
+
+def test_index_issue_reports_real_episode_index():
+    """「示例 episode」必须给真实编号，不能拿 DataFrame 位置冒充（remap 后会指错集）。"""
+    import pandas as pd
+
+    summary = pd.DataFrame(
+        {
+            "episode_index": [420010, 420020],
+            "rows": [10, 10],
+            "idx_min": [0, 0],
+            "idx_max": [9, 9],
+            "idx_nunique": [10.0, 9.0],
+        }
+    )
+    items = audit_schema(
+        features=_features(),
+        splits={"train": "0:2"},
+        total_episodes=2,
+        data_columns=set(REQUIRED_FRAME_COLUMNS),
+        data_summary=summary,
+        codebase_version="v2.1",
+    )
+    index_items = [i for i in items if i["column"] == "index"]
+    assert index_items, items
+    assert "420020" in index_items[0]["actual"]
+    assert "示例 episode [1]" not in index_items[0]["actual"]
+
+
+def test_single_episode_index_damage_is_detected():
+    """单 episode 数据集没有跨集可比对象，但集内重复仍必须报。"""
+    import pandas as pd
+
+    summary = pd.DataFrame(
+        {
+            "episode_index": [0],
+            "rows": [10],
+            "idx_min": [0],
+            "idx_max": [9],
+            "idx_nunique": [9.0],
+        }
+    )
+    items = audit_schema(
+        features=_features(),
+        splits={"train": "0:1"},
+        total_episodes=1,
+        data_columns=set(REQUIRED_FRAME_COLUMNS),
+        data_summary=summary,
+        codebase_version="v2.1",
+    )
+    index_items = [i for i in items if i["column"] == "index"]
+    assert len(index_items) == 1
+    assert index_items[0]["severity"] == "error"
+    assert "唯一值个数=9" in index_items[0]["actual"]
+
+
+def test_single_episode_healthy_index_is_clean():
+    import pandas as pd
+
+    summary = pd.DataFrame(
+        {
+            "episode_index": [0],
+            "rows": [10],
+            "idx_min": [0],
+            "idx_max": [9],
+            "idx_nunique": [10.0],
+        }
+    )
+    items = audit_schema(
+        features=_features(),
+        splits={"train": "0:1"},
+        total_episodes=1,
+        data_columns=set(REQUIRED_FRAME_COLUMNS),
+        data_summary=summary,
+        codebase_version="v3.0",
+    )
+    assert [i for i in items if i["column"] == "index"] == []

@@ -25,6 +25,18 @@ def _episode_nunique(summary: pd.DataFrame | None) -> np.ndarray | None:
     return pd.to_numeric(summary["idx_nunique"], errors="coerce").to_numpy(dtype=float)
 
 
+def _sample_episodes(summary: pd.DataFrame, positions: np.ndarray) -> list[int]:
+    """报错里的「示例 episode」必须是真实的 episode_index，而不是 DataFrame 的位置。
+
+    ``summary`` 的行序来自逐文件扫描（可能是 0..N-1 的 RangeIndex），编号经过
+    remap 或非顺序时，用位置当编号会把排查引到别的 episode 上。
+    """
+    if "episode_index" in summary.columns:
+        values = np.asarray(summary["episode_index"].tolist())
+        return [int(x) for x in values[positions]]
+    return [int(x) for x in np.asarray(summary.index)[positions]]
+
+
 def audit_schema(
     *,
     features: dict[str, Any],
@@ -92,7 +104,7 @@ def audit_schema(
         )
         bad = np.flatnonzero(span_bad | dup_bad)
         if bad.size:
-            sample = summary.index[bad[:5]].tolist()
+            sample = _sample_episodes(summary, bad[:5])
             uniq_note = (
                 f"，唯一值个数={nunique[bad[:5]].tolist()}" if nunique is not None else ""
             )
@@ -147,7 +159,7 @@ def audit_schema(
             if nunique is not None:
                 bad = np.flatnonzero(np.isfinite(nunique) & (nunique != rows))
                 if bad.size:
-                    sample = summary.index[bad[:5]].tolist()
+                    sample = _sample_episodes(summary, bad[:5])
                     out.append(
                         {
                             "column": "index",
@@ -162,6 +174,30 @@ def audit_schema(
                             "severity": "error",
                         }
                     )
+
+    # 单 episode 数据集没有可比对象，无法判「起点是否等于前序累计行数」；
+    # 但集内连续与唯一性是**单集即可证伪**的性质，与版本无关，不能一并放过——
+    # 否则单任务子集（--max_episodes 1 或本就只有一个 episode）上 index 损坏会完全静默。
+    elif per_ep_index and len(summary) == 1:
+        n = int(summary["rows"].iloc[0])
+        lo, hi = int(summary["idx_min"].iloc[0]), int(summary["idx_max"].iloc[0])
+        nunique = _episode_nunique(summary)
+        uniq = int(nunique[0]) if nunique is not None and np.isfinite(nunique[0]) else None
+        if (hi - lo + 1) != n or (uniq is not None and uniq != n):
+            ep = _sample_episodes(summary, np.array([0]))[0]
+            out.append(
+                {
+                    "column": "index",
+                    "rule": "index 必须在 episode 内连续且不重复（单 episode 数据集同样适用）",
+                    "expected": f"idx_max - idx_min + 1 == rows == 唯一值个数 == {n}",
+                    "actual": (
+                        f"episode {ep}：rows={n}，idx_min={lo}，idx_max={hi}，"
+                        f"跨度 {hi - lo + 1}，唯一值个数={uniq if uniq is not None else '未知'}"
+                    ),
+                    "impact": "集内帧号断裂或重复会让按 index 切窗取错帧；官方映射表也会因重复键塌缩，均不抛异常",
+                    "severity": "error",
+                }
+            )
 
     # ---------------------------------------------------------------- 3. splits
     if isinstance(splits, dict) and total_episodes:
