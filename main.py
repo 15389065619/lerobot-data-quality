@@ -265,8 +265,11 @@ def main(argv: list[str] | None = None) -> int:
 
     save_intermediate(output_dir, "03_dispositions.json",
                       {str(ep): d.to_dict() for ep, d in sorted(decisions.items())})
-    signatures = manifest.episode_signatures(dataset) if incremental else {}
-    if incremental:
+    # --incremental --force：强制全量重跑后仍要写回 manifest，否则旧格式（缺
+    # severity_overrides）的缓存永远无法刷新；--max_episodes 只是子集，禁止落盘。
+    store_manifest = args.incremental and args.max_episodes is None
+    signatures = manifest.episode_signatures(dataset) if store_manifest else {}
+    if store_manifest:
         manifest.store_results(dataset, config, validation, decisions, signatures)
         manifest.save()
     counts = policy_mod.summarize(decisions)["counts"]
@@ -295,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --------------------------------------------------------- 5. cleaner
     cleaning_dict: dict[str, Any] | None = None
-    cleaning_sig = cleaning_signature(decisions, signatures) if (incremental and not args.skip_clean) else None
+    cleaning_sig = cleaning_signature(decisions, signatures) if (store_manifest and not args.skip_clean) else None
     reused_cleaning = manifest.reusable_cleaning(cleaning_sig) if cleaning_sig else None
     if args.skip_clean:
         step("清洗（cleaner）— 已跳过", 5, total_steps)

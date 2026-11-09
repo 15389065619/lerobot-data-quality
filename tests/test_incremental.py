@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from main import main
 from pipeline.config import load_config
 from pipeline.loader import load_dataset
 from pipeline.manifest import QualityManifest, cleaning_signature
@@ -115,3 +116,33 @@ def test_reusable_cleaning_requires_existing_output(tmp_path):
 
     output.rename(tmp_path / "moved")
     assert manifest.reusable_cleaning("sig-a") is None
+
+
+def _run_main(dataset_path, output_dir, *extra):
+    return main([
+        "--dataset_path", str(dataset_path),
+        "--output_dir", str(output_dir),
+        "--incremental",
+        "--skip-clean",
+        "--skip-pointcloud",
+        "--no-cli",
+        "--skip-plots",
+        *extra,
+    ])
+
+
+def test_forced_incremental_run_rewrites_manifest(normal_dataset, tmp_path):
+    """--incremental --force 跑完全量后必须写回 manifest，否则旧缓存无法刷新。"""
+    out = tmp_path / "out"
+    assert _run_main(normal_dataset, out, "--force") == 0
+
+    manifest = QualityManifest.load(out / "quality_manifest.json")
+    dataset = load_dataset(normal_dataset)
+    assert set(manifest.cached_results()) == set(dataset.episode_indices)
+
+
+def test_partial_run_does_not_write_manifest(normal_dataset, tmp_path):
+    """--max_episodes 是子集，不能写入增量缓存。"""
+    out = tmp_path / "out"
+    assert _run_main(normal_dataset, out, "--force", "--max_episodes", "4") == 0
+    assert not (out / "quality_manifest.json").exists()
