@@ -692,7 +692,7 @@ def render_section(
         f"### {sec}.4 结论",
         "",
     ]
-    lines += _conclusion(cmp)
+    lines += _conclusion(cmp, sec)
     lines += [
         "",
         f"### {sec}.5 边界（这段不能删）",
@@ -721,7 +721,7 @@ def render_section(
     return "\n".join(lines)
 
 
-def _conclusion(cmp: dict[str, Any]) -> list[str]:
+def _conclusion(cmp: dict[str, Any], sec: str) -> list[str]:
     """数据驱动地生成结论：只陈述量出来的事实，下降/上升都照写。"""
     raw_all, cleaned = cmp["raw_all"], cmp["cleaned"]
     metrics = cmp["metrics"]
@@ -734,7 +734,7 @@ def _conclusion(cmp: dict[str, Any]) -> list[str]:
             f"整体动作方差由 {_num(raw_all['var'])} 降至 {_num(cleaned['var'])}，**{_pct_text(var_pct)}**；"
             f"其中选择效应 {_pct_text(metrics['var_selection_pct'])}、"
             f"修复效应 {_pct_text(metrics['var_repair_pct'])}"
-            "（两项之和与合计略有出入，方差对样本构成非线性，见上一节）。"
+            f"（两项之和与合计略有出入，方差对样本构成非线性，见 §{sec}.2）。"
         )
     elif math.isfinite(var_pct):
         out.append(
@@ -748,12 +748,16 @@ def _conclusion(cmp: dict[str, Any]) -> list[str]:
         change = _pct(after, before)
         trend = f"收窄到 {_num(after)}（{_pct_text(change)}）" if change < 0 \
             else f"变为 {_num(after)}（{_pct_text(change)}，未收窄）"
-        if cleaned["max_delta"] < raw_all["max_delta"] - 1e-9:
+        if cleaned["max_delta"] > 2 * cmp["threshold"]:
+            # 只降了一点点但仍在阈值之上：极值所在的集没被剔除，说「降低」是误导
+            tail = (f"清洗后单帧最大位移仍为 {_num(cleaned['max_delta'])}，"
+                    f"超过阈值 {_num(cleaned['max_delta'] / cmp['threshold'])} 倍 —— "
+                    "极值所在的 episode 不在本次剔除集合内（多为 review 未裁决，仍留在产物里）。")
+        elif cleaned["max_delta"] < raw_all["max_delta"] - 1e-9:
             tail = (f"单帧最大位移从 {_num(raw_all['max_delta'])} 降到 "
-                    f"{_num(cleaned['max_delta'])}。")
+                    f"{_num(cleaned['max_delta'])}，已回到阈值以内。")
         else:
-            tail = (f"单帧最大位移仍为 {_num(cleaned['max_delta'])}：原始极值所在 episode "
-                    "不在本次剔除集合内（多为 review 未裁决，仍留在导出产物里）。")
+            tail = f"单帧最大位移仍为 {_num(cleaned['max_delta'])}。"
         out.append(f"- 归一化跳变（max|Δ|/std）由 {_num(before)} {trend}；{tail}")
 
     over_before, over_after = raw_all["over_threshold"], cleaned["over_threshold"]
