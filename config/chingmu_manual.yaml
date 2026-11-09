@@ -1,0 +1,13 @@
+# ChingMu MotionDecode（动作片段库）示例配置
+#
+# 该数据集是「片段库」：单条 episode 长度从 5 秒到 5 分钟不等（678 ~ 34971 帧），
+# 长度分布本身不服从单一 3σ 区间，auto 模式会把长短两端都判成异常。
+# 这里改用业务硬约束（frame_count.min/max），显式给出可接受区间。
+#
+# 用法：python main.py --dataset_path G:\Lerobot\data\chingmu_subset ^
+#        --output_dir G:\Lerobot\outputs_chingmu_manual --config config/chingmu_manual.yaml
+
+defaults:
+  frame_count:
+    min: 600        # 5 秒 @120Hz 起
+    max: 40000      # 约 5.5 分钟封顶

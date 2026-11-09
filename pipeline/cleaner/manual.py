@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -40,6 +41,7 @@ def manual_clean(
     trim_plan: dict[int, dict[str, int]],
     rebuild_ts: set[int],
     repairs: dict[str, list[int]],
+    link_mode: str = "copy",
 ) -> tuple[CleaningResult, int]:
     prepare_dir(out_root, overwrite=overwrite)
     warnings: list[str] = []
@@ -56,7 +58,9 @@ def manual_clean(
     )
 
     # 3) 重建视频
-    new_video_meta, video_warnings = _rebuild_videos(dataset, kept, out_root, windows, kept_lengths)
+    new_video_meta, video_warnings = _rebuild_videos(
+        dataset, kept, out_root, windows, kept_lengths, link_mode=link_mode
+    )
     warnings.extend(video_warnings)
 
     # 4) 重建 meta
@@ -98,6 +102,171 @@ def copy_untouched(dataset: LeRobotDatasetView, out_root: Path, *, overwrite: bo
         kept_episodes=len(dataset.episode_indices),
         episode_index_map={e: e for e in dataset.episode_indices},
     )
+
+
+def reindex_untouched(
+    dataset: LeRobotDatasetView,
+    out_root: Path,
+    *,
+    overwrite: bool,
+    reason: str = "全局 index 不连续",
+) -> CleaningResult:
+    """不做删除/裁帧，只按真实行数重建 data/*.parquet 的全局 index 列。
+
+    适用于「数据本身可用，只是 index 被逐 episode 重新编号」的情况（如 v2.1 导出）。
+    走 manual_clean 会顺带重排 episode_index 并重编码视频，代价过高，因此单独实现：
+    复制数据集后原地改写每个 parquet 的 index（缺失时一并补出 frame_index），
+    视频不动，meta 只同步声明与 splits。
+    """
+    prepare_dir(out_root, overwrite=overwrite)
+    shutil.copytree(
+        dataset.root, out_root, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".cache")
+    )
+    episodes, warnings = _rewrite_index_column(dataset, out_root)
+    # 产出必须是规范 v3 结构：补声明 frame_index、修正 splits，避免下游继续踩坑
+    rewrite_info(dataset, list(dataset.episode_indices), dataset.num_frames, out_root)
+
+    result = CleaningResult(
+        success=True,
+        method="index-repair-copy",
+        output_root=out_root,
+        removed_episodes=[],
+        repaired_episodes=episodes,
+        repairs={"index": episodes},
+        kept_episodes=len(dataset.episode_indices),
+        episode_index_map={e: e for e in dataset.episode_indices},
+        warnings=[
+            f"{reason}：已按真实行数重建 {len(episodes)} 个 episode 的全局 index（视频未重编码）",
+            *warnings,
+        ],
+    )
+    # index 与统计量无关，但清洗产物统一重算 stats，避免把 stats_stale 原样带进训练
+    rewrite_stats(dataset, dataset.frames, out_root)
+    LOG.info("index 重建完成：%d 个 episode，写入 %s", len(episodes), out_root)
+    return result
+
+
+def _rewrite_index_column(
+    dataset: LeRobotDatasetView, out_root: Path,
+) -> tuple[list[int], list[str]]:
+    """重写产出目录下所有 data parquet 的 index 列，返回 (涉及的 episode, 警告)。
+
+    分两遍：先只读 episode_index 统计每个 episode 的真实行数并算出起始偏移，
+    再逐文件读全表写回 index = 起始偏移 + episode 内的帧序号。
+    """
+    warnings: list[str] = []
+    files: list[Path] = []
+    for src in dataset.data_files:
+        try:
+            dst = out_root / src.relative_to(dataset.root)
+        except ValueError:
+            continue
+        if dst.is_file():
+            files.append(dst)
+    if not files:
+        warnings.append("未找到可重写的数据文件，index 未重建")
+        return [], warnings
+
+    counts: dict[int, int] = {}
+    frame_ok: dict[int, bool] = {}
+    frame_min: dict[int, int] = {}
+    frame_max: dict[int, int] = {}
+    unique_frame: dict[int, int] = {}
+    readable: list[Path] = []
+
+    for path in files:
+        try:
+            names = pq.ParquetFile(path).schema_arrow.names
+            cols = ["episode_index"] + (["frame_index"] if "frame_index" in names else [])
+            table = pq.read_table(path, columns=cols)
+        except Exception as exc:  # noqa: BLE001 - 单个文件损坏不应中断其余文件的修复
+            warnings.append(f"{path.name} 读取失败，index 未重建: {exc}")
+            continue
+        readable.append(path)
+        eps = _index_values(table.column("episode_index").to_pylist())
+        if eps.size == 0:
+            continue
+        uniq, cnt = np.unique(eps, return_counts=True)
+        for e, n in zip(uniq, cnt):
+            counts[int(e)] = counts.get(int(e), 0) + int(n)
+        if "frame_index" not in table.column_names:
+            for e in uniq:
+                frame_ok[int(e)] = False
+            continue
+        frames = _index_values(table.column("frame_index").to_pylist())
+        for e in uniq:
+            pos = np.where(eps == e)[0]
+            fv = frames[pos]
+            finite = bool(np.isfinite(fv).all())
+            uniq_f = np.unique(fv[np.isfinite(fv)])
+            ep = int(e)
+            unique_frame[ep] = unique_frame.get(ep, 0) + int(uniq_f.size)
+            frame_min[ep] = min(frame_min.get(ep, int(uniq_f[0]) if uniq_f.size else 0),
+                                int(uniq_f[0]) if uniq_f.size else 0)
+            frame_max[ep] = max(frame_max.get(ep, int(uniq_f[-1]) if uniq_f.size else 0),
+                                int(uniq_f[-1]) if uniq_f.size else 0)
+            frame_ok[ep] = frame_ok.get(ep, True) and finite
+
+    # 帧号可用于定位：每个 episode 的帧号必须不重不漏地铺满 0..len-1
+    for ep, n in counts.items():
+        frame_ok[ep] = (
+            frame_ok.get(ep, False)
+            and unique_frame.get(ep, 0) == n
+            and frame_min.get(ep, 0) == 0
+            and frame_max.get(ep, n - 1) == n - 1
+        )
+
+    starts: dict[int, int] = {}
+    running = 0
+    for ep in sorted(counts):
+        starts[ep] = running
+        running += counts[ep]
+
+    offset: dict[int, int] = {}
+    for path in readable:
+        try:
+            table = pq.read_table(path)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"{path.name} 重写 index 失败: {exc}")
+            continue
+        eps = _index_values(table.column("episode_index").to_pylist())
+        if eps.size == 0:
+            continue
+        frames = (_index_values(table.column("frame_index").to_pylist())
+                  if "frame_index" in table.column_names else None)
+        idx = np.empty(len(eps), dtype=np.int64)
+        frame_out = np.empty(len(eps), dtype=np.int64)
+        for e in np.unique(eps):
+            ep = int(e)
+            pos = np.where(eps == e)[0]
+            if frame_ok.get(ep) and frames is not None:
+                frame_pos = frames[pos]
+            else:
+                # frame_index 缺失或断裂时，退化为按文件内行序连续编号
+                cur = offset.get(ep, 0)
+                frame_pos = cur + np.arange(len(pos), dtype=np.int64)
+                offset[ep] = cur + len(pos)
+            frame_out[pos] = frame_pos
+            idx[pos] = starts[ep] + frame_pos
+        table = set_column(table, "index", idx)
+        # v3.0 要求 frame_index 每集从 0 铺满 length-1；源数据缺列或断裂时一并重建，
+        # 否则 index 修好了、episode 内帧号仍然无解，下游切窗依旧要自己猜。
+        if "frame_index" in table.column_names:
+            table = set_column(table, "frame_index", frame_out)
+        else:
+            table = table.append_column("frame_index", pa.array(frame_out, type=pa.int64()))
+        try:
+            pq.write_table(table, path)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"{path.name} 写入失败，index 未重建: {exc}")
+
+    return sorted(counts), warnings
+
+
+def _index_values(values: list) -> np.ndarray:
+    """把 parquet 列转成 int64；无效值记为 -1，保证仍能参与编号。"""
+    arr = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=np.float64)
+    return np.where(np.isfinite(arr), arr, -1).astype(np.int64)
 
 
 def _collect_video_windows(
@@ -236,6 +405,8 @@ def _rebuild_videos(
     out_root: Path,
     windows: dict[int, dict[str, dict[str, Any]]],
     kept_lengths: dict[int, int],
+    *,
+    link_mode: str = "copy",
 ) -> tuple[dict[int, dict[str, dict[str, Any]]], list[str]]:
     """按相机重建 mp4：同一源文件内保留需要的区间并重新拼接。"""
     warnings: list[str] = []
@@ -280,7 +451,7 @@ def _rebuild_videos(
                 not (windows[e][cam]["to"] > 0 and windows[e][cam]["to"] < kept_lengths.get(e, 0) / fps - 0.001)
                 for e in keep_here
             ):
-                shutil.copy2(src_path, out_path)
+                _materialize(src_path, out_path, link_mode)
                 assign([(e, kept_lengths[e]) for e in keep_here])
                 continue
 
@@ -350,6 +521,17 @@ def _concat_segments(
             warnings.append(f"视频拼接失败 ({out_path.name}): {(proc.stderr or '')[-300:]}")
             return built[:1]
     return built
+
+
+def _materialize(src: Path, dst: Path, link_mode: str) -> None:
+    """整文件不需要改动时按需复制或建硬链接（跨盘/权限不足时自动回退复制）。"""
+    if link_mode == "hardlink":
+        try:
+            os.link(src, dst)
+            return
+        except OSError as exc:
+            LOG.debug("硬链接失败(%s)，回退为复制: %s", exc, src)
+    shutil.copy2(src, dst)
 
 
 def _source_files_in_order(dataset: LeRobotDatasetView) -> list[Path]:

@@ -15,8 +15,21 @@ from lerobot_data_quality.loaders import (
     RosbagAdapterError,
     build_frame_table,
 )
+from lerobot_data_quality.loaders.rosbag_loader import _stamp_ns
 
 MS = 1_000_000  # 1 毫秒 = 1e6 纳秒
+
+
+class _Stamp:
+    def __init__(self, sec: int, nsec: int) -> None:
+        self.sec, self.nsec = sec, nsec
+
+
+def test_zero_header_stamp_falls_back_to_bag_time():
+    """header 存在但时间戳全零 = 未赋值，必须回退 bag 记录时间（否则整段塌成 1 帧）。"""
+    assert _stamp_ns(None, 123) == 123
+    assert _stamp_ns(_Stamp(0, 0), 123) == 123
+    assert _stamp_ns(_Stamp(2, 500), 123) == 2 * 1_000_000_000 + 500
 
 
 def _joints(start_ms: int, n: int, step_ms: int = 10, dim: int = 2):
@@ -66,8 +79,8 @@ def test_image_base_axis():
     # 5000ms 容差内无关节帧 → state/action 全 NaN，缺口交给下游规则
     assert np.isnan(df["observation.state"].iloc[2]).all()
     assert np.isnan(df["action"].iloc[2]).all()
-    # timestamp 跟相机轴走，以关节首帧为零点
-    np.testing.assert_allclose(df["timestamp"], [0.012, 0.045, 5.0])
+    # timestamp 跟相机轴走，以相机首帧为零点（v3「首帧归零」）
+    np.testing.assert_allclose(df["timestamp"], [0.0, 0.033, 4.988])
 
 
 def test_backward_direction_no_future():

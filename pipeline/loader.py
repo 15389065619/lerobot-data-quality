@@ -23,8 +23,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+
+from .schema import audit_schema
 
 LOG = logging.getLogger(__name__)
 
@@ -74,11 +77,41 @@ class LeRobotDatasetView:
     heavy_features: list[str] = field(default_factory=list)
     #: 读取失败被跳过的损坏数据文件（毒数据防冲击），元素为 {"file": 路径, "error": 原因}
     corrupted_files: list[dict[str, str]] = field(default_factory=list)
+    #: data episode_index -> meta episode_index。两侧编号空间不一致时由加载器建立，
+    #: 为空表示两侧同名（绝大多数数据集）。
+    meta_id_map: dict[int, int] = field(default_factory=dict)
+    #: 编号对齐诊断：mode(native/remapped/ambiguous/unavailable) + 校验证据，
+    #: 报告据此说明「能否定位」，规则层据此区分「异常」与「不可评估」。
+    id_reconciliation: dict[str, Any] = field(default_factory=dict)
+    #: data/*.parquet 实际列名（只读 schema 得到），用于 Schema 契约审计
+    data_columns: set[str] = field(default_factory=set)
+    #: Schema 契约违约项，见 pipeline/schema.py；空列表表示布局合规
+    schema_contract: list[dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ 概览
     @property
     def num_episodes(self) -> int:
         return int(len(self.episodes))
+
+    # ---------------------------------------------------- 编号空间与 meta 定位
+    @property
+    def locator_available(self) -> bool:
+        """能否可靠地把 episode 映射到 meta 行（决定视频/任务能否定位）。
+
+        mode == "ambiguous" 表示两侧编号空间不一致且无法可靠对齐——此时定位必然
+        失败，属于「不可评估」，不能当作数据异常（否则会误判整批数据不可用）。
+        """
+        return str(self.id_reconciliation.get("mode", "native")) != "ambiguous"
+
+    def meta_episode_index(self, episode_index: int) -> int:
+        return int(self.meta_id_map.get(int(episode_index), int(episode_index)))
+
+    def meta_row(self, episode_index: int) -> pd.Series | None:
+        """取该 episode 对应的 meta 行；编号对不上或 meta 缺失时返回 None。"""
+        if self.episodes.empty or "episode_index" not in self.episodes.columns:
+            return None
+        rows = self.episodes[self.episodes["episode_index"] == self.meta_episode_index(episode_index)]
+        return rows.iloc[0] if len(rows) else None
 
     @property
     def num_frames(self) -> int:
@@ -89,6 +122,14 @@ class LeRobotDatasetView:
 
     @property
     def episode_indices(self) -> list[int]:
+        """数据侧的 episode 编号（与 parquet 里 episode_index 列同一空间）。
+
+        两侧编号不一致时以 data 为准：valider 按数据流遍历，下游一律用这套编号。
+        """
+        if self.meta_id_map:
+            return sorted(self.meta_id_map)
+        if len(self.frames) and "episode_index" in self.frames.columns:
+            return sorted(int(x) for x in self.frames["episode_index"].unique().tolist())
         return [int(x) for x in self.episodes["episode_index"].tolist()]
 
     @property
@@ -102,23 +143,37 @@ class LeRobotDatasetView:
         return name in self.frames.columns if len(self.frames) else name in self.column_names
 
     def frames_by_episode(self) -> pd.Series:
-        """episode_index -> 帧数；frames 未加载时取 meta 的 length 列。"""
+        """episode_index（数据侧）-> 帧数；frames 未加载时取 meta 的 length 列。"""
         if len(self.frames):
+            if "episode_index" not in self.frames.columns:
+                # 非标准字段名（episode 标识被改名/缺失）：无法按 episode 聚合
+                return pd.Series(dtype="int64")
             return self.frames.groupby("episode_index").size()
         if len(self.episodes) and "length" in self.episodes.columns:
             lengths = pd.to_numeric(self.episodes["length"], errors="coerce").fillna(0).astype(int)
             indices = pd.to_numeric(self.episodes["episode_index"], errors="coerce").astype(int)
-            return pd.Series(lengths.to_numpy(), index=indices.to_numpy(), dtype="int64")
+            series = pd.Series(lengths.to_numpy(), index=indices.to_numpy(), dtype="int64")
+            if self.meta_id_map:
+                # meta 侧编号要换算回数据侧，否则与 frames/校验结果对不上
+                inv = {int(m): int(d) for d, m in self.meta_id_map.items()}
+                series = pd.Series(
+                    [int(v) for k, v in series.items() if int(k) in inv],
+                    index=[inv[int(k)] for k in series.index if int(k) in inv],
+                    dtype="int64",
+                ).sort_index()
+            return series
         return pd.Series(dtype="int64")
 
     def frame_count_of(self, episode_index: int) -> int:
         """单个 episode 的帧数；优先 meta 的 length，避免为拿长度去读整段帧数据。"""
         if len(self.frames):
+            if "episode_index" not in self.frames.columns:
+                return 0
             return int((self.frames["episode_index"] == episode_index).sum())
-        rows = self.episodes[self.episodes["episode_index"] == episode_index]
-        if len(rows) and "length" in self.episodes.columns:
+        row = self.meta_row(episode_index)
+        if row is not None and "length" in self.episodes.columns:
             try:
-                return int(rows.iloc[0]["length"])
+                return int(row["length"])
             except (TypeError, ValueError):
                 return 0
         return 0
@@ -136,10 +191,20 @@ class LeRobotDatasetView:
 
     @property
     def video_features(self) -> list[str]:
+        """真正的视频特征（mp4）。图像特征逐帧嵌在 parquet 里，不能按视频文件定位。"""
         return [
             key
             for key, spec in self.features.items()
-            if str(spec.get("dtype", "")).lower() in {"video", "image"}
+            if str(spec.get("dtype", "")).lower() == "video"
+        ]
+
+    @property
+    def image_features(self) -> list[str]:
+        """内嵌图像特征（dtype=image），随 data/*.parquet 一起存储，无独立视频文件。"""
+        return [
+            key
+            for key, spec in self.features.items()
+            if str(spec.get("dtype", "")).lower() == "image"
         ]
 
     @property
@@ -197,6 +262,8 @@ class LeRobotDatasetView:
         frames 未加载（流式）时按需从 parquet 读该 episode，内存只驻留一段。
         """
         if len(self.frames):
+            if "episode_index" not in self.frames.columns:
+                return pd.DataFrame()
             sub = self.frames[self.frames["episode_index"] == episode_index]
         else:
             sub = self._read_episode(episode_index)
@@ -206,9 +273,8 @@ class LeRobotDatasetView:
 
     def data_file_of(self, episode_index: int) -> Path | None:
         """定位 episode 所在的数据文件；meta 没记录时靠单文件/扫描兜底。"""
-        rows = self.episodes[self.episodes["episode_index"] == episode_index]
-        if len(rows):
-            row = rows.iloc[0]
+        row = self.meta_row(episode_index)
+        if row is not None:
             chunk, file_idx = row.get("data/chunk_index"), row.get("data/file_index")
             if pd.notna(chunk) and pd.notna(file_idx):
                 tmpl = self.info.get("data_path") or DEFAULT_DATA_PATH
@@ -250,23 +316,22 @@ class LeRobotDatasetView:
 
     def task_of(self, episode_index: int) -> str:
         """episode 的任务描述；拿不到时返回空串（由 validator 判定是否异常）。"""
-        if "tasks" in self.episodes.columns:
-            row = self.episodes.loc[self.episodes["episode_index"] == episode_index, "tasks"]
-            if len(row):
-                val = row.iloc[0]
-                if isinstance(val, str):
-                    if val.strip():
-                        return val.strip()
-                elif isinstance(val, (list, tuple)) or hasattr(val, "__len__"):
-                    # parquet 的 list 列可能读成 ndarray/其它序列，不能只判断 list/tuple
-                    try:
-                        if len(val):
-                            first = val[0]
-                            if isinstance(first, str) and first.strip():
-                                return first.strip()
-                    except (TypeError, IndexError):
-                        pass
-        if TASK_INDEX_KEY in self.frames.columns:
+        row = self.meta_row(episode_index)
+        if row is not None and "tasks" in self.episodes.columns:
+            val = row.get("tasks")
+            if isinstance(val, str):
+                if val.strip():
+                    return val.strip()
+            elif isinstance(val, (list, tuple)) or hasattr(val, "__len__"):
+                # parquet 的 list 列可能读成 ndarray/其它序列，不能只判断 list/tuple
+                try:
+                    if len(val):
+                        first = val[0]
+                        if isinstance(first, str) and first.strip():
+                            return first.strip()
+                except (TypeError, IndexError):
+                    pass
+        if TASK_INDEX_KEY in self.frames.columns and "episode_index" in self.frames.columns:
             sub = self.frames.loc[self.frames["episode_index"] == episode_index, TASK_INDEX_KEY]
             if len(sub):
                 try:
@@ -283,23 +348,47 @@ class LeRobotDatasetView:
 
     def video_location(self, camera: str, episode_index: int) -> tuple[Path, float, float] | None:
         """返回 (视频文件, from_timestamp, to_timestamp)；无定位信息时 from/to 为 (-1, -1)。"""
-        rows = self.episodes[self.episodes["episode_index"] == episode_index]
+        row = self.meta_row(episode_index)
         ck, fk = f"videos/{camera}/chunk_index", f"videos/{camera}/file_index"
         ft, tt = f"videos/{camera}/from_timestamp", f"videos/{camera}/to_timestamp"
-        if len(rows):
-            row = rows.iloc[0]
-            if ck in rows.columns and fk in rows.columns and pd.notna(row.get(ck)):
+        if row is not None:
+            if ck in self.episodes.columns and fk in self.episodes.columns and pd.notna(row.get(ck)):
                 path = self._video_path_from_template(camera, int(row[ck]), int(row[fk]))
                 if path is not None:
-                    from_ts = float(row[ft]) if ft in rows.columns and pd.notna(row.get(ft)) else -1.0
-                    to_ts = float(row[tt]) if tt in rows.columns and pd.notna(row.get(tt)) else -1.0
+                    from_ts = float(row[ft]) if ft in self.episodes.columns and pd.notna(row.get(ft)) else -1.0
+                    to_ts = float(row[tt]) if tt in self.episodes.columns and pd.notna(row.get(tt)) else -1.0
                     return path, from_ts, to_ts
-        # v2.1：文件名里带 episode 序号
-        cam_dir = self.root / "videos" / camera
-        if cam_dir.is_dir():
-            cands = sorted(cam_dir.rglob(f"*{episode_index:06d}.mp4"))
-            if cands:
-                return cands[0], 0.0, -1.0
+        # v2.1：优先按 info.json 的 video_path 模板定位
+        # （如 videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4）
+        if str(self.codebase_version).startswith("v2") and self.info.get("video_path"):
+            chunks_size = int(self.info.get("chunks_size") or 1000) or 1000
+            episode_chunk = episode_index // chunks_size
+            fields = {
+                "video_key": camera, "camera": camera,
+                "episode_index": episode_index, "episode_chunk": episode_chunk,
+                "chunk_index": episode_chunk, "file_index": episode_index,
+            }
+            try:
+                rel = str(self.info["video_path"]).format(**fields)
+            except (KeyError, IndexError, ValueError):
+                rel = None
+            if rel:
+                path = self.root / rel
+                if path.is_file():
+                    return path, 0.0, -1.0
+        # v2.1：文件名里带 episode 序号，视频按 chunk 分目录存放
+        # （videos/chunk-000/<camera>/episode_000000.mp4，也兼容 videos/<camera>/）
+        # 目录名常省略 observation.images. 前缀，因此短名也要试
+        vroot = self.root / "videos"
+        short = camera.split("observation.images.")[-1]
+        names = [camera, short] if short != camera else [camera]
+        cam_dirs = [vroot / name for name in names]
+        cam_dirs += [p for name in names for p in sorted(vroot.glob(f"chunk-*/{name}"))]
+        for cam_dir in cam_dirs:
+            if cam_dir.is_dir():
+                cands = sorted(cam_dir.rglob(f"*{episode_index:06d}.mp4"))
+                if cands:
+                    return cands[0], 0.0, -1.0
         # 兜底：该相机只有一个文件（常见于单 episode 导出）
         files = self.video_index.get(camera, {})
         if len(files) == 1:
@@ -398,8 +487,37 @@ def load_dataset(
     frames = pd.DataFrame()
     truncated_to = None
     keep: set[int] | None = None
+
+    # ---------------------------------------------- episode 编号空间对齐
+    # behavior1k 这类数据集：meta/episodes 用全局 ID（420010, 420020, …），
+    # 而 data/*.parquet 里的 episode_index 是 0..N-1。不先对齐，所有 meta 定位
+    # （视频窗口、任务、data 文件）都会落空，进而把整批数据误判为不可用。
+    data_summary = _data_episode_summary(frames if load_frames else None, data_files)
+    meta_id_map, reconciliation = _reconcile_episode_ids(episodes_meta, data_summary, fps)
+
+    # Schema 契约审计：只读 schema 与两列极值，不额外加载整表
+    data_columns: set[str] = set()
+    if data_files:
+        try:
+            data_columns = set(pq.read_schema(data_files[0]).names)
+        except Exception:  # noqa: BLE001
+            pass
+    if reconciliation.get("mode") == "remapped":
+        LOG.warning(
+            "data 与 meta 的 episode 编号空间不同，已按顺序建立映射并通过证据校验：%s",
+            {k: reconciliation[k] for k in ("data_ids", "meta_ids", "overlap",
+                                            "length_agreement", "video_agreement")
+             if k in reconciliation},
+        )
+    elif reconciliation.get("mode") == "ambiguous":
+        LOG.warning("episode 编号无法可靠对齐，依赖 meta 的定位检查将标记为「不可评估」：%s",
+                    reconciliation.get("reason"))
+
     if max_episodes is not None and max_episodes > 0:
-        all_eps = _episode_order(episodes_meta, data_files)
+        if meta_id_map:
+            all_eps = [int(x) for x in data_summary["episode_index"].tolist()]
+        else:
+            all_eps = _episode_order(episodes_meta, data_files)
         keep = set(all_eps[:max_episodes])
         truncated_to = len(keep)
         LOG.info("--max_episodes 生效：只加载前 %d 个 episode", truncated_to)
@@ -412,7 +530,10 @@ def load_dataset(
             episodes_meta = _episodes_from_frames(frames)
 
     if keep is not None and episodes_meta is not None and not episodes_meta.empty:
-        episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(keep)].reset_index(drop=True)
+        wanted_meta = {int(meta_id_map.get(k, k)) for k in keep}
+        episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(wanted_meta)].reset_index(drop=True)
+        if meta_id_map:
+            meta_id_map = {k: v for k, v in meta_id_map.items() if k in keep}
 
     if episodes_meta is None:
         episodes_meta = pd.DataFrame(columns=["episode_index", "length"])
@@ -432,7 +553,19 @@ def load_dataset(
         data_files=data_files,
         heavy_features=heavy,
         corrupted_files=corrupted if load_frames else [],
+        meta_id_map=meta_id_map,
+        id_reconciliation=reconciliation,
+        data_columns=data_columns,
     )
+    view.schema_contract = audit_schema(
+        features=features,
+        splits=info.get("splits"),
+        total_episodes=info.get("total_episodes") or view.num_episodes,
+        data_columns=data_columns,
+        data_summary=data_summary,
+    )
+    for item in view.schema_contract:
+        LOG.warning("Schema 违约 [%s] %s：%s", item["severity"], item["column"], item["rule"])
     # 统一 info 中的 total_episodes / total_frames：以实际读到的为准（元数据可能已失真）
     LOG.info(
         "已加载 %d 个 episode / %d 帧（info.json 记录 %s episodes / %s frames），%d 个相机",
@@ -648,9 +781,12 @@ def _read_frames(
         return pd.DataFrame()
 
     out = pd.concat(parts, ignore_index=True)
-    if keep is not None:
+    if keep is not None and "episode_index" in out.columns:
         out = out[out["episode_index"].isin(keep)]
-    out = out.sort_values(["episode_index", "frame_index"], kind="stable").reset_index(drop=True)
+    sort_cols = [c for c in ("episode_index", "frame_index") if c in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols, kind="stable")
+    out = out.reset_index(drop=True)
     for col in ("episode_index", "frame_index", "task_index", "index"):
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -658,7 +794,7 @@ def _read_frames(
 
 
 def _episodes_from_frames(frames: pd.DataFrame) -> pd.DataFrame:
-    if frames.empty:
+    if frames.empty or "episode_index" not in frames.columns:
         return pd.DataFrame(columns=["episode_index", "length"])
     grp = frames.groupby("episode_index")
     df = pd.DataFrame({"length": grp.size()}).reset_index()
@@ -679,6 +815,166 @@ def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -
             continue
         seen.update(int(x) for x in col if x is not None)
     return sorted(seen)
+
+
+# ------------------------------------------------------------ episode 编号对齐
+def _data_episode_summary(
+    frames: pd.DataFrame | None, data_files: list[Path]
+) -> pd.DataFrame:
+    """数据侧每个 episode 的行数与首次出现顺序。
+
+    有帧表时直接分组（零额外 IO）；流式模式下只读 episode_index 一列扫描，
+    单列 IO 相对整表很小（128 万行约 10MB），是判定「能否安全映射」的必要代价。
+    """
+    if frames is not None and len(frames) and "episode_index" in frames.columns:
+        agg = {"rows": ("episode_index", "size")}
+        has_index = "index" in frames.columns
+        if has_index:
+            agg["idx_min"] = ("index", "min")
+            agg["idx_max"] = ("index", "max")
+        out = frames.groupby("episode_index", sort=False).agg(**agg).reset_index()
+        out["episode_index"] = out["episode_index"].astype("int64")
+        return out
+    if not data_files:
+        return pd.DataFrame(columns=["episode_index", "rows"])
+
+    # 顺带取 index 的每集极值：这是判定「index 是否还是全局帧号」的唯一证据，
+    # 与 episode_index 同一趟读取，多一列的 IO 成本可忽略。
+    has_index = False
+    try:
+        has_index = "index" in pq.read_schema(data_files[0]).names
+    except Exception:  # noqa: BLE001
+        pass
+
+    order: list[int] = []
+    counts: dict[int, int] = {}
+    lows: dict[int, int] = {}
+    highs: dict[int, int] = {}
+    cols = ["episode_index", "index"] if has_index else ["episode_index"]
+    for path in data_files:
+        try:
+            table = pq.read_table(path, columns=cols)
+            col = table.column("episode_index").to_numpy()
+        except Exception as exc:  # noqa: BLE001 - 损坏文件交由 corrupted_files 记录
+            LOG.debug("编号对齐扫描跳过 %s: %s", path.name, exc)
+            continue
+        idx_col = table.column("index").to_numpy() if has_index else None
+        for value in np.unique(col):
+            ep = int(value)
+            mask = col == value
+            if ep not in counts:
+                order.append(ep)
+                counts[ep] = 0
+            counts[ep] += int(mask.sum())
+            if idx_col is not None:
+                lo, hi = int(idx_col[mask].min()), int(idx_col[mask].max())
+                lows[ep] = min(lows.get(ep, lo), lo)
+                highs[ep] = max(highs.get(ep, hi), hi)
+    data = {"episode_index": order, "rows": [counts[e] for e in order]}
+    if has_index:
+        data["idx_min"] = [lows[e] for e in order]
+        data["idx_max"] = [highs[e] for e in order]
+    return pd.DataFrame(data, dtype="int64")
+
+
+def _reconcile_episode_ids(
+    episodes_meta: pd.DataFrame | None,
+    data_summary: pd.DataFrame | None,
+    fps: float,
+    *,
+    min_agreement: float = 0.99,
+) -> tuple[dict[int, int], dict[str, Any]]:
+    """建立 data episode_index -> meta episode_index 的映射，并给出可核查的证据。
+
+    只在两侧编号集合不一致、但能通过「顺序 + 行数 + 视频窗口」三重校验证明是同一批
+    episode 时才映射；任何一项证据不足都退回 ambiguous，禁止猜测——猜错的映射会把
+    视频窗口、任务全部错配，比不映射更危险。
+
+    Returns:
+        (映射表, 诊断信息)。映射表为空表示两侧同名或无法映射。
+    """
+    if episodes_meta is None or episodes_meta.empty or "episode_index" not in episodes_meta.columns:
+        return {}, {"mode": "unavailable", "reason": "缺少 meta/episodes，无处对齐"}
+    if data_summary is None or data_summary.empty:
+        return {}, {"mode": "unavailable", "reason": "缺少数据侧 episode 信息，无处对齐"}
+
+    data_ids = [int(x) for x in data_summary["episode_index"].tolist()]
+    meta_ids = sorted(int(x) for x in episodes_meta["episode_index"].tolist())
+    data_set, meta_set = set(data_ids), set(meta_ids)
+    diag: dict[str, Any] = {
+        "data_ids": len(data_set),
+        "meta_ids": len(meta_set),
+        "overlap": len(data_set & meta_set),
+        "data_id_range": [min(data_ids), max(data_ids)],
+        "meta_id_range": [min(meta_ids), max(meta_ids)],
+        "data_order_sorted": data_ids == sorted(data_ids),
+    }
+
+    if data_set == meta_set:
+        diag.update(mode="native", note="两侧 episode 编号一致，未做映射")
+        return {}, diag
+
+    if len(data_ids) != len(meta_ids):
+        diag.update(
+            mode="ambiguous",
+            reason=f"episode 数量不一致（data {len(data_ids)} / meta {len(meta_ids)}），"
+                   "无法建立一一映射，需人工确认后再质检",
+        )
+        return {}, diag
+
+    # ---- 顺序假设验证：同名位置上的行数、视频窗口必须自洽
+    rows_arr = data_summary["rows"].to_numpy(dtype="int64")
+    lengths = pd.to_numeric(episodes_meta.sort_values("episode_index")["length"], errors="coerce")
+    length_arr = lengths.fillna(-1).to_numpy(dtype="int64") if "length" in episodes_meta.columns else None
+
+    length_ok = int((rows_arr == length_arr).sum()) if length_arr is not None else 0
+    diag["length_agreement"] = round(length_ok / len(data_ids), 4) if length_arr is not None else None
+
+    video_ok, video_total = 0, 0
+    for col_to in episodes_meta.columns:
+        if not col_to.startswith("videos/") or not col_to.endswith("/to_timestamp"):
+            continue
+        col_from = col_to[: -len("/to_timestamp")] + "/from_timestamp"
+        if col_from not in episodes_meta.columns:
+            continue
+        window = (
+            episodes_meta.sort_values("episode_index")[col_to].to_numpy(dtype=float)
+            - episodes_meta.sort_values("episode_index")[col_from].to_numpy(dtype=float)
+        )
+        frames_in_window = np.rint(window * max(fps, 1e-6)).astype("int64")
+        video_ok += int((frames_in_window == rows_arr).sum())
+        video_total += len(frames_in_window)
+    diag["video_agreement"] = round(video_ok / video_total, 4) if video_total else None
+
+    evidence = [
+        ratio for ratio in (diag.get("length_agreement"), diag.get("video_agreement"))
+        if ratio is not None
+    ]
+    agreement = min(evidence) if evidence else 0.0
+    diag["agreement"] = round(float(agreement), 4)
+    diag["meta_id_step"] = int(np.median(np.diff(meta_ids))) if len(meta_ids) > 1 else None
+    diag["meta_id_gaps"] = int((np.diff(meta_ids) != (diag["meta_id_step"] or 0)).sum()) if len(meta_ids) > 1 else 0
+
+    if not evidence or agreement < min_agreement:
+        diag.update(
+            mode="ambiguous",
+            reason="两侧编号不同且顺序映射的证据不足"
+                   f"（行数一致率 {diag.get('length_agreement')}, 视频窗口一致率 {diag.get('video_agreement')}），"
+                   "不做猜测映射",
+        )
+        return {}, diag
+
+    mapping = {d: m for d, m in zip(data_ids, meta_ids)}
+    diag.update(
+        mode="remapped",
+        note="两侧编号空间不同（meta 为全局 ID），已按顺序映射并通过行数/视频窗口校验",
+        sample=[
+            {"data": d, "meta": m, "rows": int(r), "meta_length": int(length_arr[i]) if length_arr is not None else None}
+            for i, (d, m, r) in enumerate(zip(data_ids, meta_ids, rows_arr))
+            if i < 3
+        ],
+    )
+    return mapping, diag
 
 
 def heavy_feature_keys(features: dict[str, Any]) -> list[str]:
@@ -731,7 +1027,7 @@ def _feature_dim(spec: dict[str, Any]) -> int:
 
 def iter_episode_slices(frames: pd.DataFrame) -> Iterator[tuple[int, pd.DataFrame]]:
     """按 episode_index 迭代，避免在 validator/visualizer 里重复写 groupby。"""
-    if frames.empty:
+    if frames.empty or "episode_index" not in frames.columns:
         return
     for ep, sub in frames.groupby("episode_index", sort=True):
         yield int(ep), sub.sort_values("frame_index", kind="stable") if "frame_index" in sub.columns else sub
@@ -754,14 +1050,22 @@ def iter_frame_chunks(
     keep = None if episodes is None else {int(e) for e in episodes}
 
     for path in dataset.data_files:
+        file_wanted = wanted
+        if wanted is not None:
+            # 部分 v3 数据集（如 behavior1k）缺少 frame_index 等列；按文件真实 schema 过滤
+            try:
+                names = set(pq.ParquetFile(path).schema_arrow.names)
+                file_wanted = [c for c in wanted if c in names]
+            except Exception:  # noqa: BLE001 - schema 读不出来时让 read_table 报错
+                pass
         try:
             if keep is not None:
                 try:
-                    table = pq.read_table(path, columns=wanted, filters=[("episode_index", "in", sorted(keep))])
+                    table = pq.read_table(path, columns=file_wanted, filters=[("episode_index", "in", sorted(keep))])
                 except Exception:  # noqa: BLE001 - 老版本 pyarrow 不支持 filter
-                    table = pq.read_table(path, columns=wanted)
+                    table = pq.read_table(path, columns=file_wanted)
             else:
-                table = pq.read_table(path, columns=wanted)
+                table = pq.read_table(path, columns=file_wanted)
         except Exception as exc:  # noqa: BLE001
             raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
         df = table.to_pandas()

@@ -121,9 +121,12 @@ def precheck(
         if warnings:
             message += f"（{len(warnings)} 个 episode 有告警，建议跑完整流水线修复）"
     else:
+        # --on-review keep 本来就是默认值，默认路径下它不是「放宽」手段，只在
+        # 用户显式传了 drop 时才给出这条提示。
+        relax = "，或加 --on-review keep 放宽" if on_review == "drop" else ""
         message = (f"预检未通过：{len(blocking)}/{validation.total_episodes} 个 episode 需丢弃，"
                    f"涉及 {sum(i['frame_count'] for i in blocking)} 帧。"
-                   "先跑 python main.py ... --skip-clean 看完整报告，或加 --on-review keep 放宽")
+                   f"先跑 python main.py ... --skip-clean 看完整报告{relax}")
     result = PrecheckResult(
         dataset_path=str(dataset_path),
         ok=ok,

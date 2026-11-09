@@ -21,10 +21,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .baseline import fingerprint
 from .config import cfg_get, severity_of, snapshot as config_snapshot
 from .loader import ACTION_KEY, STATE_KEY, LeRobotDatasetView
-from .policy import Decision, summarize as summarize_decisions
-from .validator import RULE_MAP, RULE_ORDER, ValidationResult
+from .policy import Decision, summarize as summarize_decisions, systemic_decisions
+from .validator import RULE_MAP, RULE_ORDER, SEVERITY_ORDER, ValidationResult
 
 LOG = logging.getLogger(__name__)
 
@@ -39,6 +40,23 @@ _NON_ATTRIBUTION_COLUMNS = {
 
 
 # ------------------------------------------------------------------- 构建
+def _check_severity(validation: ValidationResult, code: str) -> str:
+    """规则在报告里的展示级别：以实际命中 episode 的有效级别为准。
+
+    方向分级（如帧数过短降 warning、过长保持 error）会逐 episode 覆盖严重度，
+    若表格仍按静态配置展示，就会出现「明细全是 warning、汇总表写 error」的矛盾。
+    取命中 episode 中最高的有效级别；无命中时回退配置值。
+    """
+    levels = [
+        res.severity_overrides.get(code) or severity_of(validation.config, code)
+        for res in validation.results.values()
+        if code in res.reasons
+    ]
+    if not levels:
+        return severity_of(validation.config, code)
+    return max(levels, key=lambda s: SEVERITY_ORDER.get(s, 0))
+
+
 def build_report(
     dataset: LeRobotDatasetView,
     validation: ValidationResult,
@@ -51,8 +69,9 @@ def build_report(
     total = validation.total_episodes
     valid = validation.valid_episodes
     invalid = total - valid
+    dataset_name = Path(str(dataset_path or dataset.root)).name
     aggregates = getattr(validation, "aggregates", None) or {}
-    if len(dataset.frames):
+    if len(dataset.frames) and "episode_index" in dataset.frames.columns:
         frames_by_ep = dataset.frames.groupby("episode_index").size()
         total_frames = int(dataset.num_frames)
     elif aggregates.get("frames_by_episode"):
@@ -90,6 +109,10 @@ def build_report(
             "video_features": dataset.video_features,
             "state_dims": len(dataset.joint_names),
             "fingerprint": dataset_fingerprint(dataset),
+            # 编号对齐证据：决定「视频/任务能不能定位」。mode=ambiguous 时定位类
+            # 检查不可评估，任何基于它的剔除结论都不可信。
+            "id_reconciliation": dataset.id_reconciliation or {"mode": "native"},
+            "schema_contract": getattr(dataset, "schema_contract", []) or [],
         },
         "config": config_snapshot(validation.config),
         "resolved_thresholds": validation.resolved_thresholds,
@@ -112,13 +135,17 @@ def build_report(
             "remaining_frames": total_frames - drop_frames - trim_frames,
             "health_level": _health_level(_ratio(invalid, total)),
             "has_video_probe": validation.probe_available,
+            # 被「系统性误判熔断」拦下来、未执行剔除的 episode 数
+            "protected_by_systemic_guard": len(systemic_decisions(decisions)) if decisions else 0,
+            # 命中基线白名单、已按已知误报忽略的告警数（不计入健康度）
+            "ignored_by_baseline": len(validation.baseline_ignored),
         },
         "checks": [
             {
                 "code": code,
                 "label": RULE_MAP[code].label,
                 "description": RULE_MAP[code].description,
-                "severity": severity_of(validation.config, code),
+                "severity": _check_severity(validation, code),
                 "repair": RULE_MAP[code].repair,
                 "affected_episodes": freq.get(code, 0),
                 "affected_ratio": _ratio(freq.get(code, 0), total),
@@ -129,25 +156,35 @@ def build_report(
         "reason_frequency": {code: freq.get(code, 0) for code in RULE_ORDER},
         "field_issue_stats": _field_issue_stats(dataset, validation),
         "dataset_issues": [issue.to_dict() for issue in validation.dataset_issues],
-        "invalid_episode_details": [_episode_payload(r, validation, decisions) for r in validation.invalid_episodes],
+        "invalid_episode_details": [
+            _episode_payload(r, validation, decisions, dataset_name) for r in validation.invalid_episodes
+        ],
+        # 被基线白名单忽略的原始告警与指纹，保留可追溯性
+        "baseline_ignored": list(validation.baseline_ignored),
         "attribution": attribute_by_metadata(dataset, validation, decisions),
         "skipped_checks": validation.skipped_checks,
         "cleaning": None,
         "artifacts": {},
-        "recommendations": _recommendations(validation, decisions, drop_frames, total_frames),
+        "recommendations": _recommendations(validation, decisions, drop_frames, total_frames, dataset),
     }
     LOG.info("报告已构建：%s", {k: report["summary"][k] for k in
                                ("total_episodes", "valid_episodes", "invalid_episodes", "health_level")})
     return report
 
 
-def _episode_payload(res, validation: ValidationResult, decisions: dict[int, Decision]) -> dict[str, Any]:
+def _episode_payload(
+    res, validation: ValidationResult, decisions: dict[int, Decision], dataset_name: str = ""
+) -> dict[str, Any]:
     d = decisions.get(res.episode_index)
     return {
         "episode_index": res.episode_index,
         "frame_count": res.frame_count,
         "reasons": list(res.reasons),
         "reason_labels": [RULE_MAP[c].label if c in RULE_MAP else c for c in res.reasons],
+        # 误报确认后可用 `--accept-baseline <fingerprint>` 写进白名单
+        "fingerprints": {
+            code: fingerprint(dataset_name, res.episode_index, code) for code in res.reasons
+        },
         "severity": validation.severity_of(res),
         "disposition": d.disposition if d else None,
         "recommended_action": d.recommended_action if d else None,
@@ -211,6 +248,18 @@ def print_summary(report: dict[str, Any], *, invalid_limit: int = 12) -> None:
     if ds.get("max_episodes_applied"):
         print(f"注意        : 已按 --max_episodes 截断为前 {ds['max_episodes_applied']} 个 episode")
     print(f"数据指纹    : {ds.get('fingerprint', '-')}")
+    recon = ds.get("id_reconciliation") or {}
+    if recon.get("mode") == "remapped":
+        print(f"编号对齐    : data {recon.get('data_id_range')} ↔ meta {recon.get('meta_id_range')}"
+              f"（行数一致率 {recon.get('length_agreement')}, 视频窗口 {recon.get('video_agreement')}，已映射）")
+    elif recon.get("mode") == "ambiguous":
+        print("编号对齐    : 失败 —— 依赖 meta 的定位检查不可评估，异常数不代表数据质量")
+    schema = ds.get("schema_contract") or []
+    if schema:
+        errors = [x for x in schema if x.get("severity") == "error"]
+        print(f"Schema 违约 : {len(schema)} 项（error {len(errors)}）")
+        for item in schema:
+            print(f"  - [{item['severity']}] {item['column']}: {item['rule']}")
     print("-" * 76)
     print(f"正常 {sm['valid_episodes']} ({sm['valid_ratio']:.1%})    "
           f"异常 {sm['invalid_episodes']}    健康度: {_health_cn(sm['health_level'])}")
@@ -223,6 +272,11 @@ def print_summary(report: dict[str, Any], *, invalid_limit: int = 12) -> None:
               f"{sm['remaining_frames']} 帧（丢弃 {sm['drop_frames']} 帧{extra}）")
     if sm.get("overridden_by_human"):
         print(f"人工复核    : 已覆盖 {sm['overridden_by_human']} 条自动判定")
+    if sm.get("protected_by_systemic_guard"):
+        print(f"熔断保护    : {sm['protected_by_systemic_guard']} 个 episode 因单规则近乎全量命中，"
+              "已阻止批量剔除、转人工")
+    if sm.get("ignored_by_baseline"):
+        print(f"基线白名单  : 已忽略 {sm['ignored_by_baseline']} 条已知误报（不计入健康度）")
     print("-" * 76)
     print(_ljust("检查项", 34) + _rjust("级别", 8) + _rjust("episodes", 10) + _rjust("占比", 9))
     for item in report["checks"]:
@@ -253,8 +307,15 @@ def print_summary(report: dict[str, Any], *, invalid_limit: int = 12) -> None:
         print("-" * 76)
         print("数据集级问题（不是单个 episode 的问题）：")
         for issue in issues:
-            print(f"  - [{issue['code']}] {issue['label']}"
-                  f"{'  (可修复: ' + issue['repair'] + ')' if issue.get('repair') else ''}")
+            detail = issue.get("detail") or {}
+            tag = ""
+            if detail.get("auto_reconciled") is True:
+                tag = "  (已自动对齐，结论有效)"
+            elif detail.get("auto_reconciled") is False:
+                tag = "  (无法对齐 → 定位类检查不可评估)"
+            elif issue.get("repair"):
+                tag = f"  (可修复: {issue['repair']})"
+            print(f"  - [{issue['code']}] {issue['label']}{tag}")
 
     attribution = report.get("attribution") or []
     if attribution:
@@ -378,7 +439,8 @@ def _field_issue_stats_from_frames(dataset: LeRobotDatasetView) -> dict[str, Any
 
 
 def _recommendations(
-    validation: ValidationResult, decisions: dict[int, Decision], drop_frames: int, total_frames: int
+    validation: ValidationResult, decisions: dict[int, Decision], drop_frames: int, total_frames: int,
+    dataset: LeRobotDatasetView | None = None,
 ) -> list[str]:
     freq = validation.reason_frequency()
     total = max(validation.total_episodes, 1)
@@ -386,8 +448,49 @@ def _recommendations(
     drops = [d for d in decisions.values() if d.disposition == "drop"]
     repairs = [d for d in decisions.values() if d.disposition == "repair"]
     reviews = [d for d in decisions.values() if d.disposition == "review"]
+    recon = (dataset.id_reconciliation if dataset is not None else {}) or {}
+    mode = str(recon.get("mode", "native"))
+    guarded = systemic_decisions(decisions)
+
+    # ---- 阻断级结论放最前面：这类情况下任何「剔除」建议都不能直接执行
+    if mode == "ambiguous":
+        recs.append(
+            "【阻断】meta 与 data 的 episode 编号无法对齐，视频/任务定位整体失效："
+            "此时所有依赖定位的检查均为「不可评估」，报告中的异常数不代表数据质量，"
+            "禁止据此批量剔除，需先人工确认两侧编号对应关系。"
+        )
+    if guarded:
+        recs.append(
+            f"【阻断】{len(guarded)} 个 episode 的病因为单条规则近乎全量命中，"
+            "已按「系统性疑似误判」降级为人工复核：请先核对元数据（编号、单位、定位方式），再决定是否剔除。"
+        )
+    if mode == "remapped":
+        recs.append(
+            "meta/episodes 使用全局 episode 编号（"
+            f"{recon.get('meta_id_range')}），而 data 里是 {recon.get('data_id_range')}："
+            f"已按顺序建立映射并通过行数（{recon.get('length_agreement')}）与视频窗口"
+            f"（{recon.get('video_agreement')}）双重校验，本次质检结论基于映射后的正确关联。"
+            "建议在上游转换脚本里统一两侧编号，避免下游每个工具都要各自兜底。"
+        )
+
+    schema = list(getattr(dataset, "schema_contract", []) or []) if dataset is not None else []
+    for item in schema:
+        if item.get("severity") != "error":
+            continue
+        recs.insert(0, (
+            f"【阻断】Schema 违约（{item['column']}）：{item['rule']}。"
+            f"实测 {item['actual']}。{item['impact']}"
+            "修复方式：把该列改写为规范语义并同步 info.json.features，再重跑本流程做回归。"
+        ))
+    if schema and not any(x.get("severity") == "error" for x in schema):
+        recs.append(
+            f"{len(schema)} 项 Schema 非致命偏差（{', '.join(x['column'] for x in schema)}）："
+            "全量顺序读取不受影响，但按 episode 过滤或开 delta_timestamps 时可能静默取错帧，建议按提示补列。"
+        )
 
     if not validation.invalid_episodes and not validation.dataset_issues:
+        if any(x.get("severity") == "error" for x in schema):
+            return [r for r in recs if r.startswith("【阻断】")] or recs
         return ["未发现结构性问题：建议直接进入训练，并抽查 1-2 个 episode 的可视化回放。"]
 
     if repairs:
@@ -434,6 +537,13 @@ def _recommendations(
             recs.append("meta/stats.json 与实测数据不符：归一化会整体偏移，清洗后用重算的 stats 覆盖即可。")
         elif issue.code == "meta_index_inconsistent":
             recs.append("全局 index 不连续：会影响 DataLoader 采样与分片，清洗时已按真实行数重建。")
+        elif issue.code == "meta_episode_mismatch":
+            if mode == "remapped":
+                continue  # 已在上面给出「已对齐」的说明，避免重复且口径冲突
+            recs.append(
+                "meta/episodes 的 episode_index 与数据文件不一致：task 与视频定位会整体失效，"
+                "episode 级缺失多为该问题的表象；需先统一两侧 episode 编号，否则清洗会误删整批数据。"
+            )
 
     ratio = len(validation.invalid_episodes) / total
     if ratio > 0.3:

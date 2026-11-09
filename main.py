@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline import cleaner as cleaner_mod
+from pipeline import baseline as baseline_mod
 from pipeline import pointcloud as pointcloud_mod
 from pipeline import policy as policy_mod
 from pipeline import reporter as reporter_mod
@@ -50,12 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="LeRobot v3 数据集质检与清洗：加载 -> 质检 -> 处置 -> 报告 -> 清洗 -> 可视化",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--dataset_path", required=True, help="本地 LeRobot v3 数据集根目录（含 meta/info.json）")
+    p.add_argument("--dataset_path", default=None, help="本地 LeRobot v3 数据集根目录（含 meta/info.json）")
     p.add_argument("--output_dir", default="outputs", help="输出根目录（报告 / 清洗结果 / 图表）")
     p.add_argument("--max_episodes", type=int, default=None, help="只处理前 N 个 episode（调试大数据集时用）")
 
     p.add_argument("--config", default=None,
                    help="质检策略配置文件（YAML/JSON，按扩展名识别；阈值、严重度、机器人覆盖，缺失键自动用代码默认值）")
+    p.add_argument("--accept-baseline", nargs="+", metavar="FINGERPRINT", default=None,
+                   help="把报告里的误报指纹写入 --config 的 baseline_whitelist；"
+                        "可单独使用（不需要 --dataset_path），下次运行自动忽略这些告警")
     p.add_argument("--overrides", default=None, help="人工复核结果 CSV（来自 review_queue.csv）")
     p.add_argument("--on-review", choices=["keep", "drop"], default="keep",
                    help="未经人工复核的 warning 级 episode 如何处理")
@@ -125,8 +129,15 @@ def save_intermediate(output_dir: Path, name: str, payload: Any) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     setup_logging(args.verbose)
+
+    # 白名单维护是独立的维护动作，不需要（也不应该）重新跑一遍质检
+    if args.accept_baseline:
+        return _accept_baseline(args)
+    if not args.dataset_path:
+        parser.error("--dataset_path 是必填参数（使用 --accept-baseline 维护白名单时除外）")
 
     dataset_path = Path(args.dataset_path).expanduser()
     output_dir = Path(args.output_dir).expanduser()
@@ -221,12 +232,21 @@ def main(argv: list[str] | None = None) -> int:
         _write_failure(output_dir, "validator", exc)
         return 3
 
+    # 基线白名单：已确认的已知误报在这里摘除，不参与处置决策与健康度计算
+    baseline_mod.apply_whitelist(validation, dataset_path.name, config)
+    if validation.baseline_ignored:
+        save_intermediate(output_dir, "02b_baseline_ignored.json", validation.baseline_ignored)
+
     validation_dict = validation.to_dict()
     save_intermediate(output_dir, "02_validation_result.json", validation_dict)
     _print_thresholds(validation)
     sev = validation.severity_summary()
     print(f"  正常 {validation.valid_episodes} / 异常 {len(validation.invalid_episodes)}"
           f"（error {sev.get('error', 0)} / warning {sev.get('warning', 0)} / info {sev.get('info', 0)}）")
+    if validation.baseline_ignored:
+        ignored_eps = {item["episode_index"] for item in validation.baseline_ignored}
+        print(f"  基线白名单: 已忽略 {len(validation.baseline_ignored)} 条已知告警"
+              f"（{len(ignored_eps)} 个 episode，不计入健康度）")
     for code, count in validation.reason_frequency().items():
         if count:
             print(f"    - {code:<26} {count} 个 episode")
@@ -290,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         step("执行清洗（cleaner：删除 + 修复）", 5, total_steps)
         try:
             cleaning = cleaner_mod.clean_dataset(
-                dataset, decisions, output_dir, prefer_cli=not args.no_cli
+                dataset, decisions, output_dir, prefer_cli=not args.no_cli,
+                dataset_issues=validation.dataset_issues,
             )
             cleaning_dict = cleaning.to_dict()
             save_intermediate(output_dir, "04_cleaning_result.json", cleaning_dict)
@@ -483,6 +504,27 @@ def _thresholds_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return json.dumps(a, sort_keys=True, default=str) == json.dumps(b, sort_keys=True, default=str)
 
 
+def _accept_baseline(args: argparse.Namespace) -> int:
+    """把误报指纹写回配置文件（`--accept-baseline` 的独立维护模式）。"""
+    if not args.config:
+        print("--accept-baseline 需要配合 --config 指定要写入的配置文件（YAML/JSON）")
+        return 2
+    try:
+        added, existed = baseline_mod.append_to_config(args.config, args.accept_baseline)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"写入基线白名单失败：{exc}")
+        return 2
+    path = Path(args.config).expanduser()
+    if added:
+        print(f"已写入 {len(added)} 个基线指纹 -> {path}")
+        for fp in added:
+            print(f"  + {fp}")
+    else:
+        print(f"没有新增指纹（{len(existed)} 个已在白名单中）-> {path}")
+    print("重新运行质检命令即可生效：命中的告警会标记 ignored_by_baseline，且不再影响健康度。")
+    return 0
+
+
 def _build_config(args: argparse.Namespace, robot_type: str | None) -> dict[str, Any]:
     """配置优先级：默认值 < 配置文件 < robot_type 覆盖 < CLI 快捷覆盖。"""
     overrides: dict[str, Any] = {}
@@ -500,7 +542,9 @@ def _build_config(args: argparse.Namespace, robot_type: str | None) -> dict[str,
 def _print_thresholds(validation) -> None:
     t = validation.resolved_thresholds or {}
     frame = t.get("frame_count") or {}
-    mode_label = "固定" if frame.get("mode") == "fixed" else "自适应"
+    mode_label = {"fixed": "固定", "manual": "人工指定", "auto": "自适应"}.get(
+        frame.get("mode"), "自适应"
+    )
     print(f"  阈值({mode_label}) : 帧数区间 [{frame.get('min')}, {frame.get('max')}] "
           f"(median={frame.get('median')}, mad={frame.get('mad')}, mode={frame.get('mode')})")
     jump = t.get("action_jump") or {}

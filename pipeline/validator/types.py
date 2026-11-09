@@ -32,6 +32,8 @@ RULES: tuple[Rule, ...] = (
     Rule("video_span_mismatch", "视频时间窗与 episode 时长不符", "帧数可能对得上，但 from/to 时间窗取错，画面与数据不是同一段时间", None),
     Rule("frame_mismatch", "视频帧数与 state 行数不一致", "采集中断导致 mp4 未收尾，按帧对齐会错位", None),
     Rule("meta_index_inconsistent", "meta/episodes 与数据不一致", "length/索引漂移；清洗时会按真实行数重建", "index"),
+    Rule("meta_episode_mismatch", "meta/episodes 的 episode_index 与数据不一致",
+         "两侧编号体系不同（如 meta 用全局 ID、data 用 0..N-1）；task/视频定位整体失效，需先统一编号", None),
     Rule("missing_task", "任务描述缺失或为空", "语言条件策略会直接报错；需补标", None),
     Rule("static_episode", "空转 episode（动作几乎无变化）", "机器人未真正执行任务，属无效采集", None),
     Rule("blank_video", "视频黑屏/纯色遮挡", "镜头被挡或相机未推流；模态信息完全丢失", None),
@@ -52,14 +54,20 @@ class EpisodeResult:
     frame_count: int
     reasons: list[str] = field(default_factory=list)
     details: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: 规则默认严重度之外的特例覆盖，用于同一规则按方向分级（如帧数过短=warning、过长=error）
+    severity_overrides: dict[str, str] = field(default_factory=dict)
+    #: 命中基线白名单被摘除的告警，保留取证信息但不参与判定/健康度
+    ignored_baseline: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
         return not self.reasons
 
-    def add(self, code: str, **evidence: Any) -> None:
+    def add(self, code: str, severity: str | None = None, **evidence: Any) -> None:
         if code not in self.reasons:
             self.reasons.append(code)
+        if severity:
+            self.severity_overrides[code] = severity
         self.details.setdefault(code, {}).update(evidence)
 
     def trim_plan(self) -> dict[str, int] | None:
@@ -73,12 +81,15 @@ class EpisodeResult:
         return {"head_frames": head, "tail_frames": tail} if (head or tail) else None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "episode_index": self.episode_index,
             "frame_count": self.frame_count,
             "reasons": list(self.reasons),
             "details": self.details,
         }
+        if self.ignored_baseline:
+            payload["ignored_baseline"] = list(self.ignored_baseline)
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EpisodeResult":
@@ -88,6 +99,7 @@ class EpisodeResult:
             frame_count=int(data.get("frame_count", 0)),
             reasons=list(data.get("reasons") or []),
             details=dict(data.get("details") or {}),
+            ignored_baseline=list(data.get("ignored_baseline") or []),
         )
 
 
@@ -114,6 +126,8 @@ class ValidationResult:
     resolved_thresholds: dict[str, Any] = field(default_factory=dict)
     dataset_issues: list[DatasetIssue] = field(default_factory=list)
     skipped_checks: dict[str, str] = field(default_factory=dict)
+    #: 被基线白名单摘除的告警（全量汇总，供报告展示 ignored_by_baseline）
+    baseline_ignored: list[dict[str, Any]] = field(default_factory=list)
     probe_available: bool = True
     #: 流式模式下的聚合结果（total_frames / frames_by_episode / field_stats）；
     #: 内存模式为 None，报告仍直接读 frames。
@@ -132,7 +146,10 @@ class ValidationResult:
         return sorted(r.episode_index for r in self.invalid_episodes)
 
     def severity_of(self, res: EpisodeResult) -> str:
-        levels = [severity_of(self.config, code) for code in res.reasons]
+        levels = [
+            res.severity_overrides.get(code) or severity_of(self.config, code)
+            for code in res.reasons
+        ]
         return max(levels, key=lambda s: SEVERITY_ORDER.get(s, 0)) if levels else "ok"
 
     def severity_summary(self) -> dict[str, int]:
@@ -170,4 +187,6 @@ class ValidationResult:
         }
         if self.skipped_checks:
             payload["skipped_checks"] = self.skipped_checks
+        if self.baseline_ignored:
+            payload["baseline_ignored"] = list(self.baseline_ignored)
         return payload

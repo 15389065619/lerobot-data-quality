@@ -124,6 +124,26 @@ flowchart LR
 
 规则不返回布尔值，而是返回结构化证据（`res.add(code, **evidence)`）：量化指标、触发阈值、推导依据、受影响帧号。报告因此可以携带数据集指纹、配置快照与自适应阈值的推导过程，两次运行的报告可以机械 diff。质检从「脚本输出一段日志」升级为「可审计的工程产物」。
 
+### 3.4 编号空间对齐：把「不可评估」和「不可用」分开
+
+这是真实数据集暴露出来的最危险的一类误报。BEHAVIOR-1K 这类数据集的 `meta/episodes` 用**全局 episode ID**（420010, 420020, …，步长 10 且带缺口），而 `data/*.parquet` 里的 `episode_index` 是 **0..N-1**。两侧编号没有交集时，所有依赖 meta 的定位（视频时间窗、任务描述、data 文件）都会落空，于是：
+
+- `frame_mismatch` → 每一条都报「视频无法定位」
+- `missing_task` → 每一条都报「任务为空」
+- 200/200 episode 被判 error，处置建议是**剔掉全部 128 万帧**
+
+数据其实是好的：实测 meta 的 `length` 与数据行数 200/200 逐条相等，视频时间窗帧数也 200/200 等于行数。错的是「映射方式」，不是「数据」。
+
+处理分三层：
+
+1. **加载层自动对齐**（`loader._reconcile_episode_ids`）：两侧编号集合不同但 episode 数相同时，按顺序建立候选映射，并用两重独立证据校验——`meta.length == 数据行数`、`视频时间窗帧数 == 数据行数`。两项一致率均 ≥99% 才接受映射（本项目实测均为 1.0）；任何一项证据不足即判 `ambiguous`，**拒绝猜测**。
+2. **规则层区分语义**：定位不可用时，`frame_mismatch` / `missing_task` 标记为 `skipped_checks`（「不可评估」），不产出 episode 级 error。定位失败是工具的能力边界，不是数据的缺陷。
+3. **处置层熔断**（`policy._apply_systemic_guard`）：任何一条 error 规则的命中率 ≥95% 时，批量 `drop` 自动降级为 `review`，并在报告里以【阻断】标注。删数据不可逆，100% 命中应先怀疑元数据。
+
+配套的可观测性：报告的 `dataset.id_reconciliation` 记录映射模式、两侧编号区间、两项一致率与映射样本；`meta_episode_mismatch` 条目上标注 `auto_reconciled`，避免报告读者把它当成未处理的阻断项。
+
+同一数据集修复前后的结论文档在 `docs/EVAL.md`：20 个 episode 从「20 error / 全量剔除」变为「19 keep + 1 review（真实的 action 跳变）」。
+
 ---
 
 ## 4. 扩展性设计

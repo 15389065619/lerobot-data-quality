@@ -32,6 +32,19 @@ def test_streaming_matches_in_memory(normal_dataset):
     }
 
 
+def test_streaming_tolerates_mixed_state_dims():
+    """不同 episode 的 state 宽度不一致时，流式质检不应在 np.vstack 处抛 ValueError。"""
+    from pipeline.validator.streaming import _finite_mean, _stack
+
+    a6 = np.full((3, 6), 1.0)
+    a7 = np.full((3, 7), 2.0)
+
+    mean = _finite_mean([a6, a7])
+    assert mean is not None and mean.shape == (6,)
+    np.testing.assert_allclose(mean, np.ones(6))
+    assert _stack([a6, a7]).shape == (3, 6)
+
+
 def test_streaming_flags_dirty_episode(tmp_path):
     ok = smooth_episode(40, seed=1)
     dirty = smooth_episode(40, offset=0.5, seed=2)

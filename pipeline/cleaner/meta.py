@@ -103,6 +103,13 @@ def rewrite_info(dataset: LeRobotDatasetView, kept: list[int], total_frames: int
     info["splits"] = {"train": f"0:{len(kept)}"}
     info["data_path"] = dataset.info.get("data_path") or DEFAULT_DATA_PATH
     info["video_path"] = dataset.info.get("video_path") or DEFAULT_VIDEO_PATH
+
+    # 清洗会重写每帧规范化列；源数据集若缺 frame_index（index 兼任了它的语义），
+    # 这里补上声明，避免出现「parquet 有列、info.json 不声明」的新漂移。
+    if "frame_index" not in (info.get("features") or {}):
+        features = dict(info.get("features") or {})
+        features["frame_index"] = {"dtype": "int64", "shape": (1,), "names": None}
+        info["features"] = features
     path = out_root / "meta" / "info.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:

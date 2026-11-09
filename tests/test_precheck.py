@@ -35,6 +35,8 @@ def test_dirty_dataset_is_blocked(tmp_path: Path) -> None:
     assert result.drop >= 1
     assert result.blocking and result.blocking[0]["episode_index"] == 1
     assert "未通过" in result.message
+    # --on-review keep 是默认值，默认路径下不应作为「放宽」建议
+    assert "--on-review keep" not in result.message
 
 
 def test_strict_raises(tmp_path: Path) -> None:

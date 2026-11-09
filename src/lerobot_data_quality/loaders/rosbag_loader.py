@@ -64,12 +64,16 @@ def _stamp_ns(stamp: Any, fallback_ns: int) -> int:
     """从消息 header.stamp 提取纳秒时间戳；字段缺失时回退到 bag 记录时间。
 
     ROS1 的 Time 字段为 (sec, nsec)，ROS2 为 (sec, nanosec)，两种都兼容。
+    sec 与 nsec 同时为 0 表示「未赋值」（ROS 的 Time 零值约定），同样回退到
+    bag 记录时间——否则整段时间戳塌成 0，去重后只剩 1 帧。
     """
     sec = getattr(stamp, "sec", None)
     if sec is None:
         return fallback_ns
-    nsec = getattr(stamp, "nanosec", getattr(stamp, "nsec", 0))
-    return int(sec) * 1_000_000_000 + int(nsec)
+    nsec = int(getattr(stamp, "nanosec", getattr(stamp, "nsec", 0)))
+    if int(sec) == 0 and nsec == 0:
+        return fallback_ns
+    return int(sec) * 1_000_000_000 + nsec
 
 
 def build_frame_table(
@@ -135,6 +139,10 @@ def build_frame_table(
     t0 = ts[0]
     img_ts = (np.sort(np.asarray(list(image_records), dtype=np.int64))
               if image_records is not None else np.empty(0, dtype=np.int64))
+
+    # 归一化原点取基准轴首帧：image 基准下相机帧可能早于首条关节消息，
+    # 若仍用关节流 t0，输出时间戳会从负数开始，违反「首帧归零」的 v3 约定。
+    t0 = int(img_ts[0]) if base == "image" and img_ts.size else t0
 
     if base == "state":
         # 关节轴为基准：相机时间戳 merge_asof 挂到每个关节帧上

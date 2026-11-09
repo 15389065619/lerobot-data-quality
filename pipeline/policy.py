@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .baseline import fingerprint
 from .config import severity_of
 from .loader import LeRobotDatasetView
 from .validator import RULE_MAP, EpisodeResult, ValidationResult
@@ -34,11 +35,15 @@ REPAIR_ACTIONS = {
     "meta_index_inconsistent": "index",
 }
 
+#: 单条规则命中占比达到该阈值时视为「系统性疑似误判」，禁止批量剔除
+SYSTEMIC_HIT_RATIO = 0.95
+
 REVIEW_QUEUE_FILENAME = "review_queue.csv"
 
 _HEADERS = [
-    "episode_index", "severity", "suggested_disposition", "reasons", "recommended_action",
-    "frame_count", "detail", "video", "window", "reviewer_disposition", "reviewer_note",
+    "episode_index", "severity", "suggested_disposition", "reasons", "fingerprints",
+    "recommended_action", "frame_count", "detail", "video", "window",
+    "reviewer_disposition", "reviewer_note",
 ]
 
 
@@ -80,6 +85,11 @@ def decide(
     decisions: dict[int, Decision] = {}
     for ep, res in validation.results.items():
         decisions[ep] = _decide_one(res, validation, on_review)
+
+    # 熔断：一条规则命中近乎全部 episode 时，绝大多数情况是元数据/定位问题而非数据
+    # 真的全坏（behavior1k 实测：meta 用全局 episode ID，导致视频与任务定位全部落空，
+    # 表面是 200/200 error）。这种情况删数据不可逆，必须先降级为人工复核。
+    systemic = _apply_systemic_guard(decisions)
 
     for ep, override in (overrides or {}).items():
         target = overrides.get(ep)
@@ -141,6 +151,49 @@ def _decide_one(res: EpisodeResult, validation: ValidationResult, on_review: str
     return Decision(res.episode_index, disposition, severity, list(res.reasons), action)
 
 
+def _apply_systemic_guard(decisions: dict[int, Decision]) -> list[str]:
+    """单规则近乎全量命中时，把「剔除」降级为「人工复核」。
+
+    数据治理里 100% 命中几乎不可能是数据问题：更常见的是编号空间、定位方式、
+    单位约定这类元数据层面的系统性错配。删数据不可逆，所以这里选择阻断而不是执行。
+    """
+    total = len(decisions)
+    if total < 2:
+        return []
+    hits: dict[str, int] = {}
+    for d in decisions.values():
+        if d.disposition != "drop":
+            continue
+        for code in d.reasons:
+            hits[code] = hits.get(code, 0) + 1
+
+    flagged: list[str] = []
+    for code, count in hits.items():
+        share = count / total
+        if share < SYSTEMIC_HIT_RATIO:
+            continue
+        flagged.append(code)
+        for d in decisions.values():
+            if d.disposition == "drop" and code in d.reasons:
+                d.disposition = "review"
+                d.source = "systemic-guard"
+                d.note = (
+                    f"规则 {code} 命中 {share:.0%} 的 episode，疑似系统性元数据/定位问题，"
+                    "已阻止批量剔除，需人工确认后再处置"
+                )
+                d.recommended_action = "人工复核（疑似系统性误判，已阻止批量剔除）"
+        LOG.warning(
+            "熔断：规则 %s 命中 %.1f%% 的 episode（%d/%d），批量剔除已降级为人工复核",
+            code, share * 100, count, total,
+        )
+    return flagged
+
+
+def systemic_decisions(decisions: dict[int, Decision]) -> list[int]:
+    """被熔断保护下来的 episode 编号，供报告如实标注。"""
+    return sorted(ep for ep, d in decisions.items() if d.source == "systemic-guard")
+
+
 def _action_text(d: Decision) -> str:
     if d.disposition == "keep":
         return "保留"
@@ -163,6 +216,7 @@ def write_review_queue(
     """导出复核队列 CSV：默认只列 review/drop，供数据同学填写 reviewer_disposition。"""
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    dataset_name = dataset.root.name
     rows = []
     for ep in sorted(decisions):
         d = decisions[ep]
@@ -175,6 +229,10 @@ def write_review_queue(
                 "severity": d.severity,
                 "suggested_disposition": d.disposition,
                 "reasons": "|".join(d.reasons),
+                # 确认误报后可复制到 `--accept-baseline` 或配置 baseline_whitelist
+                "fingerprints": "|".join(
+                    fingerprint(dataset_name, ep, code) for code in d.reasons
+                ),
                 "recommended_action": d.recommended_action,
                 "frame_count": res.frame_count,
                 "detail": _summarize_details(res),

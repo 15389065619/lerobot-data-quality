@@ -127,7 +127,12 @@ def validate_dataset(
     if streaming:
         from .streaming import validate_dataset_streaming
 
-        return validate_dataset_streaming(dataset, config, prior=prior, only=only)
+        # 非标准字段名：data 缺少 episode_index 时流式无法按 episode 分组。
+        # 回退内存模式，由「meta 中存在但读不到帧」的兜底统一标 episode_read_error，报告照常生成。
+        if dataset.data_columns and "episode_index" not in dataset.data_columns:
+            LOG.warning("data/*.parquet 缺少 episode_index 列，无法流式按 episode 分组，回退内存模式")
+        else:
+            return validate_dataset_streaming(dataset, config, prior=prior, only=only)
 
     config = config or load_config(robot_type=dataset.info.get("robot_type"))
     skipped: dict[str, str] = {}
@@ -142,7 +147,13 @@ def validate_dataset(
     if not FFPROBE:
         skipped["frame_mismatch"] = "未找到 ffprobe，跳过视频帧对齐"
     if not dataset.video_features:
-        skipped["frame_mismatch"] = "数据集中没有视频特征"
+        skipped["frame_mismatch"] = "数据集中没有视频特征（图像逐帧嵌在 parquet 中，无法按视频定位）"
+        skipped["blank_video"] = "数据集中没有视频特征"
+    if not dataset.locator_available:
+        why = ("meta 与 data 的 episode 编号空间不一致且无法可靠映射，"
+               "视频窗口与任务无法定位——属「不可评估」，非数据异常")
+        skipped["frame_mismatch"] = why
+        skipped["missing_task"] = why
 
     cameras = dataset.video_features[: int(cfg_get(config, "probe.max_cameras", 3))]
     max_probes = int(cfg_get(config, "blank_video.max_probes", 400))

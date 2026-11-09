@@ -39,7 +39,10 @@ from ..loader import (
     iter_frame_chunks,
 )
 from .context import (
+    _align_dims,
     _as_float_matrix,
+    _annotate_reconciliation,
+    _episode_alignment_issue,
     _index_continuity_issue,
     _resolve_frame_bounds,
     _stats_staleness_issue,
@@ -76,7 +79,13 @@ def validate_dataset_streaming(
     if not FFPROBE:
         skipped["frame_mismatch"] = "未找到 ffprobe，跳过视频帧对齐"
     if not dataset.video_features:
-        skipped["frame_mismatch"] = "数据集中没有视频特征"
+        skipped["frame_mismatch"] = "数据集中没有视频特征（图像逐帧嵌在 parquet 中，无法按视频定位）"
+        skipped["blank_video"] = "数据集中没有视频特征"
+    if not dataset.locator_available:
+        why = ("meta 与 data 的 episode 编号空间不一致且无法可靠映射，"
+               "视频窗口与任务无法定位——属「不可评估」，非数据异常")
+        skipped["frame_mismatch"] = why
+        skipped["missing_task"] = why
 
     stream_eps = _streamed_episodes(dataset)
     ctx, skipped_extra = _build_context(dataset, config, columns, stream_eps=stream_eps)
@@ -230,14 +239,36 @@ def _build_context(
 
     # ---- action 阈值（采样）
     threshold_arrays = [_stack(action_parts[ep]) for ep in sorted(action_parts)]
-    action_thresholds, action_meta = _thresholds_from_arrays(threshold_arrays, config)
+    action_thresholds, action_meta = _thresholds_from_arrays(threshold_arrays, config, fps=dataset.fps)
     if not action_thresholds:
         skipped["action_jump"] = "无可用 action 数据推导阈值"
 
     # ---- stats.json 时效性（采样）
     issues: list[DatasetIssue] = []
+    if not dataset.episodes.empty and "episode_index" in dataset.episodes.columns:
+        meta_ids = {int(x) for x in dataset.episodes["episode_index"].tolist()}
+        align_issue = _annotate_reconciliation(
+            _episode_alignment_issue(set(counts), meta_ids), dataset
+        )
+        if align_issue:
+            issues.append(align_issue)
     stale_issue = None
-    if state_sample:
+    # 采样来的均值只能和「同口径」的 stats.json 比。若采样没覆盖全部 episode
+    # （数据集 episode 数超过采样上限，或采样集与数据侧编号不匹配），偏差反映的是
+    # 子集分布差异，不是 stats 过期——报成数据问题会让整批数据被误判为不可用。
+    sampled_eps = set(state_parts)
+    covered = bool(counts) and sampled_eps == set(counts)
+    if state_sample and not covered:
+        skipped["stats_stale"] = (
+            f"仅覆盖 {len(sampled_eps)}/{len(counts)} 个 episode 的 state，"
+            "子集均值与全量 stats.json 不可比，需全量统计才能判定"
+        )
+        if getattr(dataset, "truncated_to", None):
+            skipped["stats_stale"] = (
+                f"只扫描了前 {dataset.truncated_to} 个 episode，子集均值与全量 stats.json 不可比，"
+                "需全量运行才能判定 stats 是否过期"
+            )
+    elif state_sample:
         state_arrays = [_stack(state_parts[ep]) for ep in sorted(state_parts)]
         actual_mean = _finite_mean(state_arrays)
         stale_issue = _stats_staleness_issue(dataset.stats, actual_mean, config)
@@ -247,7 +278,7 @@ def _build_context(
     if "index" in columns:
         continuity = _index_continuity_issue(
             rows=rows,
-            count=rows - nan_index,
+            count=None,
             min_index=idx_min,
             max_index=idx_max,
             nan_count=nan_index,
@@ -278,7 +309,12 @@ def _fingerprint(arr: np.ndarray | None, decimals: int) -> str | None:
 
 
 def _stack(parts: list[np.ndarray]) -> np.ndarray:
-    return parts[0] if len(parts) == 1 else np.vstack(parts)
+    if len(parts) == 1:
+        return parts[0]
+    # 同一 episode 跨分片时列宽本应一致；不一致说明分片被改动过，
+    # 按多数宽度拼接，避免整次质检因 np.vstack 的 ValueError 中断。
+    aligned, _ = _align_dims(parts, "parquet shard")
+    return np.vstack(aligned)
 
 
 def _streamed_episodes(dataset: LeRobotDatasetView) -> list[int] | None:
@@ -291,6 +327,9 @@ def _streamed_episodes(dataset: LeRobotDatasetView) -> list[int] | None:
 def _finite_mean(arrays: list[np.ndarray]) -> np.ndarray | None:
     if not arrays:
         return None
+    # 各 episode 的 state 宽度可能不一致（混合机器人配置、合并数据集等），
+    # 按多数维度求均值；维度不一致由 stats 时效性规则与 episode 级规则分别报告。
+    arrays, _ = _align_dims(arrays, "episode state")
     stacked = np.vstack(arrays)
     finite = stacked[np.isfinite(stacked).all(axis=1)]
     if finite.size == 0:
