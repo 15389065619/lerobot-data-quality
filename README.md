@@ -11,7 +11,9 @@
 
 ## 为什么需要这一层
 
-机器人模仿学习对数据质量极其敏感：一段 112 帧里混着 11 帧 NaN 的 episode 能让训练直接崩溃；一次遥操作接管产生的 action 跳变会污染归一化统计；视频与 state 帧数错位会让训练管线**静默地**学到错位数据。这些问题在真实采集里几乎必然出现（采集中断、控制环丢包、镜头遮挡、合并时重复入库），而 LeRobot 官方工具链只有「加载」和「编辑」能力，没有质检层——本项目补的就是这一层。
+机器人模仿学习对数据质量极其敏感：一段 112 帧里混着 11 帧 NaN 的 episode 能让训练直接崩溃；一次遥操作接管产生的 action 跳变会污染归一化统计；视频与 state 帧数错位会让训练管线**静默地**学到错位数据。这些问题在真实采集里几乎必然出现（采集中断、控制环丢包、镜头遮挡、合并时重复入库），而 LeRobot 官方工具链只有「加载」和「编辑」能力，本身不带质检层。
+
+社区已有 `lerobot-doctor` / DataDoctor 这类巡检工具，覆盖 12 类 check，并带 URDF 物理限位校验与全帧视频解码审计——**在检查项覆盖上它们比本项目更全，本项目也没有 URDF**。差异在报告之后那一段：它们止于 PASS / WARN / FAIL 的结论，本项目把规则判不了的样本转成**可裁决的复核队列**，把人的裁决通过 `--overrides` 回灌成可复用、可审计的处置记录，清洗产物独立落盘而非原地改写源数据。逐条对照与待核实清单见 [docs/COMPARISON.md](docs/COMPARISON.md)。
 
 ## 30 秒跑通
 
@@ -369,7 +371,7 @@ outputs/
 | 文档 | 内容 |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构设计说明书：业务痛点、架构图、契约思维、为何规则而非 ML、扩展性 |
-| [docs/COMPARISON.md](docs/COMPARISON.md) | 与 LeRobot 官方工具 / ROS 工具链 / OpenVLA 数据管线的对比与选型建议 |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | 对照两类竞品：同生态质检工具（`lerobot-doctor` / DataDoctor / `lerobot-quality-gates`，含三向对照与待核实清单）与上下游工具链（LeRobot 官方 / ROS / OpenVLA），以及选型建议 |
 | [docs/EVAL.md](docs/EVAL.md) | 全量实测记录、故障注入表、已知边界 |
 | [docs/POSTMORTEM.md](docs/POSTMORTEM.md) | 四次判定错误复盘：现象 → 怀疑 → 证据证伪 → 修复 → 防回归用例，以及人工审核为何不可省 |
 | [docs/INTERVIEW.md](docs/INTERVIEW.md) | 项目讲解话术与高频追问的回答要点 |
