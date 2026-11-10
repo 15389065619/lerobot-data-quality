@@ -27,44 +27,57 @@ DataDoctor 还提供 `fix`（自动修复，带备份）、`trim`（裁首尾空
 
 | 维度 | DataDoctor / lerobot-doctor | 本项目 |
 |---|---|---|
-| 检查项 | 12 类，含 URDF 物理限位、全帧解码审计 | 17 条数值/文件规则 + 8 条点云规则，无 URDF |
+| 检查项 | DataDoctor 12 类（含 URDF 物理限位、全帧解码审计）；上游 `lerobot-doctor 0.2.0` 实为 11 类，无这两项 | 17 条数值/文件规则 + 8 条点云规则，无 URDF |
 | 严重度模型 | PASS / WARN / FAIL 三档 | keep / repair / review / **drop** 四档 |
 | 判不准的怎么办 | 归入 WARN 或 per-episode drilldown，由使用者自行判断 | 进 `review_queue.csv`，带视频路径、时间窗、证据片段 |
-| 人工裁决回灌 | 公开 README 未提及（待核实） | `--overrides` 把裁决写回，重跑时复用，结论稳定 |
-| 对源数据 | `fix` / `trim` 原地修改（先备份） | 源目录只读，清洗产物独立落盘 |
-| 子集模式 | `--max-episodes` 时自动跳过依赖全量的检查 | 检测到覆盖不足时**拒绝导出**，不给部分结论 |
-| 增量重检 | 公开 README 未提及（待核实） | `--incremental` + manifest 复用 |
+| 人工裁决回灌 | 无：没有 episode 级处置状态，`score` 只给一次性建议 | `--overrides` 把裁决写回，重跑时复用，结论稳定 |
+| 对源数据 | `fix` / `trim` **原地改写**，且备份仅含 `meta/`，被重写的 parquet 无备份 | 源目录只读，清洗产物独立落盘 |
+| 子集模式 | 跳过项记为 PASS，默认视图不显示该消息 | 检测到覆盖不足时**拒绝导出**，不给部分结论 |
+| 增量重检 | 无（incremental 仅指 HF 下载分批取数） | `--incremental` + manifest 复用 |
 | 下游收益量化 | 无（`score` 只排序，不量化清洗前后分布） | `tools/analyze_action_distribution.py` 三段测量（选择效应 / 修复效应分离） |
 
 ### 三条实质差异，而不是功能多少
 
 **1. 自动判定，还是分派给人。** DataDoctor 的目标是给出 PASS/FAIL 并接进 CI——它必须自己下结论。本项目承认部分样本（`action_jump` 超阈 1.0–1.5 倍这类）在规则层面判不了，于是把它们挪进 `review` 档并生成可裁决的队列。这不是更聪明，是承认边界：**规则能判的判，判不了的写成问题交给人**。实测在 demo 集上，人工裁决把 8 条待删数据里的 2 条救了回来。
 
-**2. 就地修复，还是源不可变。** `fix` / `trim` 改写数据集本身（先备份），适合「这份数据就是我的，改完继续用」。本项目按「源只读 + 产物独立」处理，适合「数据是别人给的，我要留证据说明我改了什么」。两者都对，取决于你是否需要事后回答「原始长什么样」。
+**2. 就地修复，还是源不可变。** `fix` / `trim` 原地改写数据集本身（备份仅含 `meta/`），适合「这份数据就是我的，改完继续用」。本项目按「源只读 + 产物独立」处理，适合「数据是别人给的，我要留证据说明我改了什么」。两者都对，取决于你是否需要事后回答「原始长什么样」。
 
 **3. 单次巡检，还是结论可复现。** CI gate 每次全量重跑没有负担；但治理场景下，第二次运行的结论必须能和第一次对上，否则增量质检会漂移。这就是本项目为什么要持久化 `severity_overrides`、要求 `from_dict` roundtrip 的那条测试。
 
-### 待核实清单
+### 源码核实结果
 
-上表中标注「未提及」的条目，来自公开 README，**不等于对方没有**。下列六条需读源码确认后回填，核实方法附后：
+**核实范围**：PyPI `lerobot-doctor 0.2.0`（wheel 51 KB，Python 4,117 行，`runner.py` 实际注册 **11 个 check**）。README 宣称的 12 类中的 `kinematics`（URDF 物理限位）与全帧视频审计**在 0.2.0 包内不存在**——它们是 DataDoctor fork 的扩展，本表未核实那部分源码，也不对其下结论。
 
-| # | 待核实问题 | 为什么重要 | 核实方法 |
+六条待核实项已全部落到代码：
+
+| # | 问题 | 结论 | 证据 |
 |---|---|---|---|
-| 1 | 是否有 episode 级 disposition 持久化（「这集已判 drop 并被记录」，而非仅 WARN） | 决定能否做增量与结论复用 | 检索 `disposition` / `override` / `decision` |
-| 2 | `score` 的推荐删除能否回灌为下一轮输入 | 决定是「建议」还是「闭环」 | 检索 `score` 的输出是否被 `fix` / `trim` 读取 |
-| 3 | `fix` / `trim` 是「备份后改写源目录」还是「写新目录」 | 决定源数据是否可变 | 读 `fix` 实现的写入路径 |
-| 4 | 是否存在增量模式（只重检变更的 episode） | 决定大集上的可重复成本 | 检索 `incremental` / `manifest` / `cache` |
-| 5 | `--max-episodes` 部分模式下，被跳过的检查在报告里如何呈现 | 决定部分结论会不会被误读为全量结论 | 读报告渲染逻辑，看是否标注「未评估」 |
-| 6 | 是否有「导出干净数据集」的独立产物（而非原地改） | 决定能否并存原始与清洗两份 | 检索 `export` / `copy` / `--output` |
+| 1 | episode 级 disposition 持久化 | **无**。没有「这集已处置」的状态概念，只有检查结果 | 全仓检索 disposition / override / decision / review，仅命中 `gate.py:73` 的一句 CLI 帮助文本 |
+| 2 | `score` 推荐删除能否回灌 | **不能**。`score` 只支持 `--json` 打到 stdout，无输出文件参数；`recommended_drops` 仅作为返回值，`fix` / `trim` 都不读它 | `cli.py:50-54`、`score.py:116` |
+| 3 | `fix` / `trim` 写入路径 | **原地改写**，且 `backup` 只复制 `meta/`，被重写的 `data/*.parquet` 不在备份内 | `fix.py:46-49`（copytree 仅 meta）、`fix.py:170/236/284`（`pq.write_table` 直写原文件）、`trim.py:136` |
+| 4 | 增量重检 | **无**。incremental 只出现在 HF 下载阶段的分批取数，没有任何质检缓存或 manifest | `dataset_loader.py:293-400` |
+| 5 | 部分模式下被跳过的检查如何呈现 | **记为 PASS**，且默认（非 verbose）视图不打印该消息——用户只看到 `[PASS] Metadata` | `metadata.py:81-83`、`report.py:116`（PASS 消息在非 verbose 时被跳过） |
+| 6 | 独立导出干净数据集 | **无**。全仓唯一一处 `copytree` 就是第 3 条那个只含 meta 的备份 | `grep copytree` → `fix.py:49` 单处 |
 
-核实命令（本机连不上 GitHub 时可用 PyPI 包替代）：
+据此修正上表两处措辞：**人工裁决回灌**与**增量重检**都不是「公开 README 未提及」，而是**源码里没有这个设计**。
+
+有两点必须公正说明，否则会变成踩竞品：
+
+**第 5 条不是缺陷，是取舍。** `--max-episodes` 是用户主动抽样，把抽样下无法判断的项记 PASS 对 CI gate 是合理的——否则每次抽样都 FAIL。真正的差异在用途：它的报告是 **gate 的输入**，抽样 PASS 可以接受；我的报告要当**结论**用，所以覆盖不足时必须拒绝导出。这一条我保留自己的做法，但不认为对方错了。
+
+**第 3 条值得提醒。** 备份只含 `meta/`，而 `fix` 的 `reindex` / `timestamps` / `nan` 三类修复都直接重写 `data/*.parquet`。也就是说，**若误用 `fix` 改坏了数值，`*_backup` 目录里没有原始数据可回滚**。这不是设计缺陷（有 `--dry-run` 可先预览），但 README 只写 "creates backup"，容易被读成全量备份。
+
+复现方式（不需要访问 GitHub，PyPI 即可）：
 
 ```bash
-pip download lerobot-doctor --no-deps -d /tmp/ld && cd /tmp/ld && unzip -o *.whl -d src
-grep -rn "disposition\|override\|incremental\|manifest" src/ | head -30
+pip download lerobot-doctor --no-deps -d /tmp/ld
+cd /tmp/ld && unzip -o *.whl -d src
+sed -n '46,50p'  src/lerobot_doctor/fix.py                 # 备份范围：只 copytree meta
+sed -n '81,84p'  src/lerobot_doctor/checks/metadata.py     # partial 模式记 PASS
+sed -n '114,118p' src/lerobot_doctor/report.py             # 非 verbose 下 PASS 消息被跳过
 ```
 
-> 说明：以上对比基于各工具的公开 README 与设计目标（2026-11），本项目侧能力均有单测与实测记录（见 [EVAL.md](EVAL.md)）。竞品若已补齐上述条目，请以源码为准并在本表回填——**这张表的价值在于它可被推翻，而不在于它证明我更好**。
+> 行号对应 `0.2.0`；后续版本变化以源码为准。**这张表的价值在于它可被推翻，而不在于它证明我更好**——包括上面这六条结论本身。
 
 ## 上下游工具链对比
 
