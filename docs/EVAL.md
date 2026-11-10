@@ -121,6 +121,24 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 | info 计数与实物不符时静默 | gym_xarm_pc 丢了 45/50 个 episode，报告只说「正常 0 / 异常 5」 | Schema 增加 `total_episodes` 与 `total_frames` 两条对账断言 |
 | `action_jump` 命中集中在阈值边缘 | 54 条命中里超阈中位数仅 1.10~1.63 倍，humanoid 14/14 等于 `abs_floor` | 按超阈倍数分级：<1.5 降 info，默认行为不再新增剔除 |
 
+### 2.4 第二份光捕数据集（120 Hz 古典舞）：换一份分布做交叉验证
+
+`chingmu_subset` 覆盖的几乎全是跳跃类高动态动作，为确认结论不是「对单一样本集过拟合」，从同一原始库另切一份**零重叠**子集：`1.14.6.Classical_Dance` 下全部 18 条片段（18 ep / 16,975 帧 / 36 维 / 120 Hz / 无视频），沿用同一份 `config/chingmu_manual.yaml` 跑完整流水线。
+
+| 指标 | 结果 |
+|---|---|
+| episode 判定 | 16 正常 / 2 warning / 0 error |
+| 命中规则 | `frame_count_abnormal` 1、`action_jump` 1 |
+| 处置 | keep 16 / review 2 / drop 0；清洗 0 删 0 修，18 集、16,975 帧原样保留 |
+| 跳过项 | `frame_mismatch`、`blank_video`（无视频特征）；点云（无二维点云特征） |
+
+两条 warning 逐条核对后**都不是规则误报**：
+
+- ep6（`DP_Five_Position_Brush`）599 帧，比手填下限 600 少 1 帧（4.99 s）。这是业务硬约束的正常命中，不是 bug；若 5 s 只是名义下限，把 `frame_count.min` 降到 500 即可滤掉这类边界噪声。
+- ep11（`DP_Ground_Kick`）frame 1009 的 dim 8/9 同时跳 0.4685 / 0.3193（阈值 0.25，1.87×），但前序 Δ 是 0.12→0.19→0.24→0.28 的连续加速、之后停在高位平台，属于真实快速踢腿而非单帧尖峰，转人工复核（不剔除）是正确处置。放宽邻域判定会一并放过「加速后停住的持续型跳变」，故不改规则。
+
+反向漏报检查：ep1 有 16 处超阈值跳变，全部是 dim 3–6 的四元数 `q ↔ -q` 整体取反，已被 sign-flip 规则正确忽略，未发现真正的漏报。
+
 ## 3. 并发加速（同一数据集，workers=1 vs workers=8）
 | 阶段 | workers=1 | workers=8 | 加速比 |
 |---|---|---|---|
