@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,37 @@ def prepare_dir(out_root: Path, *, overwrite: bool) -> None:
             raise FileExistsError(f"输出目录已存在: {out_root}")
         shutil.rmtree(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
+
+
+def staging_dir(final_root: Path) -> Path:
+    """返回与最终目录同级的暂存目录（同一磁盘，rename 才可能是原子的）。
+
+    命名带 pid 与时间戳，避免两个进程共用同一个暂存目录；不以点开头，
+    因为该名字可能被传给 `lerobot-edit-dataset` 的 repo-id。
+    """
+    stamp = f"{os.getpid()}-{int(time.time() * 1000)}"
+    return final_root.with_name(f"{final_root.name}.tmp-{stamp}")
+
+
+def publish_dir(stage: Path, dest: Path) -> None:
+    """把已写完并校验通过的暂存目录发布到最终路径。
+
+    Windows 上 `os.replace` 不能覆盖非空目录，因此先把旧目录改名为 `.prev-*`，
+    新目录改名到位后再删除旧目录；新目录改名失败则把旧目录退回原位。
+    这样任何一步失败，最终路径上要么是完整的旧产物，要么是完整的新产物。
+    """
+    previous: Path | None = None
+    if dest.exists():
+        previous = dest.with_name(f"{dest.name}.prev-{int(time.time() * 1000)}")
+        dest.rename(previous)
+    try:
+        stage.rename(dest)
+    except BaseException:
+        if previous is not None and previous.exists() and not dest.exists():
+            previous.rename(dest)
+        raise
+    if previous is not None:
+        shutil.rmtree(previous, ignore_errors=True)
 
 
 def set_column(table: pa.Table, name: str, values: np.ndarray | list) -> pa.Table:

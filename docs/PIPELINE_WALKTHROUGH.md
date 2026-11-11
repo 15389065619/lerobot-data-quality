@@ -25,7 +25,7 @@ python main.py
       └─ pipeline/visualizer.py  ← 画图收尾
 ```
 
-另一个入口是 `export_clean_dataset.py`：它不跑质检，只读已有报告做「严格导出」。
+另一个入口是 `export_clean_dataset.py`：它不跑质检，只读已有报告做「按报告导出」（默认只剔除 drop）。
 
 ## 1. 第一步：`main.py` 到底先干了什么
 
@@ -120,8 +120,9 @@ action 列存在? → check_finite(nan_action) → check_action_jump → check_s
 之后 `cleaner/meta.py` 重建 info/episodes/tasks/stats，`cleaner/util.py` 的 `verify()` 校验产出，
 写 `cleaned_dataset/` + `cleaning_summary.md`。
 
-`export_clean_dataset.py` 是另一个入口：读 `quality_report.json`，只物化 `disposition == keep`，
-并把 `episode_index` / `index` 从 0 连续重排（严格导出，直接喂训练）。
+`export_clean_dataset.py` 是另一个入口：读 `quality_report.json`，默认只物理剔除 `disposition == drop`
+（review/repair 原样保留，需显式 `--drop-review` / `--drop-repair` 才删），并把 `episode_index` / `index`
+从 0 连续重排、校验视频与 stats 完整性后才算导出成功。
 
 ## 7. 点云与可视化
 
@@ -154,7 +155,7 @@ action 列存在? → check_finite(nan_action) → check_action_jump → check_s
 第二阶段线程池跑视频探针；规则只产结论。
 
 **Q4：报告和清洗谁接管？** `reporter.build_report()` 汇总 JSON；`cleaner.clean_dataset()` 按 policy 动作
-重写新数据集（能修就修，修不了才删，源数据只读），结果回填报告；严格导出由 `export_clean_dataset.py` 完成。
+重写新数据集（能修就修，修不了才删，源数据只读），结果回填报告；按报告导出由 `export_clean_dataset.py` 完成。
 
 ## 10. 容易答错的点
 
@@ -415,10 +416,10 @@ issue.detail["impact"] = "无法可靠映射，依赖 meta 的检查不可评估
 | 规则分发 | `pipeline/validator/__init__.py` | 先建上下文，再逐集顺序调规则 |
 | 流式 | `pipeline/validator/streaming.py` | 两遍扫描，只留聚合量与结论 |
 | 编号对齐 | `pipeline/loader.py: _reconcile_episode_ids` | 三重证据 + min ≥ 0.99，否则不猜 |
-| 处置 | `pipeline/policy.py` | keep/repair/review/drop + 95% 熔断 |
+| 处置 | `pipeline/policy.py` | keep/repair/review/drop + 单规则 95% / 整体 80% 熔断 |
 | 报告 | `pipeline/reporter.py` | 只汇总，不重算 |
 | 清洗 | `pipeline/cleaner/__init__.py` | 源只读，能修就修，修不了才删 |
-| 严格导出 | `export_clean_dataset.py` | 只导 keep，ID 从 0 重排 |
+| 按报告导出 | `export_clean_dataset.py` | 默认只删 drop，ID 从 0 重排 |
 
 | 关键数字 | 值 |
 |---|---|

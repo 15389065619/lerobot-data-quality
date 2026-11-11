@@ -105,6 +105,31 @@ def test_mocap_missing_action_column_does_not_crash(tmp_path):
     json.dumps(report, ensure_ascii=False)
 
 
+def test_fps_scaled_frame_bounds_and_windows():
+    """帧数类配置按 30Hz 标定：120Hz 下 workload 要放大 4 倍，不能直接套用。"""
+    from pipeline.validator.context import _resolve_frame_bounds, scale_frames
+
+    config = load_config(robot_type="test_robot")
+    base = _resolve_frame_bounds(np.array([], dtype=float), config, 30.0)
+    high = _resolve_frame_bounds(np.array([], dtype=float), config, 120.0)
+
+    assert (base["min"], base["max"]) == (8, 20000)
+    assert (high["min"], high["max"]) == (32, 80000)
+    assert scale_frames(3, config, 120.0) == 12
+    # fps 未知时按 ref_fps 处理，保持原行为
+    assert scale_frames(3, config, 0) == 3
+
+
+def test_manual_frame_bounds_are_not_fps_scaled():
+    """用户显式给的 min/max 是业务绝对值，不做帧率折算。"""
+    from pipeline.validator.context import _resolve_frame_bounds
+
+    config = load_config(robot_type="test_robot")
+    config["defaults"]["frame_count"].update({"min": 100, "max": 500})
+    bounds = _resolve_frame_bounds(np.array([], dtype=float), config, 120.0)
+    assert (bounds["min"], bounds["max"]) == (100, 500)
+
+
 def test_mocap_cli_writes_report(tmp_path):
     root = _mocap_dataset(tmp_path)
     out = tmp_path / "out"

@@ -18,9 +18,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--config", default=None,
                    help="质检策略配置文件（YAML/JSON，按扩展名识别；阈值、严重度、机器人覆盖，缺失键自动用代码默认值）")
+    p.add_argument("--strict-config", action="store_true",
+                   help="严格校验配置文件：未知键、类型不匹配、未知 severity 规则直接报错并退出（退出码 2）")
     p.add_argument("--accept-baseline", nargs="+", metavar="FINGERPRINT", default=None,
                    help="把报告里的误报指纹写入 --config 的 baseline_whitelist；"
                         "可单独使用（不需要 --dataset_path），下次运行自动忽略这些告警")
@@ -128,6 +132,22 @@ def save_intermediate(output_dir: Path, name: str, payload: Any) -> Path:
     return path
 
 
+def _write_run_summary(output_dir: Path, payload: dict[str, Any]) -> None:
+    """原子写 run_summary.json：Monitor/CI 只读这一个文件即可判断本次运行结果。"""
+    path = output_dir / "run_summary.json"
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, path)
+    except OSError:
+        LOG.debug("写入 run_summary.json 失败", exc_info=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -141,7 +161,15 @@ def main(argv: list[str] | None = None) -> int:
 
     dataset_path = Path(args.dataset_path).expanduser()
     output_dir = Path(args.output_dir).expanduser()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 只读目录 / 权限不足：给出可执行的提示，而不是把原生 Traceback 甩给用户
+        LOG.error("无法创建输出目录 %s: %s（请检查路径是否存在、是否有写权限）", output_dir, exc)
+        return 2
+    if not dataset_path.is_dir():
+        LOG.error("数据集目录不存在或不是目录: %s", dataset_path)
+        return 2
     started = time.time()
 
     if args.streaming and not args.skip_clean:
@@ -158,6 +186,33 @@ def main(argv: list[str] | None = None) -> int:
     print(BANNER)
 
     total_steps = 8
+    # 被吞掉的阶段失败（清洗/点云）不代表整条链成功：用退出码 6 显式告诉 CI。
+    degraded = False
+    degraded_reasons: list[str] = []
+
+    # Monitor / CI 只需要读这一个文件：本次跑成什么样、产物在哪、是否降级。
+    run: dict[str, Any] = {
+        "run_id": f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "dataset_path": str(dataset_path),
+        "output_dir": str(output_dir.resolve()),
+        "config_file": str(Path(args.config).expanduser()) if args.config else None,
+        "mode": "streaming" if args.streaming else ("incremental" if args.incremental else "full"),
+        "episodes": None,
+        "frames": None,
+        "degraded_reasons": degraded_reasons,
+        "reports": {},
+        "status": "failed",
+        "exit_code": None,
+        "elapsed_sec": None,
+    }
+
+    def _finish(code: int, status: str | None = None) -> int:
+        run["exit_code"] = code
+        run["elapsed_sec"] = round(time.time() - started, 2)
+        run["status"] = status or {0: "ok", 6: "degraded"}.get(code, "failed")
+        _write_run_summary(output_dir, run)
+        return code
 
     # ----------------------------------------------------- 0. 增量状态
     manifest_path = Path(args.manifest).expanduser() if args.manifest else output_dir / MANIFEST_FILENAME
@@ -179,7 +234,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  复核队列    : {output_dir / policy_mod.REVIEW_QUEUE_FILENAME}")
                 print(f"  增量状态    : {manifest_path}")
                 print(BANNER)
-                return 0
+                run["episodes"] = scan.num_episodes
+                run["frames"] = scan.num_frames
+                run["reports"] = {
+                    "quality_report": str(output_dir / "quality_report.json"),
+                    "review_queue": str(output_dir / policy_mod.REVIEW_QUEUE_FILENAME),
+                }
+                return _finish(0, "reused")
         except Exception as exc:  # noqa: BLE001 - 增量判断失败不应阻断全量流程
             LOG.warning("增量预检失败，按全量处理: %s", exc)
 
@@ -191,13 +252,15 @@ def main(argv: list[str] | None = None) -> int:
     except DatasetFormatError as exc:
         LOG.error("数据集格式错误: %s", exc)
         _write_failure(output_dir, "loader", exc)
-        return 2
+        return _finish(2)
     except Exception as exc:  # noqa: BLE001
         LOG.error("加载失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "loader", exc)
-        return 2
+        return _finish(2)
 
     summary = dataset.summary()
+    run["episodes"] = summary["num_episodes"]
+    run["frames"] = summary["num_frames"]
     save_intermediate(output_dir, "01_dataset_summary.json", summary)
     print(f"  episode: {summary['num_episodes']}   帧数: {summary['num_frames']}   "
           f"tasks: {summary['total_tasks']}   相机: {len(summary['video_features'])}")
@@ -207,6 +270,13 @@ def main(argv: list[str] | None = None) -> int:
     step("逐 episode 质检（validator）", 2, total_steps)
     try:
         config = _build_config(args, dataset.info.get("robot_type"))
+    except (ValueError, FileNotFoundError) as exc:
+        # 配置错误是「输入问题」而不是「质检失败」：单独报错并给出退出码 2
+        LOG.error("配置加载失败: %s", exc)
+        _write_failure(output_dir, "config", exc)
+        return _finish(2)
+
+    try:
         prior = None
         only: set[int] | None = None
         if incremental and manifest.has_results and manifest.matches_root(dataset):
@@ -230,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         LOG.error("质检失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "validator", exc)
-        return 3
+        return _finish(3)
 
     # 基线白名单：已确认的已知误报在这里摘除，不参与处置决策与健康度计算
     baseline_mod.apply_whitelist(validation, dataset_path.name, config)
@@ -261,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         LOG.error("处置决策失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "policy", exc)
-        return 4
+        return _finish(4)
 
     save_intermediate(output_dir, "03_dispositions.json",
                       {str(ep): d.to_dict() for ep, d in sorted(decisions.items())})
@@ -294,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         LOG.error("报告生成失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "reporter", exc)
-        return 5
+        return _finish(5)
 
     # --------------------------------------------------------- 5. cleaner
     cleaning_dict: dict[str, Any] | None = None
@@ -330,9 +400,19 @@ def main(argv: list[str] | None = None) -> int:
                 manifest.store_cleaning(cleaning_sig, cleaning_dict)
                 manifest.save()
         except Exception as exc:  # noqa: BLE001 - 清洗失败不应丢掉报告
+            degraded = True
+            degraded_reasons.append("cleaner")
             LOG.error("清洗失败: %s\n%s", exc, traceback.format_exc())
             _write_failure(output_dir, "cleaner", exc, keep_going=True)
-            print("  ! 清洗阶段失败，但 quality_report.json 仍然保留，可单独重跑 cleaner。")
+            if report_path is not None:
+                reporter_mod.attach_cleaning_result(report_path, {
+                    "success": False,
+                    "output_path": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "warnings": ["清洗阶段失败，本次没有产出 cleaned_dataset"],
+                })
+            print("  ! 清洗阶段失败，但 quality_report.json 仍然保留；"
+                  "退出码将为 6（不能当作可训练数据集）")
 
     # ------------------------------------------- 6. pointcloud validation
     pc_validation = None
@@ -382,9 +462,11 @@ def main(argv: list[str] | None = None) -> int:
             print("  未检测到二维点云特征（shape=[N,D], D≥3），跳过点云质检与清洗。")
             pc_validation = None
         except Exception as exc:  # noqa: BLE001 - 点云失败不应中断数值质检链路
+            degraded = True
+            degraded_reasons.append("pointcloud_validator")
             LOG.error("点云质检失败: %s\n%s", exc, traceback.format_exc())
             _write_failure(output_dir, "pointcloud_validator", exc, keep_going=True)
-            print("  ! 点云质检失败，主链路继续。")
+            print("  ! 点云质检失败，主链路继续（退出码将为 6）。")
             pc_validation = None
 
     # ----------------------------------------------- 7. pointcloud cleaning
@@ -415,9 +497,11 @@ def main(argv: list[str] | None = None) -> int:
                                                     dataset_path=pc_source_root)
             pc_report_path = pointcloud_mod.write_report(pc_report, output_dir)
         except Exception as exc:  # noqa: BLE001 - 点云清洗失败保留报告
+            degraded = True
+            degraded_reasons.append("pointcloud_cleaner")
             LOG.error("点云清洗失败: %s\n%s", exc, traceback.format_exc())
             _write_failure(output_dir, "pointcloud_cleaner", exc, keep_going=True)
-            print("  ! 点云清洗失败，但 pointcloud_report.json 仍然保留。")
+            print("  ! 点云清洗失败，但 pointcloud_report.json 仍然保留（退出码将为 6）。")
 
     # ------------------------------------------------------ 8. visualizer
     if args.skip_plots:
@@ -453,6 +537,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # ------------------------------------------------------------ 收尾
     elapsed = time.time() - started
+    run["reports"] = {
+        "quality_report": str(report_path) if report_path else None,
+        "review_queue": str(review_path) if review_path else None,
+        "cleaned_dataset": cleaning_dict.get("output_path") if cleaning_dict else None,
+        "pointcloud_report": str(pc_report_path) if pc_report_path else None,
+        "pointcloud_review_queue": str(pc_review_path) if pc_review_path else None,
+        "pointcloud_cleaned_dataset": pc_clean_dict.get("output_path") if pc_clean_dict else None,
+        "plots": str(output_dir / "plots") if plots else None,
+        "intermediate": str(output_dir / "intermediate"),
+    }
     print()
     print(BANNER)
     print(f"完成，用时 {elapsed:.1f}s")
@@ -473,7 +567,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  结论        : 未发现结构性脏数据，可直接进入训练")
     print(BANNER)
-    return 0
+    if degraded:
+        print(f"  状态        : DEGRADED（{', '.join(degraded_reasons)} 失败），退出码 6")
+        print(BANNER)
+        return _finish(6)
+    return _finish(0)
 
 
 def _manifest_fresh(
@@ -539,7 +637,8 @@ def _build_config(args: argparse.Namespace, robot_type: str | None) -> dict[str,
         }
     if args.action_jump_threshold is not None:
         overrides["action_jump"] = {"abs_floor": args.action_jump_threshold}
-    return load_config(args.config, robot_type=robot_type, overrides=overrides)
+    return load_config(args.config, robot_type=robot_type, overrides=overrides,
+                       strict=getattr(args, "strict_config", False))
 
 
 def _print_thresholds(validation) -> None:
@@ -585,5 +684,27 @@ def _write_failure(output_dir: Path, stage: str, exc: BaseException, keep_going:
         LOG.debug("写入失败信息失败")
 
 
+def _entrypoint() -> int:
+    """最后一道兜底：未捕获异常不该把原生 Traceback 直接甩给终端用户。
+
+    - Ctrl+C：安静退出，返回 130（与 shell 惯例一致）；
+    - 其他异常：默认只打印一行摘要，-v/--verbose 时才打印完整 Traceback；
+    - main() 内部已处理的阶段失败仍按原退出码返回。
+    """
+    verbose = "-v" in sys.argv or "--verbose" in sys.argv
+    try:
+        return main()
+    except KeyboardInterrupt:
+        print("\n已中断（Ctrl+C）", file=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            traceback.print_exc()
+        else:
+            print(f"运行失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print("加 -v 可查看完整 Traceback", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_entrypoint())

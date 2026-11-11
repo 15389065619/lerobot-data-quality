@@ -38,6 +38,10 @@ REPAIR_ACTIONS = {
 #: 单条规则命中占比达到该阈值时视为「系统性疑似误判」，禁止批量剔除
 SYSTEMIC_HIT_RATIO = 0.95
 
+#: 整体剔除比例达到该阈值（且 episode 数足够）时视为系统性误判，全部降级复核
+MASS_DROP_RATIO = 0.80
+MASS_DROP_MIN_EPISODES = 10
+
 REVIEW_QUEUE_FILENAME = "review_queue.csv"
 
 _HEADERS = [
@@ -89,7 +93,8 @@ def decide(
     # 熔断：一条规则命中近乎全部 episode 时，绝大多数情况是元数据/定位问题而非数据
     # 真的全坏（behavior1k 实测：meta 用全局 episode ID，导致视频与任务定位全部落空，
     # 表面是 200/200 error）。这种情况删数据不可逆，必须先降级为人工复核。
-    systemic = _apply_systemic_guard(decisions)
+    _apply_systemic_guard(decisions)
+    _apply_mass_drop_guard(decisions)
 
     for ep, override in (overrides or {}).items():
         target = overrides.get(ep)
@@ -137,8 +142,16 @@ def _decide_one(res: EpisodeResult, validation: ValidationResult, on_review: str
         action = "用 frame_index/fps 重建时间轴" if repair == "timestamps" else "按真实行数重建 meta 索引"
         return Decision(res.episode_index, "repair", severity, list(res.reasons), action, repair=repair)
 
-    # 3) error 级：不可用
+    # 3) error 级：不可用。软规则（tier=soft，如 state_jump）只能提示复核，
+    #    即使被配置成 error 也不允许据此自动删除不可逆的数据。
     if severity == "error":
+        soft = [c for c in res.reasons if (RULE_MAP.get(c) and RULE_MAP[c].tier == "soft")]
+        if soft:
+            return Decision(
+                res.episode_index, "review", severity, list(res.reasons),
+                "人工复核后决定（软规则不自动剔除）",
+                note=f"软规则 {','.join(soft)} 不参与自动剔除",
+            )
         return Decision(res.episode_index, "drop", severity, list(res.reasons), "剔除")
 
     # 4) info 级：仅记录，不影响可用性
@@ -189,9 +202,39 @@ def _apply_systemic_guard(decisions: dict[int, Decision]) -> list[str]:
     return flagged
 
 
+def _apply_mass_drop_guard(decisions: dict[int, Decision]) -> list[int]:
+    """整体剔除比例过高时，把全部 drop 降级为 review。
+
+    单规则熔断只看「某一规则」，但多条规则各命中一部分时仍可能整体删掉 80%+ 的数据。
+    对不可逆的删除操作，这种量级更可能是阈值/元数据系统性偏严，先阻断再让人确认。
+    """
+    total = len(decisions)
+    if total < MASS_DROP_MIN_EPISODES:
+        return []
+    drops = [d for d in decisions.values() if d.disposition == "drop"]
+    share = len(drops) / total
+    if share < MASS_DROP_RATIO:
+        return []
+    for d in drops:
+        d.disposition = "review"
+        d.source = "mass-drop-guard"
+        d.note = (
+            f"本次将剔除 {len(drops)}/{total} 个 episode（{share:.0%}），"
+            "疑似阈值系统性偏严，已全部降级为人工复核"
+        )
+        d.recommended_action = "人工复核（整体剔除比例过高，已阻止批量删除）"
+    LOG.warning(
+        "熔断：整体剔除比例 %.1f%%（%d/%d）达到阈值，已全部降级为人工复核",
+        share * 100, len(drops), total,
+    )
+    return [d.episode_index for d in drops]
+
+
 def systemic_decisions(decisions: dict[int, Decision]) -> list[int]:
     """被熔断保护下来的 episode 编号，供报告如实标注。"""
-    return sorted(ep for ep, d in decisions.items() if d.source == "systemic-guard")
+    return sorted(
+        ep for ep, d in decisions.items() if d.source in {"systemic-guard", "mass-drop-guard"}
+    )
 
 
 def _action_text(d: Decision) -> str:

@@ -215,6 +215,17 @@ def attach_cleaning_result(report_path: str | Path, cleaning: dict[str, Any]) ->
     kept = cleaning.get("kept_episodes")
     if isinstance(kept, int):
         summary["after_cleaning_episodes"] = kept
+    # 统计量计算失败会让下游归一化缺字段，提升到报告建议区，避免只埋在 cleaning.warnings
+    stats_failures = [
+        warning for warning in (cleaning.get("warnings") or [])
+        if "统计量计算失败" in str(warning)
+    ]
+    if stats_failures:
+        recommendations = report.setdefault("recommendations", [])
+        for message in stats_failures:
+            if message not in recommendations:
+                recommendations.append(message)
+        LOG.warning("有 %d 个特征的统计量计算失败，已在报告中高亮", len(stats_failures))
     with path.open("w", encoding="utf-8") as fh:
         json.dump(report, fh, ensure_ascii=False, indent=2, default=_json_default)
     LOG.info("清洗结果已回填到 %s", path)

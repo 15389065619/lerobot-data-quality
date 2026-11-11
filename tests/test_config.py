@@ -19,6 +19,7 @@ from pipeline.config import (
     cfg_get,
     load_config,
     severity_of,
+    validate_config,
     write_default_config,
 )
 
@@ -117,3 +118,63 @@ def yaml_safe_load(path: Path) -> dict:
     import yaml
 
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- strict 校验
+
+
+def test_strict_config_accepts_shipped_templates() -> None:
+    """仓库自带的两份配置都必须能通过严格校验（防止模板自身写错键）。"""
+    for name in ("default.yaml", "chingmu_manual.yaml"):
+        cfg = load_config(REPO_ROOT / "config" / name, strict=True)
+        assert cfg["defaults"]
+
+
+def test_strict_config_rejects_unknown_key(tmp_path: Path) -> None:
+    """拼错的键（abs_floo）必须报错，否则会被 cfg_get 静默回退成默认值。"""
+    cfg_file = tmp_path / "typo.yaml"
+    cfg_file.write_text(
+        "defaults:\n  action_jump:\n    abs_floo: 0.5\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="abs_floo"):
+        load_config(cfg_file, strict=True)
+    # 非 strict 仍保持向后兼容：忽略未知键、不抛异常
+    assert cfg_get(load_config(cfg_file), "action_jump.abs_floor") == 1.0
+
+
+def test_strict_config_rejects_type_mismatch(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "type.yaml"
+    cfg_file.write_text(
+        "defaults:\n  action_jump:\n    abs_floor: \"1.0\"\n",
+        encoding="utf-8",
+    )
+    errors = validate_config(yaml_safe_load(cfg_file), source="type.yaml")
+    assert any("defaults.action_jump.abs_floor" in e and "数值" in e for e in errors)
+    with pytest.raises(ValueError, match="abs_floor"):
+        load_config(cfg_file, strict=True)
+
+
+def test_strict_config_rejects_unknown_severity_rule(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "sev.yaml"
+    cfg_file.write_text("severity:\n  nan_states: error\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="nan_states"):
+        load_config(cfg_file, strict=True)
+
+
+def test_strict_config_rejects_unknown_top_level_key(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "top.yaml"
+    cfg_file.write_text("robot:\n  so100: {}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="未知顶层配置项"):
+        load_config(cfg_file, strict=True)
+
+
+def test_validate_config_accepts_none_templates(tmp_path: Path) -> None:
+    """模板默认值为 null 的键（joint_limits.lower）不做类型约束。"""
+    cfg_file = tmp_path / "joint.yaml"
+    cfg_file.write_text(
+        "defaults:\n  joint_limits:\n    enabled: true\n    lower: [-1.0, 0.0]\n",
+        encoding="utf-8",
+    )
+    assert validate_config(yaml_safe_load(cfg_file)) == []
+    assert load_config(cfg_file, strict=True)["defaults"]["joint_limits"]["lower"] == [-1.0, 0.0]

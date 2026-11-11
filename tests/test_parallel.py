@@ -63,6 +63,22 @@ def test_episode_validator_parallel_matches_sequential(tmp_path: Path) -> None:
     assert "duplicate_episode" in invalid.get(7, [])
 
 
+def test_broken_pool_falls_back_to_serial(monkeypatch) -> None:
+    """worker 被系统杀死（BrokenProcessPool）时，剩余任务回退串行而不是丢掉整批结论。"""
+    from pipeline import parallel
+
+    def _boom(*args, **kwargs):
+        raise parallel.BrokenProcessPool("worker killed")
+
+    monkeypatch.setattr(parallel, "wait", _boom)
+    results = list(parallel.run_pool([1, 2, 3, 4], _double, None, 2, desc="test", unit="job"))
+    assert sorted(results) == [2, 4, 6, 8]
+
+
+def _double(value: int) -> int:
+    return value * 2
+
+
 # ------------------------------------------------------------------ 点云帧级
 def test_pointcloud_parallel_matches_sequential(tmp_path: Path) -> None:
     frames = _mixed_frames()  # 含 NaN / 稀疏 / 退化 / 重复 / 离群 / 越界 / 坏色 / 时序跳变

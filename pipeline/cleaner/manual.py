@@ -67,8 +67,8 @@ def manual_clean(
     rewrite_episodes_meta(dataset, kept, ep_index_map, data_meta, new_video_meta, out_root)
     copy_tasks(dataset.root, out_root)
     total_frames = int(sum(m["length"] for m in data_meta.values()))
-    rewrite_info(dataset, kept, total_frames, out_root)
-    rewrite_stats_streaming(dataset, stats_acc, out_root)
+    rewrite_info(dataset, kept, total_frames, out_root, force_v3=True)
+    warnings.extend(rewrite_stats_streaming(dataset, stats_acc, out_root))
 
     result = CleaningResult(
         success=True,
@@ -93,7 +93,11 @@ def copy_untouched(dataset: LeRobotDatasetView, out_root: Path, *, overwrite: bo
         dataset.root, out_root, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".cache")
     )
     # 即使没有 episode 需要清洗，也要重算 stats，否则 stats_stale 会被原样带进训练
-    rewrite_stats(dataset, dataset.frames, out_root)
+    warnings = rewrite_stats(dataset, dataset.frames, out_root)
+    # 计数/splits 与源保持一致即可，布局原样保留（不强制升级 v3）
+    rewrite_info(
+        dataset, list(dataset.episode_indices), dataset.num_frames, out_root, force_v3=False
+    )
     return CleaningResult(
         success=True,
         method="noop-copy",
@@ -101,6 +105,7 @@ def copy_untouched(dataset: LeRobotDatasetView, out_root: Path, *, overwrite: bo
         removed_episodes=[],
         kept_episodes=len(dataset.episode_indices),
         episode_index_map={e: e for e in dataset.episode_indices},
+        warnings=warnings,
     )
 
 
@@ -123,8 +128,10 @@ def reindex_untouched(
         dataset.root, out_root, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".cache")
     )
     episodes, warnings = _rewrite_index_column(dataset, out_root)
-    # 产出必须是规范 v3 结构：补声明 frame_index、修正 splits，避免下游继续踩坑
+    # 文件已原样复制，info 只同步计数/splits 与 frame_index 声明，布局保持源版本
     rewrite_info(dataset, list(dataset.episode_indices), dataset.num_frames, out_root)
+    # index 与统计量无关，但清洗产物统一重算 stats，避免把 stats_stale 原样带进训练
+    result_warnings = rewrite_stats(dataset, dataset.frames, out_root)
 
     result = CleaningResult(
         success=True,
@@ -138,10 +145,9 @@ def reindex_untouched(
         warnings=[
             f"{reason}：已按真实行数重建 {len(episodes)} 个 episode 的全局 index（视频未重编码）",
             *warnings,
+            *result_warnings,
         ],
     )
-    # index 与统计量无关，但清洗产物统一重算 stats，避免把 stats_stale 原样带进训练
-    rewrite_stats(dataset, dataset.frames, out_root)
     LOG.info("index 重建完成：%d 个 episode，写入 %s", len(episodes), out_root)
     return result
 
@@ -308,16 +314,23 @@ def _rewrite_frames(
     rebuild_ts: set[int],
 ) -> tuple[dict[int, dict[str, Any]], StreamingStats, dict[int, int]]:
     """按来源文件重写 parquet。返回 (episode 元信息, 流式统计, 每个新 episode 的帧数)。"""
-    template = dataset.info.get("data_path") or DEFAULT_DATA_PATH
+    # 清洗产物统一写 v3.0 布局，避免 v2 模板里的 {episode_index} 与 chunk/file 冲突
+    template = DEFAULT_DATA_PATH
     fps = dataset.fps or 30.0
     running_frames: dict[int, int] = {ep_index_map[ep]: 0 for ep in kept}
     inverse_map = {v: k for k, v in ep_index_map.items()}
-    rebuild_new = {ep_index_map[ep] for ep in rebuild_ts if ep in ep_index_map}
+    # 裁帧会改变帧的位置，timestamp 必须一并重建，否则首帧不再从 0 开始、步长也错位。
+    rebuild_new = {
+        ep_index_map[ep] for ep in (set(rebuild_ts) | set(trim_plan)) if ep in ep_index_map
+    }
     data_meta: dict[int, dict[str, Any]] = {}
     global_index = 0
     file_index = 0
-    stats_acc = StreamingStats()
     feature_keys = collect_feature_keys(dataset)
+    stats_acc = StreamingStats(feature_shapes={
+        key: tuple((dataset.features.get(key) or {}).get("shape") or [])
+        for key in feature_keys
+    })
 
     for src_file in _source_files_in_order(dataset):
         table = pq.read_table(src_file)
@@ -411,7 +424,8 @@ def _rebuild_videos(
     """按相机重建 mp4：同一源文件内保留需要的区间并重新拼接。"""
     warnings: list[str] = []
     result: dict[int, dict[str, dict[str, Any]]] = {}
-    template = dataset.info.get("video_path") or DEFAULT_VIDEO_PATH
+    # 输出统一 v3.0 布局；v2 的 episode_XXXXXX.mp4 模板无法用 chunk/file 格式化
+    template = DEFAULT_VIDEO_PATH
     fps = dataset.fps or 30.0
 
     for cam in dataset.video_features:

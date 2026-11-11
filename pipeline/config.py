@@ -55,6 +55,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # 超阈幅度分级：阈值本身在分布尾部，1.0~1.5 倍的命中多为正常快动作
             "downgrade_ratio": 1.5, "escalate_ratio": None,
         },
+        # state 突跳（软规则）：判据同 action_jump，但只提示复核，永不自动剔除
+        "state_jump": {
+            "enabled": True, "abs_floor": 1.0, "max_jump_mad_k": 3.0,
+            "min_episodes_for_peak": 8, "min_margin_ratio": 0.05,
+            "spike_ratio": 3.0, "spike_window": 3, "discrete_max_unique": 3,
+        },
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
         "timestamp": {"step_tolerance_ratio": 0.25},
         # 视频帧对齐容差（浮点累积误差，单位：帧）
@@ -107,6 +113,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "nan_state": "error",
         "nan_action": "error",
         "action_jump": "warning",
+        "state_jump": "warning",
         "frame_count_abnormal": "error",
         "timestamp_not_monotonic": "warning",
         "timestamp_step_deviation": "info",
@@ -163,15 +170,25 @@ def load_config(
     path: str | Path | None = None,
     robot_type: str | None = None,
     overrides: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
-    """加载并合并配置：代码默认值 <- 配置文件(YAML/JSON) <- 机器人覆盖 <- 显式覆盖。"""
+    """加载并合并配置：代码默认值 <- 配置文件(YAML/JSON) <- 机器人覆盖 <- 显式覆盖。
+
+    strict=True 时对配置文件做结构校验（未知键、类型不匹配、未知 severity 规则
+    直接报错），避免 `abs_floo` 这类拼写错误被 cfg_get 静默回退成默认值。
+    """
     cfg = copy.deepcopy(DEFAULT_CONFIG)
 
     if path:
         user_path = Path(path).expanduser()
         if not user_path.is_file():
             raise FileNotFoundError(f"配置文件不存在: {user_path}")
-        cfg = _deep_merge(cfg, _load_config_file(user_path))
+        raw = _load_config_file(user_path)
+        if strict:
+            errors = validate_config(raw, source=str(user_path))
+            if errors:
+                raise ValueError("配置校验失败：\n- " + "\n- ".join(errors))
+        cfg = _deep_merge(cfg, raw)
         LOG.info("已加载配置 %s", user_path)
 
     sections: dict[str, Any] = {}
@@ -192,6 +209,136 @@ def load_config(
         "baseline_whitelist": list(cfg.get("baseline_whitelist") or []),
         "source_file": str(path) if path else None,
     }
+
+
+#: 配置文件允许出现的顶层键。拼错的顶层键（如 `robot`）不会报错，只会被静默忽略。
+_TOP_LEVEL_KEYS = {"version", "defaults", "robots", "severity", "baseline_whitelist"}
+#: severity 允许的取值；写错（如 `err`）会让这条规则的严重度永远不生效。
+_ALLOWED_SEVERITY = {"error", "warning", "info"}
+
+
+def validate_config(data: Any, *, source: str = "<config>") -> list[str]:
+    """校验配置文件的结构与类型，返回错误列表（空列表=通过）。
+
+    只做「结构 + 类型」检查，不做取值合理性判断（例如阈值是否过大由下游自适应）：
+    - 未知键：`abs_floo` 这类拼写错误会被 cfg_get 静默回退成默认值，必须报错；
+    - 类型错误：`"3.0"` 写进数值字段会在下游某处才炸，提前到加载时暴露；
+    - 未知 severity 规则：规则名写错时该设置永远不会生效，属于静默失效。
+    """
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return [f"{source}: 顶层必须是键值映射，实际是 {_type_name(data)}"]
+
+    for key in data:
+        if key not in _TOP_LEVEL_KEYS:
+            errors.append(
+                f"{source}: 未知顶层配置项 `{key}`（可用: {', '.join(sorted(_TOP_LEVEL_KEYS))}）"
+            )
+
+    if "version" in data and not isinstance(data["version"], (str, int, float)):
+        errors.append(f"{source}: version 应为字符串，实际是 {_type_name(data['version'])}")
+
+    template = DEFAULT_CONFIG["defaults"]
+    if "defaults" in data:
+        if not isinstance(data["defaults"], dict):
+            errors.append(f"{source}: defaults 应为键值映射，实际是 {_type_name(data['defaults'])}")
+        else:
+            _validate_mapping(data["defaults"], template, "defaults", source, errors)
+
+    if "robots" in data:
+        robots = data["robots"]
+        if not isinstance(robots, dict):
+            errors.append(f"{source}: robots 应为键值映射，实际是 {_type_name(robots)}")
+        else:
+            for name, section in robots.items():
+                prefix = f"robots.{name}"
+                if not isinstance(section, dict):
+                    errors.append(f"{source}: {prefix} 应为键值映射，实际是 {_type_name(section)}")
+                    continue
+                _validate_mapping(section, template, prefix, source, errors)
+
+    if "severity" in data:
+        severity = data["severity"]
+        if not isinstance(severity, dict):
+            errors.append(f"{source}: severity 应为键值映射，实际是 {_type_name(severity)}")
+        else:
+            known = DEFAULT_CONFIG["severity"]
+            for code, level in severity.items():
+                if code not in known:
+                    errors.append(f"{source}: severity 中的未知规则 `{code}`")
+                elif level not in _ALLOWED_SEVERITY:
+                    errors.append(
+                        f"{source}: severity.{code} 应为 {'/'.join(sorted(_ALLOWED_SEVERITY))}，"
+                        f"实际是 {level!r}"
+                    )
+
+    if "baseline_whitelist" in data:
+        whitelist = data["baseline_whitelist"]
+        if not isinstance(whitelist, list):
+            errors.append(f"{source}: baseline_whitelist 应为列表，实际是 {_type_name(whitelist)}")
+        else:
+            for index, item in enumerate(whitelist):
+                if not isinstance(item, str):
+                    errors.append(
+                        f"{source}: baseline_whitelist[{index}] 应为字符串，实际是 {_type_name(item)}"
+                    )
+
+    return errors
+
+
+def _validate_mapping(
+    section: dict[str, Any],
+    template: dict[str, Any],
+    prefix: str,
+    source: str,
+    errors: list[str],
+) -> None:
+    """按模板递归校验一层配置：未知键、嵌套结构、标量类型。"""
+    for key, value in section.items():
+        path = f"{prefix}.{key}"
+        if key not in template:
+            errors.append(f"{source}: 未知配置项 `{path}`")
+            continue
+        expected = template[key]
+        if isinstance(expected, dict):
+            if not isinstance(value, dict):
+                errors.append(f"{source}: {path} 应为键值映射，实际是 {_type_name(value)}")
+                continue
+            _validate_mapping(value, expected, path, source, errors)
+            continue
+        # 模板为 None 表示「默认不启用该选项」（如 joint_limits.lower），无从判断类型
+        if expected is None:
+            continue
+        if isinstance(expected, list):
+            if not isinstance(value, list):
+                errors.append(f"{source}: {path} 应为列表，实际是 {_type_name(value)}")
+            continue
+        if not _same_scalar_type(value, expected):
+            errors.append(f"{source}: {path} 应为 {_type_name(expected)}，实际是 {_type_name(value)}")
+
+
+def _same_scalar_type(value: Any, expected: Any) -> bool:
+    if isinstance(expected, bool):
+        return isinstance(value, bool)
+    if isinstance(expected, (int, float)):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(expected, str):
+        return isinstance(value, str)
+    return True
+
+
+def _type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "布尔值"
+    if isinstance(value, (int, float)):
+        return "数值"
+    if isinstance(value, str):
+        return "字符串"
+    if isinstance(value, list):
+        return "列表"
+    if isinstance(value, dict):
+        return "键值映射"
+    return "null" if value is None else type(value).__name__
 
 
 def read_config_file(path: str | Path) -> dict[str, Any]:
