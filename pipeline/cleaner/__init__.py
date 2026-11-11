@@ -20,6 +20,7 @@ meta（meta 目录重建）、util（共用文件/表工具）。
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,7 +29,7 @@ from .cli import try_cli
 from .manual import copy_untouched, manual_clean, reindex_untouched
 from .meta import write_notes
 from .types import CLEANED_DIRNAME, NOTES_FILENAME, CleaningResult
-from .util import assert_safe_output, verify
+from .util import assert_safe_output, publish_dir, staging_dir, verify
 
 LOG = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ def clean_dataset(
     output_dir = Path(output_dir).expanduser().resolve()
     root = Path(out_root).expanduser().resolve() if out_root else output_dir / CLEANED_DIRNAME
     assert_safe_output(dataset.root, root)
+    # 所有写入先落在同级暂存目录，校验通过后整体 rename 发布；
+    # 中途失败/Ctrl+C 不会破坏最终路径上已有的上一版产物。
+    stage = staging_dir(root)
+    assert_safe_output(dataset.root, stage)
 
     dropped, trim_plan, rebuild_ts, repair_index = _parse_dispositions(dispositions)
     all_eps = dataset.episode_indices
@@ -73,41 +78,47 @@ def clean_dataset(
     has_repairs = bool(trim_plan or rebuild_ts)
     index_repair = repair_index or _has_index_issue(dataset_issues)
 
-    if not dropped and not has_repairs:
-        if index_repair:
-            LOG.info("检测到全局 index 不一致：按真实行数重建 index（视频与 meta 保持不变）")
-            result = reindex_untouched(dataset, root, overwrite=overwrite)
-            write_notes(result, root)
-            return result
-        LOG.info("没有需要清洗的 episode，仍产出一份结构完整的数据集副本")
-        result = copy_untouched(dataset, root, overwrite=overwrite)
-        write_notes(result, root)
+    def _publish(result: CleaningResult) -> CleaningResult:
+        result.output_root = str(root)
+        write_notes(result, stage)
+        publish_dir(stage, root)
         return result
 
-    result: CleaningResult | None = None
-    expected_frames: int | None = None
-    if prefer_cli and not has_repairs:
-        result = try_cli(dataset, dropped or [], root, overwrite=overwrite,
-                         kept=kept, repairs=repairs)
+    try:
+        if not dropped and not has_repairs:
+            if index_repair:
+                LOG.info("检测到全局 index 不一致：按真实行数重建 index（视频与 meta 保持不变）")
+                return _publish(reindex_untouched(dataset, stage, overwrite=overwrite))
+            LOG.info("没有需要清洗的 episode，仍产出一份结构完整的数据集副本")
+            return _publish(copy_untouched(dataset, stage, overwrite=overwrite))
+
+        result: CleaningResult | None = None
+        expected_frames: int | None = None
+        if prefer_cli and not has_repairs:
+            result = try_cli(dataset, dropped or [], stage, overwrite=overwrite,
+                             kept=kept, repairs=repairs)
+            if result is None:
+                LOG.info("lerobot-edit-dataset 不可用或执行失败，回退到内置清洗实现")
+        elif prefer_cli and has_repairs:
+            LOG.info("存在需修复项（%s），CLI 只能删除不能修补，改走内置实现",
+                     ",".join(k for k, v in repairs.items() if v))
+
         if result is None:
-            LOG.info("lerobot-edit-dataset 不可用或执行失败，回退到内置清洗实现")
-    elif prefer_cli and has_repairs:
-        LOG.info("存在需修复项（%s），CLI 只能删除不能修补，改走内置实现",
-                 ",".join(k for k, v in repairs.items() if v))
+            result, expected_frames = manual_clean(
+                dataset, kept, stage, overwrite=overwrite,
+                trim_plan=trim_plan, rebuild_ts=rebuild_ts, repairs=repairs,
+                link_mode=link_mode,
+            )
 
-    if result is None:
-        result, expected_frames = manual_clean(
-            dataset, kept, root, overwrite=overwrite,
-            trim_plan=trim_plan, rebuild_ts=rebuild_ts, repairs=repairs,
-            link_mode=link_mode,
-        )
-
-    result.verification = verify(root, expected_episodes=result.kept_episodes,
-                                 expected_frames=expected_frames)
-    if result.verification.get("ok") is False:
-        result.warnings.append(f"产出物校验未通过: {result.verification}")
-    write_notes(result, root)
-    return result
+        result.verification = verify(stage, expected_episodes=result.kept_episodes,
+                                     expected_frames=expected_frames)
+        if result.verification.get("ok") is False:
+            result.warnings.append(f"产出物校验未通过: {result.verification}")
+        return _publish(result)
+    except BaseException:
+        # 包括 KeyboardInterrupt：暂存目录必须清掉，最终路径保持上一版不变
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
 
 
 def _parse_dispositions(

@@ -5,11 +5,14 @@ rosbag_loader 顶层只依赖 numpy/pandas（rosbags 在实际解析时才懒加
 """
 
 from .fzmotion_csv_loader import load_fzmotion_csv, load_fzmotion_csv_dir
+from .motiondecode_csv_loader import load_motiondecode_csv, load_motiondecode_csv_dir
 from .rosbag_loader import RosbagAdapter, RosbagAdapterError, build_frame_table
 
 __all__ = [
     "load_fzmotion_csv",
     "load_fzmotion_csv_dir",
+    "load_motiondecode_csv",
+    "load_motiondecode_csv_dir",
     "RosbagAdapter",
     "RosbagAdapterError",
     "build_frame_table",

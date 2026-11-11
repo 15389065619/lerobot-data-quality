@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,8 +77,16 @@ class QualityManifest:
         self.payload["schema_version"] = MANIFEST_SCHEMA_VERSION
         self.payload["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as fh:
-            json.dump(self.payload, fh, ensure_ascii=False, indent=2, default=str)
+        # 先写临时文件再替换：Ctrl+C 或磁盘满时不会留下截断的 JSON，
+        # 否则下次 load() 会静默按首次运行处理，增量缓存全部失效。
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(self.payload, fh, ensure_ascii=False, indent=2, default=str)
+            os.replace(tmp, self.path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         LOG.info("增量状态已保存: %s", self.path)
 
     # ------------------------------------------------------------- 状态查询

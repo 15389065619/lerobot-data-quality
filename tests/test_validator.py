@@ -507,3 +507,35 @@ def test_streaming_stats_skipped_when_sampling_partial(tmp_path):
 
     assert all(i.code != "stats_stale" for i in result.dataset_issues)
     assert any("不可比" in why for why in result.skipped_checks.values())
+
+
+def test_sign_flip_only_ignored_inside_quaternion_dims():
+    """q≡-q 只在四元数组内成立；非四元数维度的符号翻转是真实跳变。"""
+    from pipeline.validator.rules import check_action_jump
+    from pipeline.validator.types import EpisodeResult
+
+    config = load_config(robot_type="test_robot")
+
+    def detected(dim_names):
+        arr = np.zeros((12, 4), dtype=np.float32)
+        arr[:, 0] = np.linspace(0.5, 0.6, 12)
+        arr[:, 1] = np.linspace(0.7, 0.8, 12)
+        arr[6, :2] *= -1
+        res = EpisodeResult(episode_index=0, frame_count=12)
+        check_action_jump(arr, res, [0.1] * 4, config, 30.0, dim_names=dim_names)
+        return "action_jump" in res.reasons
+
+    # 元数据声明是四元数：整体取反等价，不报
+    assert detected(["pose.x", "pose.y", "pose.z", "pose.w"]) is False
+    # 元数据声明不是四元数：符号翻转是真跳变，必须报
+    assert detected(["j0", "j1", "j2", "j3"]) is True
+
+
+def test_state_jump_detects_teleport(tmp_path):
+    eps = {ep: smooth_episode(60, seed=ep) for ep in range(10)}
+    eps[3]["state"][30, 0] += 5.0
+    path = build_dataset(tmp_path / "ds", eps)
+    _, result = _validate(path)
+
+    assert "state_jump" in result.results[3].reasons
+    assert all("state_jump" not in result.results[ep].reasons for ep in range(10) if ep != 3)

@@ -18,12 +18,15 @@ class Rule:
     description: str
     #: 可执行的修复动作，None 表示只能保留/丢弃
     repair: str | None = None
+    #: hard=可据其 error 直接剔除；soft=最多到 review，永不自动 drop
+    tier: str = "hard"
 
 
 RULES: tuple[Rule, ...] = (
     Rule("nan_state", "observation.state 存在 NaN/Inf", "传感器掉线、序列化失败；无法插值修复", None),
     Rule("nan_action", "action 存在 NaN/Inf", "控制指令未写入；训练时 loss 直接 NaN", None),
     Rule("action_jump", "action 相邻帧跳变异常", "遥操作接管/碰撞/控制周期抖动；需人审确认是否真实动作", None),
+    Rule("state_jump", "state 相邻帧突跳", "追踪丢失/重置/瞬移；软规则，只提示人工复核，不自动剔除", None, tier="soft"),
     Rule("frame_count_abnormal", "episode 帧数超出分布区间", "过短无法构成时序窗口，过长多为未切分", None),
     Rule("timestamp_not_monotonic", "timestamp 非严格递增", "时间轴损坏；可用 frame_index/fps 重建", "timestamps"),
     Rule("timestamp_step_deviation", "timestamp 步长偏离 1/fps", "掉帧或时间戳抖动；仅记录，不阻断", None),

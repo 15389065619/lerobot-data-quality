@@ -41,6 +41,7 @@ from .rules import (
     check_joint_limits,
     check_meta_consistency,
     check_static,
+    check_state_jump,
     check_task,
     check_timestamp,
     frame_column,
@@ -284,7 +285,11 @@ def _validate_non_video(
         arr_s = as_matrix(ep_df[STATE_KEY], res, "nan_state")
         if arr_s is not None:
             check_finite(arr_s, "nan_state", res, frame_col, config)
-            check_static(arr_s, "state", res, config)
+            check_static(arr_s, "state", res, config, dataset.fps)
+            check_state_jump(
+                arr_s, res, ctx.state_thresholds, config, dataset.fps,
+                dim_names=ctx.state_dim_names,
+            )
             check_joint_limits(arr_s, res, config, dataset)
     else:
         skipped.setdefault("nan_state", f"不存在 {STATE_KEY} 列")
@@ -293,8 +298,11 @@ def _validate_non_video(
         arr_a = as_matrix(ep_df[ACTION_KEY], res, "nan_action")
         if arr_a is not None:
             check_finite(arr_a, "nan_action", res, frame_col, config)
-            check_action_jump(arr_a, res, ctx.action_thresholds, config)
-            check_static(arr_a, "action", res, config)
+            check_action_jump(
+                arr_a, res, ctx.action_thresholds, config, dataset.fps,
+                dim_names=ctx.action_dim_names,
+            )
+            check_static(arr_a, "action", res, config, dataset.fps)
             check_duplicate(res, arr_a, ctx, config)
     else:
         skipped.setdefault("action_jump", f"不存在 {ACTION_KEY} 列")
@@ -338,9 +346,18 @@ def _run_video_checks(
 
     def task(item: tuple[EpisodeResult, int, bool]) -> None:
         res, ep_index, want_blank = item
-        check_frame_mismatch(res, ep_index, dataset, cameras, precise, config)
+        # 单 episode 的视频探针异常不能终止整批质检（脏视频元数据/损坏文件常见）
+        try:
+            check_frame_mismatch(res, ep_index, dataset, cameras, precise, config)
+        except Exception as exc:  # noqa: BLE001
+            LOG.exception("episode %d 视频帧对齐检查异常，已跳过", ep_index)
+            res.add("video_probe_error", severity="info", stage="frame_mismatch", error=str(exc))
         if want_blank:
-            check_blank_video(res, ep_index, dataset, cameras[0] if cameras else None, config)
+            try:
+                check_blank_video(res, ep_index, dataset, cameras[0] if cameras else None, config)
+            except Exception as exc:  # noqa: BLE001
+                LOG.exception("episode %d 黑屏检测异常，已跳过", ep_index)
+                res.add("video_probe_error", severity="info", stage="blank_video", error=str(exc))
 
     if workers <= 1:
         for item in pending:

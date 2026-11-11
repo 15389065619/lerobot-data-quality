@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -11,7 +12,7 @@ import pandas as pd
 
 from ..config import cfg_get
 from ..loader import LeRobotDatasetView
-from .context import DatasetContext
+from .context import DatasetContext, scale_frames
 from .probes import FFMPEG, FFPROBE, probe_frame_brightness, probe_video_frames
 from .types import EpisodeResult
 
@@ -64,8 +65,38 @@ def check_finite(
     )
 
 
+def _quaternion_dim_mask(dim_names: list[str] | None, dim: int) -> np.ndarray | None:
+    """按特征维度名识别四元数维度。
+
+    返回长度 dim 的布尔掩码；维度名缺失（元数据不可用）时返回 None，
+    调用方据此回退到数值启发式。名字存在但不含四元数时返回全 False，
+    表示「这些维度不是四元数，q≡-q 不适用」。
+    """
+    if not dim_names or len(dim_names) < dim:
+        return None
+    names = [str(n).strip().lower() for n in dim_names[:dim]]
+    mask = np.zeros(dim, dtype=bool)
+    for i, name in enumerate(names):
+        if "quat" in name or "orient" in name:
+            mask[i] = True
+    # 同前缀的 x/y/z/w 四连也视为一个四元数组（如 pose.x / pose.y / pose.z / pose.w）
+    for i in range(dim - 3):
+        parts = [
+            n.rsplit(".", 1) if "." in n else (n.rsplit("_", 1) if "_" in n else [n, n])
+            for n in names[i:i + 4]
+        ]
+        if len({p[0] for p in parts}) == 1 and {p[-1] for p in parts} == {"x", "y", "z", "w"}:
+            mask[i:i + 4] = True
+    return mask
+
+
 def check_action_jump(
-    arr: np.ndarray, res: EpisodeResult, thresholds: list[float], config: dict[str, Any]
+    arr: np.ndarray,
+    res: EpisodeResult,
+    thresholds: list[float],
+    config: dict[str, Any],
+    fps: float | None = None,
+    dim_names: list[str] | None = None,
 ) -> None:
     if arr.shape[0] < 2 or not thresholds:
         return
@@ -91,7 +122,9 @@ def check_action_jump(
     # 真正的跳变是相对邻近帧的突跳，因此再要求 |Δ| 至少是邻域中位数的 spike_ratio 倍，
     # 这样连续加速/减速的运动包络不会被当成跳变，单帧尖峰仍会命中。
     spike_ratio = float(cfg_get(config, "action_jump.spike_ratio", 3.0))
-    window = int(cfg_get(config, "action_jump.spike_window", 3))
+    # spike_window 按 30Hz 标定（默认 3 帧≈0.1s），高帧率下需按 fps 折算，
+    # 否则 120Hz 的邻域过短，正常的连续加减速会被误判成单帧尖峰。
+    window = scale_frames(int(cfg_get(config, "action_jump.spike_window", 3)), config, fps)
     # 四元数 q 与 -q 表示同一姿态：整体取反会让 4 个分量在同一帧同时出现 ~2|x| 的跳变。
     # 这是表示等价而非数据缺陷（120Hz 光捕数据里很常见），需要逐帧成组识别后排除；
     # 只翻转单个维度的仍按真实跳变处理。
@@ -105,6 +138,11 @@ def check_action_jump(
         # 跳变量主要由「正负号反了」贡献：残差 |x_t + x_{t-1}| 远小于步长 |x_t - x_{t-1}|
         mirror = (residual <= flip_tol * step) & (step > 0)
     mirror &= finite
+    # 只在四元数维度内识别整体取反：元数据可用时非四元数维度的符号变化
+    # 属于真实跳变，不能借「多维同时翻转」蒙混过关；元数据缺失才退回数值启发式。
+    quat_mask = _quaternion_dim_mask(dim_names, dim)
+    if quat_mask is not None:
+        mirror &= quat_mask[None, :]
     # 只有同一帧上「多个维同时镜像翻转」才算四元数整体取反，单维翻转仍按真实跳变处理
     flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
     kept: list[tuple[int, int]] = []
@@ -158,11 +196,101 @@ def check_action_jump(
     )
 
 
-def check_static(arr: np.ndarray, kind: str, res: EpisodeResult, config: dict[str, Any]) -> None:
+def check_state_jump(
+    arr: np.ndarray,
+    res: EpisodeResult,
+    thresholds: list[float],
+    config: dict[str, Any],
+    fps: float | None = None,
+    dim_names: list[str] | None = None,
+) -> None:
+    """state 单帧突跳（追踪丢失、设备重置、瞬移）的软规则。
+
+    与 action_jump 的判据一致（超阈值 + 相对邻域尖峰），但只报 warning：
+    state 突跳可能来自真实快速运动，也可能只是采集中断，必须人工确认；
+    RULE_MAP 中该规则 tier=soft，策略层永远不会据此自动剔除。
+    """
+    if not cfg_get(config, "state_jump.enabled", True):
+        return
+    if arr.shape[0] < 3 or not thresholds:
+        return
+    deltas = np.abs(np.diff(arr, axis=0))
+    deltas = np.nan_to_num(deltas, nan=0.0, posinf=np.inf)
+    dim = min(deltas.shape[1], len(thresholds))
+    thr = np.asarray(thresholds[:dim], dtype=float)
+    discrete_max = int(cfg_get(config, "state_jump.discrete_max_unique", 3))
+    nunique = np.array([
+        len(np.unique(arr[np.isfinite(arr[:, d]), d])) if np.isfinite(arr[:, d]).any() else 0
+        for d in range(dim)
+    ])
+    discrete_dims = np.where(nunique <= discrete_max)[0]
+    if discrete_dims.size:
+        deltas[:, discrete_dims] = 0.0
+    over = deltas[:, :dim] > thr
+    if not over.any():
+        return
+
+    spike_ratio = float(cfg_get(config, "state_jump.spike_ratio", 3.0))
+    window = scale_frames(int(cfg_get(config, "state_jump.spike_window", 3)), config, fps)
+    # 四元数 q≡-q 同样适用于 state；元数据缺失时退回数值启发式
+    flip_tol = float(cfg_get(config, "action_jump.sign_flip_tol", 0.25))
+    flip_min_dims = int(cfg_get(config, "action_jump.sign_flip_min_dims", 2))
+    head, tail = arr[:-1, :dim], arr[1:, :dim]
+    finite = np.isfinite(head) & np.isfinite(tail)
+    with np.errstate(invalid="ignore"):
+        step = np.abs(tail - head)
+        mirror = (np.abs(head + tail) <= flip_tol * step) & (step > 0)
+    mirror &= finite
+    quat_mask = _quaternion_dim_mask(dim_names, dim)
+    if quat_mask is not None:
+        mirror &= quat_mask[None, :]
+    flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
+
+    frames, dims = np.where(over)
+    kept: list[tuple[int, int]] = []
+    for f, d in zip(frames.tolist(), dims.tolist()):
+        if flip_mask[f, d]:
+            continue
+        lo, hi = max(0, f - window), min(deltas.shape[0], f + window + 1)
+        neighbours = np.delete(deltas[lo:hi, d], f - lo)
+        neighbours = neighbours[np.isfinite(neighbours)]
+        ref = float(np.median(neighbours)) if neighbours.size else 0.0
+        if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
+            kept.append((int(f), int(d)))
+    if not kept:
+        return
+    kept_deltas = np.array([deltas[f, d] for f, d in kept], dtype=float)
+    worst_pos = int(np.argmax(kept_deltas))
+    res.add(
+        "state_jump",
+        severity="warning",  # 软规则上限：即使配置成 error 也只提示复核
+        jump_count=len(kept),
+        max_delta=round(float(kept_deltas[worst_pos]), 4),
+        thresholds_used=[round(float(t), 4) for t in thr],
+        discrete_dims=[int(x) for x in discrete_dims],
+        worst_frame=kept[worst_pos][0],
+        worst_dim=kept[worst_pos][1],
+        note="state 单帧突跳，疑似追踪丢失/重置/瞬移，需人工确认",
+        examples=[
+            {"frame": f, "dim": d, "delta": round(float(deltas[f, d]), 4),
+             "threshold": round(float(thr[d]), 4)}
+            for f, d in kept[:5]
+        ],
+    )
+
+
+def check_static(
+    arr: np.ndarray,
+    kind: str,
+    res: EpisodeResult,
+    config: dict[str, Any],
+    fps: float | None = None,
+) -> None:
     """空转检测：整条序列几乎无变化 → 机器人没真正执行任务。"""
     if not cfg_get(config, "static_episode.enabled", True):
         return
-    if arr.shape[0] < int(cfg_get(config, "static_episode.min_frames_checked", 5)):
+    min_frames = scale_frames(int(cfg_get(config, "static_episode.min_frames_checked", 5)), config, fps)
+    if arr.shape[0] < min_frames:
         return
     finite = arr[np.isfinite(arr).all(axis=1)]
     if finite.shape[0] < 2:
@@ -491,7 +619,8 @@ def check_frame_mismatch(
     # 这属于「不可评估」，不是数据异常；报成 error 会让整批数据被误删。
     if not dataset.locator_available:
         return
-    tol = int(cfg_get(config, "video_frame_tolerance", 1))
+    # 视频帧容差按 30Hz 标定，高帧率采样下应同步放大，否则几帧的正常编码偏差会被误报
+    tol = scale_frames(int(cfg_get(config, "video_frame_tolerance", 1)), config, dataset.fps)
     problems: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
 
@@ -511,7 +640,13 @@ def check_frame_mismatch(
             problems.append({"type": "video_unprobeable", "camera": cam, "path": str(path)})
             continue
 
-        if from_ts >= 0 and to_ts > from_ts:
+        # 脏元数据可能给出 NaN/Inf 时间戳：先判有限性，避免 int(round(inf)) 抛
+        # OverflowError；这类窗口无法用于帧对齐，退化为按整段视频比对总帧数。
+        window_valid = (
+            math.isfinite(from_ts) and math.isfinite(to_ts)
+            and from_ts >= 0 and to_ts > from_ts
+        )
+        if window_valid:
             start = int(round(from_ts * dataset.fps))
             end = int(round(to_ts * dataset.fps))
             seg = end - start

@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-209%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-299%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -25,6 +25,26 @@ lerobot-data-quality --dataset_path demo_dataset --output_dir outputs
 ```
 
 产出：`outputs/quality_report.json`、`outputs/review_queue.csv`、`outputs/cleaned_dataset/`、`outputs/plots/`。本仓库的 [`examples/`](examples) 目录是这次运行的快照，可以直接点开看。
+
+### 一键演示（质检 → 清洗 → 版本 → 卡片）
+
+```bash
+python tools/demo.py --force
+```
+
+一次跑完主链，并额外产出：
+
+- `outputs/demo/DATASET_CARD.md`：数据集卡片（特征统计、健康度、处置结果、未执行检查）；
+- `outputs/demo/cleaned_dataset/.lrdq/`：清洗产物的内容寻址快照，末尾自动做一次 dry-run 回滚演练。
+
+只想要卡片时，可以独立生成：
+
+```bash
+python -m pipeline.card --report outputs/demo/quality_report.json \
+  --out outputs/demo/DATASET_CARD.md
+```
+
+卡片内容全部来自 `quality_report.json` / `meta/info.json` / `meta/stats.json`，不引入报告之外的指标。
 
 没有 Docker 环境也行：
 
@@ -107,6 +127,7 @@ docker run --rm \
 |---|---|---|---|
 | `nan_state` / `nan_action` | error | drop / **trim** | NaN/Inf；**只出现在首尾时可裁剪保留**，中段才丢弃 |
 | `action_jump` | warning | review | 逐维阈值取自「每集最大跳变」的稳健包络（不是逐帧 median，步进保持/度制数据不误报）；**超阈倍数 <1.5 时降为 info**——阈值本就在分布尾部，边缘命中多是「快速但连续」的正常动作 |
+| `state_jump` | warning | review | state 单帧突跳（追踪丢失/重置/瞬移）；**软规则（tier=soft），即使配置成 error 也不会自动 drop**，只交人工复核 |
 | `frame_count_abnormal` | error | drop | 自适应区间；过短无法构成时序窗口 |
 | `timestamp_not_monotonic` | warning | **repair** | 用 frame_index/fps 重建时间轴 |
 | `timestamp_step_deviation` | info | keep | 掉帧/时钟抖动，仅记录 |
@@ -185,6 +206,15 @@ from lerobot_data_quality.loaders import load_fzmotion_csv, load_fzmotion_csv_di
 
 df_one = load_fzmotion_csv("examples/fzmotion_sim/episode_000.csv", episode_index=0)
 df_all = load_fzmotion_csv_dir("examples/fzmotion_sim")   # 多 episode 合并
+```
+
+**MotionDecode（青瞳视觉）G1 轨迹适配器**：把 MotionDecode 导出的宽表 CSV（root 位置/旋转 + 29 个 DOF，120 FPS，无显式时间戳）转成帧表。
+
+```python
+from lerobot_data_quality.loaders import load_motiondecode_csv, load_motiondecode_csv_dir
+
+df_one = load_motiondecode_csv("data/chingmu_motiondecode/samples/.../xxx.csv")
+df_all = load_motiondecode_csv_dir("data/chingmu_motiondecode/samples")  # 递归批量，自动重编号
 ```
 
 ## 在线 Dashboard / 训练前预检 / 版本管理 / 策略学习

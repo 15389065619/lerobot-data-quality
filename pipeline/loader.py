@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
@@ -129,8 +130,15 @@ class LeRobotDatasetView:
         if self.meta_id_map:
             return sorted(self.meta_id_map)
         if len(self.frames) and "episode_index" in self.frames.columns:
-            return sorted(int(x) for x in self.frames["episode_index"].unique().tolist())
-        return [int(x) for x in self.episodes["episode_index"].tolist()]
+            values = pd.to_numeric(self.frames["episode_index"], errors="coerce").dropna()
+            # 列存在但全是脏值（字符串/NaN）时退回 meta 编号，让下游把
+            # 「meta 声明了 episode 但数据读不到」如实标成 episode_read_error
+            if len(values):
+                return sorted({int(x) for x in values})
+        if "episode_index" not in self.episodes.columns:
+            return []
+        values = pd.to_numeric(self.episodes["episode_index"], errors="coerce").dropna()
+        return sorted({int(x) for x in values})
 
     @property
     def column_names(self) -> list[str]:
@@ -151,8 +159,18 @@ class LeRobotDatasetView:
             return self.frames.groupby("episode_index").size()
         if len(self.episodes) and "length" in self.episodes.columns:
             lengths = pd.to_numeric(self.episodes["length"], errors="coerce").fillna(0).astype(int)
-            indices = pd.to_numeric(self.episodes["episode_index"], errors="coerce").astype(int)
-            series = pd.Series(lengths.to_numpy(), index=indices.to_numpy(), dtype="int64")
+            if "episode_index" not in self.episodes.columns:
+                return pd.Series(dtype="int64")
+            indices = pd.to_numeric(self.episodes["episode_index"], errors="coerce")
+            valid = indices.notna()
+            if not valid.all():
+                LOG.warning("meta/episodes 有 %d 行 episode_index 非法，帧数统计已跳过",
+                            int((~valid).sum()))
+            series = pd.Series(
+                lengths[valid].to_numpy(),
+                index=indices[valid].astype("int64").to_numpy(),
+                dtype="int64",
+            )
             if self.meta_id_map:
                 # meta 侧编号要换算回数据侧，否则与 frames/校验结果对不上
                 inv = {int(m): int(d) for d, m in self.meta_id_map.items()}
@@ -207,12 +225,14 @@ class LeRobotDatasetView:
             if str(spec.get("dtype", "")).lower() == "image"
         ]
 
-    @property
-    def joint_names(self) -> list[str]:
-        spec = self.features.get(STATE_KEY, {})
+    def feature_names(self, key: str) -> list[str]:
+        """info.json 里某个特征的维度名（features[key].names），缺失时返回空列表。
+
+        兼容两种写法：{0: "j0", ...}（按索引）与 {"joints": ["j0", ...]}（分组）。
+        """
+        spec = self.features.get(key, {}) or {}
         names = spec.get("names") or []
         if isinstance(names, dict):
-            # 两种写法都要兼容：{0: "j0", ...}（按索引）与 {"joints": ["j0", ...]}（分组）
             vals = list(names.values())
             if all(isinstance(v, (list, tuple)) for v in vals):
                 names = [str(x) for v in vals for x in v]
@@ -221,9 +241,14 @@ class LeRobotDatasetView:
                     names = [names[k] for k in sorted(names, key=lambda s: int(s))]
                 except (TypeError, ValueError):
                     names = [str(v) for v in vals]
-        dim = _feature_dim(spec)
+        return [str(n) for n in names] if isinstance(names, (list, tuple)) else []
+
+    @property
+    def joint_names(self) -> list[str]:
+        names = self.feature_names(STATE_KEY)
+        dim = _feature_dim(self.features.get(STATE_KEY, {}))
         if names and len(names) == dim:
-            return [str(n) for n in names]
+            return names
         return [f"dim_{i}" for i in range(dim)]
 
     @property
@@ -359,18 +384,20 @@ class LeRobotDatasetView:
         ck, fk = f"videos/{camera}/chunk_index", f"videos/{camera}/file_index"
         ft, tt = f"videos/{camera}/from_timestamp", f"videos/{camera}/to_timestamp"
         if row is not None:
-            if ck in self.episodes.columns and fk in self.episodes.columns and pd.notna(row.get(ck)):
+            chunk = _as_int(row.get(ck)) if ck in self.episodes.columns else None
+            file_idx = _as_int(row.get(fk)) if fk in self.episodes.columns else None
+            if chunk is not None and file_idx is not None:
                 path = self._video_path_from_template(
-                    camera, int(row[ck]), int(row[fk]), require_exists=require_exists
+                    camera, chunk, file_idx, require_exists=require_exists
                 )
                 if path is not None:
-                    from_ts = float(row[ft]) if ft in self.episodes.columns and pd.notna(row.get(ft)) else -1.0
-                    to_ts = float(row[tt]) if tt in self.episodes.columns and pd.notna(row.get(tt)) else -1.0
-                    return path, from_ts, to_ts
+                    from_ts = _as_float(row.get(ft)) if ft in self.episodes.columns else None
+                    to_ts = _as_float(row.get(tt)) if tt in self.episodes.columns else None
+                    return path, from_ts if from_ts is not None else -1.0, to_ts if to_ts is not None else -1.0
         # v2.1：优先按 info.json 的 video_path 模板定位
         # （如 videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4）
         if str(self.codebase_version).startswith("v2") and self.info.get("video_path"):
-            chunks_size = int(self.info.get("chunks_size") or 1000) or 1000
+            chunks_size = _as_int(self.info.get("chunks_size")) or 1000
             episode_chunk = episode_index // chunks_size
             fields = {
                 "video_key": camera, "camera": camera,
@@ -479,7 +506,15 @@ def load_dataset(
     info = _read_info(root)
     stats = _read_json(root / "meta" / "stats.json")
     features = info.get("features") or {}
-    fps = float(info.get("fps") or 30.0)
+    if not isinstance(features, dict):
+        LOG.warning("info.json 的 features 不是对象（%s），按空特征处理", type(features).__name__)
+        features = {}
+    else:
+        bad = [str(k) for k, v in features.items() if not isinstance(v, dict)]
+        if bad:
+            LOG.warning("info.json 有 %d 个特征描述不是对象，已忽略: %s", len(bad), bad[:5])
+            features = {k: v for k, v in features.items() if isinstance(v, dict)}
+    fps = _safe_fps(info.get("fps") or 30.0)
     version = str(info.get("codebase_version") or "unknown")
 
     tasks = _read_tasks(root)
@@ -610,9 +645,47 @@ def _read_json(path: Path) -> dict:
         return {}
     try:
         with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
     except json.JSONDecodeError as exc:
         raise DatasetFormatError(f"{path} 不是合法 JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise DatasetFormatError(
+            f"{path} 顶层必须是 JSON 对象，实际是 {type(data).__name__}"
+        )
+    return data
+
+
+def _as_int(value: Any) -> int | None:
+    """把可能带脏值的标量转成 int；NaN/Inf/字符串/非整数一律返回 None。"""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num) or not num.is_integer():
+        return None
+    return int(num)
+
+
+def _as_float(value: Any) -> float | None:
+    """把可能带脏值的标量转成有限 float；NaN/Inf/不可解析一律返回 None。"""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
+def _safe_fps(value: Any) -> float:
+    """fps 缺失/非数字/非有限/非正时回退 30.0，避免后续帧数换算崩溃。"""
+    fps = _as_float(value)
+    if fps is None or fps <= 0:
+        LOG.warning("info.json fps 非法（%r），回退为 30.0", value)
+        return 30.0
+    return fps
 
 
 def _read_info(root: Path) -> dict:
@@ -638,13 +711,18 @@ def _read_tasks(root: Path) -> dict[int, str]:
             tasks: dict[int, str] = {}
             if "task_index" in df.columns and "task" in df.columns:
                 for ti, task in zip(df["task_index"], df["task"]):
-                    tasks[int(ti)] = str(task)
+                    key = _as_int(ti)
+                    if key is not None:
+                        tasks[key] = str(task)
             elif df.index.dtype.kind in "iu":
                 tasks = {int(i): str(row.iloc[0]) for i, row in df.iterrows()}
             elif "task_index" in df.columns and len(df.columns) == 1:
                 # 任务文本存放在索引里的变体（如 nsgzfei/w01_v3）：
                 # index="Put the sweet potato into the white basket."、列只保留 task_index
-                tasks = {int(ti): str(text).strip() for text, ti in df["task_index"].items()}
+                for text, ti in df["task_index"].items():
+                    key = _as_int(ti)
+                    if key is not None:
+                        tasks[key] = str(text).strip()
             if tasks:
                 return tasks
 
@@ -660,8 +738,10 @@ def _read_tasks(root: Path) -> dict[int, str]:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if "task_index" in obj:
-                    tasks[int(obj["task_index"])] = str(obj.get("task", ""))
+                if isinstance(obj, dict) and "task_index" in obj:
+                    key = _as_int(obj["task_index"])
+                    if key is not None:
+                        tasks[key] = str(obj.get("task", ""))
         return tasks
 
     LOG.warning("未找到 meta/tasks.parquet 或 tasks.jsonl，任务描述将无法解析")
@@ -672,7 +752,7 @@ def _discover_data_files(root: Path, info: dict) -> list[Path]:
     """按 info.json 的 data_path 模板枚举，失败则 glob 兜底。"""
     tmpl = info.get("data_path") or DEFAULT_DATA_PATH
     found: list[Path] = []
-    chunks = int(info.get("chunks_size") or 1000)
+    chunks = _as_int(info.get("chunks_size")) or 1000
     files_per_chunk = 9999
     for ci in range(chunks):
         for fi in range(files_per_chunk):
@@ -729,6 +809,22 @@ def _discover_videos(root: Path) -> dict[str, dict[tuple[int, int], Path]]:
     return index
 
 
+def _normalize_episodes_meta(df: pd.DataFrame) -> pd.DataFrame:
+    """把 episode_index 统一成可比较的 int；非法行丢弃并告警。"""
+    if "episode_index" not in df.columns:
+        LOG.warning("meta/episodes 缺少 episode_index 列，无法用于定位")
+        return df.reset_index(drop=True)
+    numeric = pd.to_numeric(df["episode_index"], errors="coerce")
+    bad = int(numeric.isna().sum())
+    if bad:
+        LOG.warning("meta/episodes 有 %d 行 episode_index 非法，已丢弃", bad)
+    df = df.loc[numeric.notna()].copy()
+    df["episode_index"] = numeric[numeric.notna()].astype("int64")
+    if "length" in df.columns:
+        df["length"] = pd.to_numeric(df["length"], errors="coerce").fillna(0).astype("int64")
+    return df.sort_values("episode_index").reset_index(drop=True)
+
+
 def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
     """episode 级元数据（length / tasks / from_index / 视频区间）。"""
     ep_root = root / "meta" / "episodes"
@@ -743,8 +839,9 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
                     LOG.warning("读取 episode 元数据 %s 失败: %s", f, exc)
             if frames:
                 df = pd.concat(frames, ignore_index=True)
-                df = df.drop_duplicates(subset=["episode_index"]).sort_values("episode_index")
-                return df.reset_index(drop=True)
+                df = _normalize_episodes_meta(df)
+                df = df.drop_duplicates(subset=["episode_index"]).reset_index(drop=True)
+                return df
 
     jsonl = root / "meta" / "episodes.jsonl"
     if jsonl.is_file():
@@ -759,7 +856,7 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
                 except json.JSONDecodeError:
                     continue
         if rows:
-            return pd.DataFrame(rows).sort_values("episode_index").reset_index(drop=True)
+            return _normalize_episodes_meta(pd.DataFrame(rows))
     return None
 
 
@@ -831,7 +928,8 @@ def _episodes_from_frames(frames: pd.DataFrame) -> pd.DataFrame:
 
 def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -> list[int]:
     if episodes_meta is not None and not episodes_meta.empty and "episode_index" in episodes_meta.columns:
-        return sorted(int(x) for x in episodes_meta["episode_index"].tolist())
+        values = pd.to_numeric(episodes_meta["episode_index"], errors="coerce").dropna()
+        return sorted({int(x) for x in values})
     # 没有 episode 元数据时，从 parquet 里只读 episode_index 一列拿顺序
     seen: set[int] = set()
     for path in data_files:
@@ -839,7 +937,8 @@ def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -
             col = pq.read_table(path, columns=["episode_index"]).column("episode_index").to_pylist()
         except Exception:  # noqa: BLE001
             continue
-        seen.update(int(x) for x in col if x is not None)
+        values = pd.to_numeric(pd.Series(col), errors="coerce").dropna()
+        seen.update(int(x) for x in values)
     return sorted(seen)
 
 
@@ -853,14 +952,28 @@ def _data_episode_summary(
     单列 IO 相对整表很小（128 万行约 10MB），是判定「能否安全映射」的必要代价。
     """
     if frames is not None and len(frames) and "episode_index" in frames.columns:
-        agg = {"rows": ("episode_index", "size")}
+        episode_ids = pd.to_numeric(frames["episode_index"], errors="coerce")
+        valid = episode_ids.notna()
+        if not valid.all():
+            LOG.warning("data 中有 %d 行 episode_index 非法，编号对齐扫描已跳过这些行",
+                        int((~valid).sum()))
+        if not valid.any():
+            return pd.DataFrame(columns=["episode_index", "rows"])
+        # 只拷贝必要列，避免把 state/action 等大列复制一份
+        work = pd.DataFrame({"episode_index": episode_ids[valid].astype("int64")})
         has_index = "index" in frames.columns
+        agg = {"rows": ("episode_index", "size")}
         if has_index:
-            agg["idx_min"] = ("index", "min")
-            agg["idx_max"] = ("index", "max")
-            agg["idx_nunique"] = ("index", "nunique")
-        out = frames.groupby("episode_index", sort=False).agg(**agg).reset_index()
+            work["__idx"] = pd.to_numeric(frames.loc[valid, "index"], errors="coerce")
+            agg["idx_min"] = ("__idx", "min")
+            agg["idx_max"] = ("__idx", "max")
+            agg["idx_nunique"] = ("__idx", "nunique")
+        out = work.groupby("episode_index", sort=False).agg(**agg).reset_index()
         out["episode_index"] = out["episode_index"].astype("int64")
+        for name in ("idx_min", "idx_max"):
+            if name in out.columns:
+                # -1 表示该集 index 全为非法值，schema 审计会据此报断裂
+                out[name] = out[name].fillna(-1).astype("int64")
         return out
     if not data_files:
         return pd.DataFrame(columns=["episode_index", "rows"])
@@ -882,31 +995,50 @@ def _data_episode_summary(
     # 唯一值个数是唯一能戳穿它的廉价证据，与极值同一趟算出。
     uniques: dict[int, list[int]] = {}
     cols = ["episode_index", "index"] if has_index else ["episode_index"]
+    invalid_rows = 0
     for path in data_files:
         try:
             table = pq.read_table(path, columns=cols)
-            col = table.column("episode_index").to_numpy()
+            raw_ep = table.column("episode_index").to_pandas()
         except Exception as exc:  # noqa: BLE001 - 损坏文件交由 corrupted_files 记录
             LOG.debug("编号对齐扫描跳过 %s: %s", path.name, exc)
             continue
-        idx_col = table.column("index").to_numpy() if has_index else None
-        for value in np.unique(col):
+        ep_values = pd.to_numeric(raw_ep, errors="coerce").to_numpy(dtype=float)
+        keep = np.isfinite(ep_values)
+        invalid_rows += int((~keep).sum())
+        ep_values = ep_values[keep].astype("int64")
+        idx_values = None
+        if has_index:
+            raw_idx = pd.to_numeric(table.column("index").to_pandas(), errors="coerce")
+            idx_values = raw_idx.to_numpy(dtype=float)[keep]
+        for value in np.unique(ep_values):
             ep = int(value)
-            mask = col == value
+            mask = ep_values == value
             if ep not in counts:
                 order.append(ep)
                 counts[ep] = 0
             counts[ep] += int(mask.sum())
-            if idx_col is not None:
-                sub = idx_col[mask]
-                lo, hi = int(sub.min()), int(sub.max())
-                lows[ep] = min(lows.get(ep, lo), lo)
-                highs[ep] = max(highs.get(ep, hi), hi)
-                uniques.setdefault(ep, []).append(int(np.unique(sub).size))
+            if idx_values is not None:
+                sub = idx_values[mask]
+                finite = sub[np.isfinite(sub)]
+                if finite.size:
+                    lo, hi = int(finite.min()), int(finite.max())
+                    lows[ep] = min(lows.get(ep, lo), lo)
+                    highs[ep] = max(highs.get(ep, hi), hi)
+                    uniques.setdefault(ep, []).append(int(np.unique(finite).size))
+                else:
+                    # 该集 index 全是 NaN/Inf：用 -1 占位，schema 审计会报断裂
+                    lows.setdefault(ep, -1)
+                    highs.setdefault(ep, -1)
+                    uniques.setdefault(ep, []).append(0)
+    if invalid_rows:
+        LOG.warning("data 中有 %d 行 episode_index 非法，编号对齐扫描已跳过这些行", invalid_rows)
+    if not order:
+        return pd.DataFrame(columns=["episode_index", "rows"])
     data = {"episode_index": order, "rows": [counts[e] for e in order]}
     if has_index:
-        data["idx_min"] = [lows[e] for e in order]
-        data["idx_max"] = [highs[e] for e in order]
+        data["idx_min"] = [lows.get(e, -1) for e in order]
+        data["idx_max"] = [highs.get(e, -1) for e in order]
         # 跨多个文件的 episode 无法在这里合并去重（避免为几百 MB 数据建全量集合），
         # 记 NaN 表示「未知」，由 schema 侧跳过唯一性判据而不是猜一个值。
         data["idx_nunique"] = [
@@ -940,8 +1072,15 @@ def _reconcile_episode_ids(
     if data_summary is None or data_summary.empty:
         return {}, {"mode": "unavailable", "reason": "缺少数据侧 episode 信息，无处对齐"}
 
-    data_ids = [int(x) for x in data_summary["episode_index"].tolist()]
-    meta_ids = sorted(int(x) for x in episodes_meta["episode_index"].tolist())
+    data_values = pd.to_numeric(data_summary["episode_index"], errors="coerce").dropna()
+    meta_values = pd.to_numeric(episodes_meta["episode_index"], errors="coerce")
+    dropped = int(meta_values.isna().sum())
+    if dropped:
+        LOG.warning("meta/episodes 有 %d 行 episode_index 非法，编号对齐已跳过这些行", dropped)
+    data_ids = [int(x) for x in data_values.tolist()]
+    meta_ids = sorted(int(x) for x in meta_values.dropna().tolist())
+    if not data_ids or not meta_ids:
+        return {}, {"mode": "unavailable", "reason": "episode_index 全为非法值，无处对齐"}
     data_set, meta_set = set(data_ids), set(meta_ids)
     diag: dict[str, Any] = {
         "data_ids": len(data_set),
@@ -966,26 +1105,32 @@ def _reconcile_episode_ids(
 
     # ---- 顺序假设验证：同名位置上的行数、视频窗口必须自洽
     rows_arr = data_summary["rows"].to_numpy(dtype="int64")
-    lengths = pd.to_numeric(episodes_meta.sort_values("episode_index")["length"], errors="coerce")
+    meta_sorted = (
+        episodes_meta.assign(episode_index=meta_values)
+        .dropna(subset=["episode_index"])
+        .sort_values("episode_index")
+    )
+    lengths = pd.to_numeric(meta_sorted["length"], errors="coerce")
     length_arr = lengths.fillna(-1).to_numpy(dtype="int64") if "length" in episodes_meta.columns else None
 
     length_ok = int((rows_arr == length_arr).sum()) if length_arr is not None else 0
     diag["length_agreement"] = round(length_ok / len(data_ids), 4) if length_arr is not None else None
 
     video_ok, video_total = 0, 0
-    for col_to in episodes_meta.columns:
+    for col_to in meta_sorted.columns:
         if not col_to.startswith("videos/") or not col_to.endswith("/to_timestamp"):
             continue
         col_from = col_to[: -len("/to_timestamp")] + "/from_timestamp"
-        if col_from not in episodes_meta.columns:
+        if col_from not in meta_sorted.columns:
             continue
-        window = (
-            episodes_meta.sort_values("episode_index")[col_to].to_numpy(dtype=float)
-            - episodes_meta.sort_values("episode_index")[col_from].to_numpy(dtype=float)
-        )
-        frames_in_window = np.rint(window * max(fps, 1e-6)).astype("int64")
-        video_ok += int((frames_in_window == rows_arr).sum())
-        video_total += len(frames_in_window)
+        to_vals = pd.to_numeric(meta_sorted[col_to], errors="coerce").to_numpy(dtype=float)
+        from_vals = pd.to_numeric(meta_sorted[col_from], errors="coerce").to_numpy(dtype=float)
+        window = to_vals - from_vals
+        frames_in_window = np.rint(window * max(fps, 1e-6))
+        frames_in_window = np.where(np.isfinite(frames_in_window), frames_in_window, -1).astype("int64")
+        n = min(len(frames_in_window), len(rows_arr))
+        video_ok += int((frames_in_window[:n] == rows_arr[:n]).sum())
+        video_total += n
     diag["video_agreement"] = round(video_ok / video_total, 4) if video_total else None
 
     evidence = [
@@ -1027,6 +1172,8 @@ def heavy_feature_keys(features: dict[str, Any]) -> list[str]:
     """
     out: list[str] = []
     for key, spec in (features or {}).items():
+        if not isinstance(spec, dict):
+            continue
         shape = spec.get("shape")
         if not isinstance(shape, (list, tuple)) or len(shape) != 2:
             continue

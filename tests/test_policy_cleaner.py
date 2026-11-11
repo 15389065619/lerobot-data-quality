@@ -87,6 +87,42 @@ def test_invalid_override_is_ignored(tmp_path):
     assert decisions[0].source == "rule"
 
 
+def test_cleaner_failure_keeps_previous_output(tmp_path, monkeypatch):
+    """清洗中途失败（含 Ctrl+C）不能破坏上一版完整产物，也不能留下暂存目录。"""
+    dataset, _, decisions = _run(_mixed_dataset(tmp_path))
+    out = tmp_path / "out"
+    cleaner_mod.clean_dataset(dataset, decisions, out, prefer_cli=False)
+    marker = out / "cleaned_dataset" / "meta" / "info.json"
+    before = marker.read_text(encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(cleaner_mod, "manual_clean", _boom)
+    with pytest.raises(RuntimeError):
+        cleaner_mod.clean_dataset(dataset, decisions, out, prefer_cli=False)
+
+    assert marker.is_file()
+    assert marker.read_text(encoding="utf-8") == before
+    assert not list(out.glob("cleaned_dataset.tmp-*")), "失败后暂存目录未清理"
+    assert not list(out.glob("cleaned_dataset.prev-*")), "失败后旧产物未回滚"
+
+
+def test_cleaning_interrupt_cleans_staging(tmp_path, monkeypatch):
+    dataset, _, decisions = _run(_mixed_dataset(tmp_path))
+    out = tmp_path / "out"
+
+    def _interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cleaner_mod, "manual_clean", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cleaner_mod.clean_dataset(dataset, decisions, out, prefer_cli=False)
+
+    assert not (out / "cleaned_dataset").exists()
+    assert not list(out.glob("cleaned_dataset.tmp-*"))
+
+
 def test_cleaner_applies_drop_and_repairs(tmp_path):
     dataset, result, decisions = _run(_mixed_dataset(tmp_path))
     out = tmp_path / "out"
@@ -108,6 +144,9 @@ def test_cleaner_applies_drop_and_repairs(tmp_path):
     trimmed = cleaned.episode_frame(0)
     arr = np.asarray(trimmed["observation.state"].to_list(), dtype=float)
     assert not np.isnan(arr).any(), "裁剪后仍残留 NaN"
+    # 裁帧改变了帧位置，timestamp 必须一并重建（首帧归零、步长不变）
+    ts_trim = trimmed["timestamp"].to_numpy()
+    assert np.allclose(ts_trim, np.arange(len(ts_trim)) / 30, atol=1e-6)
 
     # 原 ep2 的时间轴被重建且严格单调
     ts = cleaned.episode_frame(1)["timestamp"].to_numpy()
@@ -385,3 +424,56 @@ def test_manual_frame_bounds_invalid_range(tmp_path):
     path = build_dataset(tmp_path / "ds", {0: smooth_episode(20, seed=81)})
     with pytest.raises(ValueError, match="不能大于"):
         _run(path, frame_count={"min": 100, "max": 50})
+
+
+def test_state_jump_soft_rule_never_drops(tmp_path):
+    """软规则即使被配置成 error 也不能据此自动剔除（state_jump 只是提示复核）。"""
+    from pipeline.validator.types import EpisodeResult, ValidationResult
+
+    config = load_config(robot_type="test_robot")
+    config["severity"]["state_jump"] = "error"
+    res = EpisodeResult(episode_index=0, frame_count=60)
+    res.add("state_jump")
+    validation = ValidationResult(
+        total_episodes=1, results={0: res}, config=config, fps=30.0,
+        dataset_root=str(tmp_path),
+    )
+
+    decisions = policy_mod.decide(validation)
+    assert decisions[0].disposition == "review"
+
+
+def test_mass_drop_guard_downgrades_all(tmp_path):
+    """整体剔除比例 ≥80% 且样本足够时，全部降级复核，防止阈值性误判被批量执行。"""
+    eps = {}
+    for ep in range(20):
+        item = smooth_episode(40, seed=ep)
+        if ep < 18:
+            item["state"][20, 0] = np.nan
+        eps[ep] = item
+    path = build_dataset(tmp_path / "ds", eps)
+    _, result, decisions = _run(path)
+
+    # 18/20 = 90%，低于单规则熔断的 95%，但触发整体熔断
+    assert result.severity_of(result.results[0]) == "error"
+    assert all(decisions[ep].disposition == "review" for ep in range(18))
+    assert decisions[0].source == "mass-drop-guard"
+
+
+def test_streaming_stats_matches_numpy():
+    """std 必须是 sqrt(M2/n)；分位数必须来自当前数据而不是旧 stats。"""
+    from pipeline.cleaner.stats_streaming import StreamingStats
+
+    rng = np.random.default_rng(0)
+    data = rng.normal(3.0, 2.0, size=(500, 4))
+    vec = pa.list_(pa.float64(), 4)
+    acc = StreamingStats()
+    for start in range(0, 500, 37):
+        chunk = data[start:start + 37]
+        acc.update_from_table(pa.table({"f": pa.array(list(chunk), type=vec)}), ["f"])
+    out = acc.finalize({})["f"]
+
+    assert np.allclose(out["mean"], data.mean(axis=0), atol=1e-5)
+    assert np.allclose(out["std"], data.std(axis=0), atol=1e-5)
+    for q, name in ((0.01, "q01"), (0.5, "q50"), (0.99, "q99")):
+        assert np.allclose(out[name], np.quantile(data, q, axis=0), atol=1e-5)

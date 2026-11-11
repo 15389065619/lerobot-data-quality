@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -24,6 +24,11 @@ class DatasetContext:
     fingerprints: dict[str, int]
     issues: list[DatasetIssue]
     resolved: dict[str, Any]
+    #: state 跳变阈值（与 action 同一套「每集峰值」推导），空列表表示不可评估
+    state_thresholds: list[float] = field(default_factory=list)
+    #: 特征维度名，用于按四元数分组识别 q≡-q（元数据缺失时为 None）
+    action_dim_names: list[str] | None = None
+    state_dim_names: list[str] | None = None
 
     @classmethod
     def build(
@@ -34,8 +39,11 @@ class DatasetContext:
             counts = dataset.frames.groupby("episode_index").size().to_numpy(dtype=float)
         else:
             counts = np.array([], dtype=float)
-        frame_bounds = _resolve_frame_bounds(counts, config)
+        frame_bounds = _resolve_frame_bounds(counts, config, dataset.fps)
         action_thresholds, action_meta = _resolve_action_thresholds(dataset, config)
+        state_thresholds, state_meta = _resolve_action_thresholds(
+            dataset, config, key=STATE_KEY, section="state_jump"
+        )
         issues: list[DatasetIssue] = []
         for issue in (
             _check_stats_staleness(dataset, config, skipped),
@@ -46,19 +54,29 @@ class DatasetContext:
                 issues.append(issue)
         if not action_thresholds:
             skipped["action_jump"] = "无可用 action 数据推导阈值"
+        if not state_thresholds:
+            skipped["state_jump"] = "无可用 state 数据推导阈值"
 
         resolved = {
             "frame_count": frame_bounds,
             "action_jump": action_meta,
+            "state_jump": state_meta,
             "timestamp_step_tolerance": round(
                 float(cfg_get(config, "timestamp.step_tolerance_ratio", 0.25)) / max(dataset.fps, 1e-6), 6
             ),
-            "video_frame_tolerance": int(cfg_get(config, "video_frame_tolerance", 1)),
+            "video_frame_tolerance": scale_frames(
+                int(cfg_get(config, "video_frame_tolerance", 1)), config, dataset.fps
+            ),
         }
         # 指纹预计算覆盖全部 episode：这样即使增量跳过某些 episode，
         # 新增 episode 与历史 episode 的重复仍能被识别。
         fingerprints = _fingerprint_actions(dataset, config)
-        return cls(frame_bounds, action_thresholds, fingerprints, issues, resolved)
+        return cls(
+            frame_bounds, action_thresholds, fingerprints, issues, resolved,
+            state_thresholds=state_thresholds,
+            action_dim_names=dataset.feature_names(ACTION_KEY) or None,
+            state_dim_names=dataset.feature_names(STATE_KEY) or None,
+        )
 
 
 def _fingerprint_actions(dataset: LeRobotDatasetView, config: dict[str, Any]) -> dict[str, int]:
@@ -85,16 +103,42 @@ def _fingerprint_actions(dataset: LeRobotDatasetView, config: dict[str, Any]) ->
     return out
 
 
-def _resolve_frame_bounds(counts: np.ndarray, config: dict[str, Any]) -> dict[str, Any]:
+def _ref_fps(config: dict[str, Any]) -> float:
+    """配置里帧数类阈值按 ref_fps 标定（默认 30Hz）。"""
+    value = float(cfg_get(config, "action_jump.ref_fps", 30.0))
+    return value if value > 0 else 30.0
+
+
+def scale_frames(value: float, config: dict[str, Any], fps: float | None) -> int:
+    """把按 ref_fps 标定的帧数折算到实际帧率。
+
+    120Hz 数据 1 秒有 120 帧，按 30Hz 标定的 window/tolerance/下限直接套用会
+    把正常数据判成异常（或反之）。fps 未知时按 ref_fps 处理，保持原行为。
+    """
+    ref = _ref_fps(config)
+    eff = float(fps) if fps and fps > 0 else ref
+    return max(1, int(round(float(value) * eff / ref)))
+
+
+def _resolve_frame_bounds(
+    counts: np.ndarray, config: dict[str, Any], fps: float | None = None
+) -> dict[str, Any]:
     """解析帧数上下限：业务硬约束（manual）优先，否则按 median ± k·MAD 推导。
 
     配置 `frame_count.min` / `frame_count.max` 任一给定时进入 manual 模式：
     显式的一侧直接用绝对值（不再参与统计学推导），未指定的一侧仍按数据集分布推导，
     并在 `source` 里标注两侧各自来源，便于在报告里追溯判定依据。
+
+    `frame_count.floor` / `ceiling` 是按 30Hz 标定的默认边界，需按实际 fps 折算，
+    否则 120Hz 的长 episode 会因帧数多 4 倍被判 `too_many` 后误删。
+    用户显式给出的 min/max 视为业务绝对值，不做折算。
     """
     mode = str(cfg_get(config, "frame_count.mode", "auto"))
-    floor = int(cfg_get(config, "frame_count.floor", 8))
-    ceiling = int(cfg_get(config, "frame_count.ceiling", 20000))
+    ref = _ref_fps(config)
+    eff = float(fps) if fps and fps > 0 else ref
+    scale = eff / ref
+    floor = max(1, int(round(int(cfg_get(config, "frame_count.floor", 8)) * scale)))
+    ceiling = max(floor, int(round(int(cfg_get(config, "frame_count.ceiling", 20000)) * scale)))
     manual_min = cfg_get(config, "frame_count.min")
     manual_max = cfg_get(config, "frame_count.max")
 
@@ -153,11 +197,15 @@ def _resolve_frame_bounds(counts: np.ndarray, config: dict[str, Any]) -> dict[st
 
 
 def _resolve_action_thresholds(
-    dataset: LeRobotDatasetView, config: dict[str, Any]
+    dataset: LeRobotDatasetView,
+    config: dict[str, Any],
+    *,
+    key: str = ACTION_KEY,
+    section: str = "action_jump",
 ) -> tuple[list[float], dict[str, Any]]:
     """逐维阈值由数据集自身的「正常运动包络」推导，见 `_thresholds_from_arrays`。"""
-    if ACTION_KEY not in dataset.frames.columns:
-        return _thresholds_from_arrays([], config)
+    if key not in dataset.frames.columns:
+        return _thresholds_from_arrays([], config, fps=dataset.fps, section=section)
 
     arrays: list[np.ndarray] = []
     if "episode_index" in dataset.frames.columns:
@@ -166,10 +214,10 @@ def _resolve_action_thresholds(
         # 非标准字段名：缺 episode 标识时整表当作一条序列推导，避免 groupby KeyError
         groups = iter([dataset.frames])
     for ep_df in groups:
-        arr = _as_float_matrix(ep_df[ACTION_KEY])
+        arr = _as_float_matrix(ep_df[key])
         if arr is not None:
             arrays.append(arr)
-    return _thresholds_from_arrays(arrays, config, fps=dataset.fps)
+    return _thresholds_from_arrays(arrays, config, fps=dataset.fps, section=section)
 
 
 def _align_dims(matrices: list[np.ndarray], label: str) -> tuple[list[np.ndarray], int]:
@@ -193,7 +241,10 @@ def _align_dims(matrices: list[np.ndarray], label: str) -> tuple[list[np.ndarray
 
 
 def _thresholds_from_arrays(
-    arrays: list[np.ndarray], config: dict[str, Any], fps: float | None = None
+    arrays: list[np.ndarray],
+    config: dict[str, Any],
+    fps: float | None = None,
+    section: str = "action_jump",
 ) -> tuple[list[float], dict[str, Any]]:
     """由若干 episode 的 action 矩阵推导逐维跳变阈值。
 
@@ -208,10 +259,10 @@ def _thresholds_from_arrays(
 
     流式模式只采样部分 episode，因此把「收集 episode」与「算阈值」拆开。
     """
-    abs_floor = float(cfg_get(config, "action_jump.abs_floor", 1.0))
-    mad_k = float(cfg_get(config, "action_jump.max_jump_mad_k", 3.0))
-    min_eps = int(cfg_get(config, "action_jump.min_episodes_for_peak", 8))
-    margin = float(cfg_get(config, "action_jump.min_margin_ratio", 0.05))
+    abs_floor = float(cfg_get(config, f"{section}.abs_floor", 1.0))
+    mad_k = float(cfg_get(config, f"{section}.max_jump_mad_k", 3.0))
+    min_eps = int(cfg_get(config, f"{section}.min_episodes_for_peak", 8))
+    margin = float(cfg_get(config, f"{section}.min_margin_ratio", 0.05))
     # abs_floor 的含义是「单个采样间隔内可接受的最大位移」，写在配置里时按 30Hz 标定。
     # 120Hz 光捕数据每帧只走 1/4 的路程，若不按帧率折算，阈值会高得整条规则失效；
     # 反过来低帧率数据集则需要放宽。折算后阈值等价于「每秒位移」，与帧率解耦。
@@ -251,7 +302,7 @@ def _thresholds_from_arrays(
                     "min_margin_ratio": margin,
                     "fps": eff_fps,
                     "abs_floor_effective": round(floor, 6),
-                    "spike_ratio": float(cfg_get(config, "action_jump.spike_ratio", 3.0)),
+                    "spike_ratio": float(cfg_get(config, f"{section}.spike_ratio", 3.0)),
                     "dim_mismatch_episodes": dim_mismatch, "per_dim": []}
 
     if len(peaks) >= min_eps:
@@ -293,7 +344,7 @@ def _thresholds_from_arrays(
             "fps": eff_fps,
             "max_jump_mad_k": mad_k,
             "min_margin_ratio": margin,
-            "spike_ratio": float(cfg_get(config, "action_jump.spike_ratio", 3.0)),
+            "spike_ratio": float(cfg_get(config, f"{section}.spike_ratio", 3.0)),
             "basis": basis,
             "per_dim": [round(float(t), 4) for t in thresholds],
             **detail,
@@ -421,13 +472,16 @@ def _check_index_continuity(dataset: LeRobotDatasetView) -> DatasetIssue | None:
             repair="index",
         )
 
-    unique = np.unique(idx)
+    # NaN/Inf 不能参与 min/max（int(nan) 会抛 ValueError）；先剔除再统计，
+    # 非有限值数量单独传给 _index_continuity_issue 判定。
+    non_finite = ~np.isfinite(idx)
+    unique = np.unique(idx[~non_finite])
     return _index_continuity_issue(
         rows=dataset.num_frames,
         count=int(unique.size),
         min_index=int(unique[0]) if unique.size else None,
         max_index=int(unique[-1]) if unique.size else None,
-        nan_count=int(np.isnan(idx).sum()),
+        nan_count=int(non_finite.sum()),
     )
 
 
@@ -441,8 +495,10 @@ def _check_episode_alignment(dataset: LeRobotDatasetView) -> DatasetIssue | None
         return None  # 流式模式在 streaming._build_context 中另行检测
     if dataset.episodes.empty or "episode_index" not in dataset.episodes.columns:
         return None
-    data_ids = {int(x) for x in dataset.frames["episode_index"].unique().tolist()}
-    meta_ids = {int(x) for x in dataset.episodes["episode_index"].tolist()}
+    data_values = pd.to_numeric(dataset.frames["episode_index"], errors="coerce").dropna()
+    meta_values = pd.to_numeric(dataset.episodes["episode_index"], errors="coerce").dropna()
+    data_ids = {int(x) for x in data_values}
+    meta_ids = {int(x) for x in meta_values}
     issue = _episode_alignment_issue(data_ids, meta_ids)
     return _annotate_reconciliation(issue, dataset)
 

@@ -47,6 +47,7 @@ from .context import (
     _resolve_frame_bounds,
     _stats_staleness_issue,
     _thresholds_from_arrays,
+    scale_frames,
 )
 from .probes import FFMPEG, FFPROBE
 from .types import DatasetIssue, EpisodeResult, ValidationResult
@@ -55,6 +56,17 @@ LOG = logging.getLogger(__name__)
 
 PASS1_COLUMNS = ("episode_index", "frame_index", "index", ACTION_KEY, STATE_KEY)
 PASS2_COLUMNS = ("episode_index", "frame_index", "timestamp", ACTION_KEY, STATE_KEY, TASK_INDEX_KEY)
+
+
+def _episode_key(raw: Any) -> int | None:
+    """把 groupby 的分组键转成 int；NaN/Inf/字符串等脏值返回 None。"""
+    try:
+        num = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(num) or not num.is_integer():
+        return None
+    return int(num)
 
 
 def validate_dataset_streaming(
@@ -98,6 +110,7 @@ def validate_dataset_streaming(
     # ------------------------------------------------------------ Pass 2
     results: dict[int, EpisodeResult] = {}
     frames_by_episode: dict[int, int] = {}
+    bad_episode_rows = 0
     field_stats = _FieldStats([key for key in (STATE_KEY, ACTION_KEY) if key in columns])
     pending_video: list[tuple[EpisodeResult, int, bool]] = []
     reused = 0
@@ -108,7 +121,10 @@ def validate_dataset_streaming(
             raise DatasetFormatError("data/*.parquet 缺少 episode_index 列，无法按 episode 质检")
         field_stats.update(chunk)
         for raw_ep, ep_df in chunk.groupby("episode_index", sort=True):
-            ep_index = int(raw_ep)
+            ep_index = _episode_key(raw_ep)
+            if ep_index is None:
+                bad_episode_rows += int(len(ep_df))
+                continue
             if "frame_index" in ep_df.columns:
                 ep_df = ep_df.sort_values("frame_index", kind="stable")
             frames_by_episode[ep_index] = frames_by_episode.get(ep_index, 0) + int(len(ep_df))
@@ -120,11 +136,18 @@ def validate_dataset_streaming(
                 reused += 1
                 continue
 
-            res = _validate_non_video(ep_df, ep_index, dataset, ctx, config, skipped)
+            try:
+                res = _validate_non_video(ep_df, ep_index, dataset, ctx, config, skipped)
+            except Exception as exc:  # noqa: BLE001 - 与内存模式一致：单集失败不中断整体
+                LOG.exception("episode %d 质检过程异常，已标记 episode_read_error 并跳过", ep_index)
+                res = EpisodeResult(episode_index=ep_index, frame_count=int(len(ep_df)))
+                res.add("episode_read_error", error=str(exc))
             results[ep_index] = res
             want_blank = blank_enabled and len(pending_video) < max_probes
             pending_video.append((res, ep_index, want_blank))
 
+    if bad_episode_rows:
+        LOG.warning("流式质检跳过 %d 行 episode_index 非法的数据", bad_episode_rows)
     _run_video_checks(pending_video, dataset, cameras, precise, config)
     if reused:
         LOG.info("增量质检：复用 %d 个 episode 的历史结论，重检 %d 个", reused, len(results) - reused)
@@ -188,10 +211,11 @@ def _build_context(
     idx_min: int | None = None
     idx_max: int | None = None
 
-    # state 只在需要判 stats 时效时读；否则少读一半列宽，50GB 级别差距明显
+    # state 既用于 stats 时效，也用于 state_jump 阈值推导；只在两者都不需要时才跳过读取
+    read_state = bool(state_sample or action_sample)
     pass1_columns = [
         c for c in PASS1_COLUMNS
-        if c in columns and (c != STATE_KEY or state_sample)
+        if c in columns and (c != STATE_KEY or read_state)
     ]
     for chunk in iter_frame_chunks(dataset, columns=pass1_columns, episodes=stream_eps):
         if "episode_index" not in chunk.columns:
@@ -208,7 +232,9 @@ def _build_context(
                 idx_max = hi if idx_max is None else max(idx_max, hi)
 
         for raw_ep, ep_df in chunk.groupby("episode_index", sort=True):
-            ep_index = int(raw_ep)
+            ep_index = _episode_key(raw_ep)
+            if ep_index is None:
+                continue
             if "frame_index" in ep_df.columns:
                 ep_df = ep_df.sort_values("frame_index", kind="stable")
             counts[ep_index] = counts.get(ep_index, 0) + int(len(ep_df))
@@ -217,7 +243,7 @@ def _build_context(
                 arr = _as_float_matrix(ep_df[ACTION_KEY])
                 if arr is not None:
                     action_parts.setdefault(ep_index, []).append(arr)
-            if ep_index in state_sample and STATE_KEY in ep_df.columns:
+            if ep_index in (state_sample | action_sample) and STATE_KEY in ep_df.columns:
                 arr = _as_float_matrix(ep_df[STATE_KEY])
                 if arr is not None:
                     state_parts.setdefault(ep_index, []).append(arr)
@@ -235,7 +261,7 @@ def _build_context(
     else:
         meta_counts = dataset.frames_by_episode()
         count_values = meta_counts.to_numpy(dtype=float) if len(meta_counts) else np.asarray([], dtype=float)
-    frame_bounds = _resolve_frame_bounds(count_values, config)
+    frame_bounds = _resolve_frame_bounds(count_values, config, dataset.fps)
 
     # ---- action 阈值（采样）
     threshold_arrays = [_stack(action_parts[ep]) for ep in sorted(action_parts)]
@@ -243,10 +269,21 @@ def _build_context(
     if not action_thresholds:
         skipped["action_jump"] = "无可用 action 数据推导阈值"
 
+    # ---- state 阈值（同一批采样 episode）
+    state_thresholds, state_meta = _thresholds_from_arrays(
+        [_stack(state_parts[ep]) for ep in sorted(state_parts)],
+        config,
+        fps=dataset.fps,
+        section="state_jump",
+    )
+    if not state_thresholds:
+        skipped["state_jump"] = "无可用 state 数据推导阈值"
+
     # ---- stats.json 时效性（采样）
     issues: list[DatasetIssue] = []
     if not dataset.episodes.empty and "episode_index" in dataset.episodes.columns:
-        meta_ids = {int(x) for x in dataset.episodes["episode_index"].tolist()}
+        meta_values = pd.to_numeric(dataset.episodes["episode_index"], errors="coerce").dropna()
+        meta_ids = {int(x) for x in meta_values}
         align_issue = _annotate_reconciliation(
             _episode_alignment_issue(set(counts), meta_ids), dataset
         )
@@ -256,7 +293,7 @@ def _build_context(
     # 采样来的均值只能和「同口径」的 stats.json 比。若采样没覆盖全部 episode
     # （数据集 episode 数超过采样上限，或采样集与数据侧编号不匹配），偏差反映的是
     # 子集分布差异，不是 stats 过期——报成数据问题会让整批数据被误判为不可用。
-    sampled_eps = set(state_parts)
+    sampled_eps = set(state_parts) & state_sample
     covered = bool(counts) and sampled_eps == set(counts)
     if state_sample and not covered:
         skipped["stats_stale"] = (
@@ -296,16 +333,24 @@ def _build_context(
     resolved = {
         "frame_count": frame_bounds,
         "action_jump": action_meta,
+        "state_jump": state_meta,
         "timestamp_step_tolerance": round(
             float(cfg_get(config, "timestamp.step_tolerance_ratio", 0.25)) / max(dataset.fps, 1e-6), 6
         ),
-        "video_frame_tolerance": int(cfg_get(config, "video_frame_tolerance", 1)),
+        "video_frame_tolerance": scale_frames(
+            int(cfg_get(config, "video_frame_tolerance", 1)), config, dataset.fps
+        ),
     }
     LOG.info(
         "流式第一遍完成：%d 行 / %d 个 episode，action 阈值采样 %d 个 episode",
         rows, len(counts), len(action_parts),
     )
-    return DatasetContext(frame_bounds, action_thresholds, fingerprints, issues, resolved), skipped
+    return DatasetContext(
+        frame_bounds, action_thresholds, fingerprints, issues, resolved,
+        state_thresholds=state_thresholds,
+        action_dim_names=dataset.feature_names(ACTION_KEY) or None,
+        state_dim_names=dataset.feature_names(STATE_KEY) or None,
+    ), skipped
 
 
 def _fingerprint(arr: np.ndarray | None, decimals: int) -> str | None:

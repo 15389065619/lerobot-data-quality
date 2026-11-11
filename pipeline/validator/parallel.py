@@ -109,6 +109,9 @@ def build_episode_shared(
         "config": config,
         "frame_bounds": ctx.frame_bounds,
         "action_thresholds": ctx.action_thresholds,
+        "state_thresholds": ctx.state_thresholds,
+        "action_dim_names": ctx.action_dim_names,
+        "state_dim_names": ctx.state_dim_names,
         "fingerprints": ctx.fingerprints,
         "stub": {
             "joint_names": list(dataset.joint_names),
@@ -149,6 +152,9 @@ def validate_episode_worker(
         fingerprints=shared["fingerprints"],
         issues=[],
         resolved={},
+        state_thresholds=shared.get("state_thresholds") or [],
+        action_dim_names=shared.get("action_dim_names"),
+        state_dim_names=shared.get("state_dim_names"),
     )
     stub = EpisodeDatasetStub(**shared["stub"])
     skipped: dict[str, str] = {}
