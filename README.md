@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-299%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-302%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -45,6 +45,14 @@ python -m pipeline.card --report outputs/demo/quality_report.json \
 ```
 
 卡片内容全部来自 `quality_report.json` / `meta/info.json` / `meta/stats.json`，不引入报告之外的指标。
+
+### 仿真采集（不依赖 MuJoCo / Isaac）
+
+```bash
+python tools/record_sim_episode.py --episodes 3 --frames 120 --inject-anomaly --run
+```
+
+用二阶跟踪控制器生成「目标指令 → 实际关节 → 连杆位姿」的轨迹，直接写成 LeRobot v3 数据集（含 `observation.body_pos_w [5,3]` 嵌套特征）。`--run` 会在录制完成后立刻跑一遍质检主链；`--inject-anomaly` 在 ep0 注入 NaN 与 action 跳变，用于演示检出效果。这是运动学仿真，不含刚体碰撞/接触力，属于采集链路的最小闭环，不是物理引擎替代品。
 
 没有 Docker 环境也行：
 
