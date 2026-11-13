@@ -30,9 +30,10 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 ## 1. demo_dataset（36 episode / 3008 帧 / 2 相机）
 
 - 13 处注入异常全部命中，**0 误报**（自适应阈值下正常轨迹不触发跳变告警）
-- 处置：保留 24 / 修复 2（边界裁帧、时间轴重建）/ 复核 2 / 剔除 8
+- 处置（默认策略，复核未裁决）：保留 24 / 修复 2（边界裁帧、时间轴重建）/ 复核 3 / 剔除 7；把 ep7 判 drop 后才是 保留 24 / 修复 2 / 复核 2 / 剔除 8
 - 修复验证：裁帧后 NaN 归零，重建的时间轴与 `frame_index/fps` 完全一致
-- 清洗后 28 episode / 2388 帧，`length==rows`、视频窗口==行数、index 连续、stats 对齐
+- 清洗产物：默认策略 29 episode / 2393 帧，裁决 ep7 后 28 episode / 2335 帧（ep7 有 58 帧，2393 − 58 = 2335，与 §10 的口径同一份产物）；两种产物的 `length==rows`、视频窗口==行数、index 连续、stats 对齐都通过
+  - 这一格原来写的是 2388，那来自仓库里一份**旧口径的 `outputs/cleaned_dataset`**（那一轮 ep11 的 5 帧被 auto-drop、ep7 留在复核，`removed = [3,9,11,13,17,19,27,31]`、`drop 8 / review 2`）。2026-11-13 用当前代码重跑 `python tools/demo.py --force` 复核：默认是 `keep 24 / repair 2 / review 3 / drop 7`、产物 29 ep / 2393 帧、`verification.ok=true`，与 README 的控制台快照逐位对上；2388 已经不是当前代码能复现出来的数。
 - 复核回灌：override 后 ep7 剔除 / ep23 保留，报告标注「人工覆盖 2 条」
 - 归因：bob 批次异常率 44.4% vs alice 27.8%，直接定位到人
 
@@ -101,6 +102,8 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 
 把仓库里全部数据集跑一遍，目的不是看「能不能跑」，而是看**规则在真实分布上是否还成立**。
 
+> 口径：`data/` 下原有 18 个数据集根目录，17 = 这 18 个减去 §2.4 单独交叉验证的 `chingmu_classical_dance`（18 ep）；合成 `demo_dataset`（36 ep）归 §1，不计入。4108 是这 17 个的**实测 episode 之和**，不是 info 声明求和——humanoid 声明 4885 实测 1418、gym_xarm_pc 声明 50 实测 5。用 `python tools/dataset_inventory.py` 可复算。加上 §2.5 两份外部集 = **19 个数据集 / 5855 episode**（4108 + 1693 + 54）。
+
 | 数据集 | episode | 健康度 | 主要结论 |
 |---|---:|---|---|
 | behavior1k_task0042 (14 GB) | 200 | 轻微 | 编号错位自动对齐；195 keep / 5 info / 0 drop |
@@ -139,6 +142,76 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 
 反向漏报检查：ep1 有 16 处超阈值跳变，全部是 dim 3–6 的四元数 `q ↔ -q` 整体取反，已被 sign-flip 规则正确忽略，未发现真正的漏报。
 
+### 2.5 外部公开数据集交叉验证（libero 1693 ep / dual-lidar-umi 54 ep）
+
+§2.3 那 17 个数据集是我自己挑的（其中不少也来自公开渠道，但选哪些由我定），为了排除「规则只对我挑的样本成立」，从 Hugging Face 直连下载两份**我从没碰过的第三方全量集**（不 `--allow-patterns` 裁剪、不抽分片），跑同一套流水线。
+
+| 数据集 | 版本 / fps / 机型 | 规模 | info 声明 vs 实测 | 判定 |
+|---|---|---|---|---|
+| `lerobot/libero` | v3.0 / 10 Hz / panda | 1693 ep / 273465 帧 / 1.94 GB / 457 文件 / 2 相机 / state 8 维 / action 7 维 / 40 任务 | **逐位一致**，编号对账 `mode=native`，schema 契约 0 违反 | 全量模式 keep 1692 / drop 1 / review 0（health minor），端到端 **1617 s**（8 workers，含清洗与复检） |
+| `brandonyang/dual-lidar-umi-filtered` | v3.0 / 30 Hz / robot_type=null | 54 ep / 52067 帧 / 716 MB / 222 文件 / 2 相机 / state 12 维 / **无 action 列** / 1 任务 | **逐位一致**，`mode=native`，schema 契约 0 违反 | keep 54 / review 0 / drop 0（health clean，79 s） |
+
+两份首次运行就精确对上 `total_episodes` / `total_frames`。§2.3 为 humanoid、gym_xarm_pc 的计数虚报而加的那两条对账断言，第一次在「声明本来就正确」的数据集上被验证为**不响**——只报警不误报才算对上。dual-lidar 是全仓**唯一没有 `action` 特征**的数据集，它和 `robot_type=null` 一起把两条退化路径跑通了。
+
+#### 外部数据推翻的 4 条结论
+
+这四条在我自己挑的数据上都测不出来，逐条给机制与复算证据。
+
+| # | 现象 | 机制 | 证据 |
+|---|---|---|---|
+| M1 | `missing_task` 在 libero 上命中 **1693/1693**。`--streaming` 把 health 判成 `severe`、valid_ratio 0.0，建议「先修采集流程再清洗」；默认全量模式对同一份数据判 keep 1692 / review 0 | [loader.py:342](../pipeline/loader.py) `task_of()` 只有两条解析路径：`meta/episodes` 的 `tasks` 列，或逐帧 `task_index`。libero 的 `meta/episodes` 14 列里没有任何 task 列，只能走逐帧；而 [precheck.py:96](../pipeline/precheck.py) 用 `load_frames=False` 加载、流式路径同样不把整表读进内存 → 两条路同时断掉，返回空串 | 全量模式 `reason_frequency.missing_task = 0`，`--streaming` = 1693，precheck = 1692 条 review；连**清洗产物的自动复检**都被它判成 `review 1692`（见下方「清洗产物复检」）。dual-lidar 有 `tasks` 列（`['bimanual umi demo']`），三种模式全是 0 |
+| M2 | 全量模式报 `stats_stale`：`max_relative_deviation = 0.4809`（容差 0.05）、`worst_dims = [4,5,2]`，但 `stats.json` 其实是**对的** | [context.py:372](../pipeline/validator/context.py) 取 `stale_stats.sample_episodes`（默认 200）个 episode 算均值，取的是**前缀**而非随机样本；libero 按任务排序，前 200 集只覆盖部分任务 → 前缀有偏。同函数 :363-371 已经承认「子集均值与全量 stats 不可比」，但只在用户传 `--max_episodes` 时跳过，没管自己的 200 集上限 | 我按前缀长度独立重算：200→**0.4809**（与报告逐位吻合）、400→0.3486、800→0.2364、全量 1693→**0.0002**。偏差随样本增大单调收敛 = 抽样偏差，不是 stats 过期。产物未受损：cleaner 从清洗后数据整体重算 stats（[meta.py:209](../pipeline/cleaner/meta.py)），假阳性只停在报告文本里。**同一条规则已经出过两次假阳性**：[POSTMORTEM 案例 2](POSTMORTEM.md) 修的是分母（`\|Δ\|/\|mean\|` → `\|Δ\|/max(\|mean\|,std)`，913 → 0.99），这次是分子——分母修好后残余的 0.15 / 0.48 这类数，来源就是前缀样本本身有偏 |
+| M3 | 全场唯一的 drop：ep306 有 505 帧，超自适应上限 496 达 **1.8%**，直接判 error 剔除 | `frame_count` 的 MAD 上限算在**跨任务池化**分布上（median=140 mad=30）。全库最长的 6 集——505/466/458/457/455/450——**全部**属于 task 6「put both moka pots on the stove」；该任务 29 集、长度中位 401，是全局中位的 2.9 倍 → 最难的任务类别被当成了分布尾部 | 方向不对称本身是刻意设计（[rules.py:360-362](../pipeline/validator/rules.py)：过短降 warning 交人审、过长保持 error 剔除，注释里还专门点了 LIBERO）；但过长侧没有 `action_jump` 那种 <1.5× 边际降级。报告证据含 median/mad/bounds，**不含 task_index**，复核者看得见 1.8% 的边距、看不见它为什么长 |
+| M4 | dual-lidar 根本没有 `action` 列，但 20 条检查里只有 1 条被标成 skipped | [validator/\_\_init\_\_.py:308](../pipeline/validator/__init__.py) 的无 action 分支只塞了 `action_jump` 一个代理键；[reporter.py:152](../pipeline/reporter.py) 的 `status` 就是对 `skipped_checks` 做成员判断 → `nan_action`、`duplicate_episode` 显示 `enabled / 0 命中`，而这两个函数只在 action 分支内调用（:300、:306） | `checks` 数组 19 条 enabled + 1 条 skipped，逐条回看调用点才确认虚报的是这 2 条。`static_episode` 标 enabled 是**对的**，state 分支同样调用它（:288） |
+
+M1 和 M4 错在**危险的那一面**：不是把好的说成坏的，是把没跑过的检查报成「跑过且通过」。
+
+#### 没有被推翻的 3 条
+
+- **熔断成立。** missing_task 命中率 99.9%，但 `protected_by_systemic_guard = 0` 是正确的——该规则 severity 为 warning，处置本来就是 review，没有批量 drop 需要拦；报告另有「异常率 100% 偏高，属系统性问题」的告警。「不会一次删光你的数据」在 libero 上成立。
+- **源数据集只读成立。** 全流程跑完后源目录最新 mtime 仍等于下载完成时刻，早于流水线启动时间，0 个源文件被改写。
+- **无脏可洗时不硬造。** dual-lidar 走 `method=noop-copy`，仍产出结构完整的 54 集副本，`meta/stats.json` 重算 10 个特征。
+
+#### 清洗产物复检（第四行口径）
+
+清洗不是终点，报告里必须回答「洗出来的东西是不是真的更干净」。两份外部集的复检字段：
+
+| 数据集 | `cleaning.verification` | 复检结论 |
+|---|---|---|
+| `lerobot/libero` | `ok=true`，`episodes=1692`、`frames=272960`、`episode_indices_contiguous=true` | **结构层全过**：ep306 剔除后编号连续、帧数与 `info.json` 逐位一致。**规则层被 M1 污染**：`rule_recheck = {keep 0, review 1692, drop 0}`，附带文案「1692 个 episode 有告警，建议跑完整流水线修复」——一份刚洗完、全量模式判 `review 0` 的数据集，被自己的复检判成「还需要再修」。复检走流式路径，所以 task 解析失败在这里第三次复现，而且这次打在**流水线自己的产物**上 |
+| `brandonyang/dual-lidar-umi-filtered` | `{}`（`method=noop-copy`，无脏可洗，不触发复检） | 54 集副本结构完整，`meta/stats.json` 重算 10 个特征 |
+
+这条是 M1 最有力的证据：它不再只是「换个模式结论不同」，而是**流水线的自检环节会对自己刚产出的干净数据集给出与全量模式相反的结论**。清洗本身没问题——问题在复检路径复用了那条坏掉的 task 解析。
+
+#### 自适应阈值的一处边界（是代价，不是 bug）
+
+dual-lidar 的 12 个 state 维，最终阈值 **12/12 全部等于 `abs_floor`**：自适应项 `med + 3·1.4826·MAD` 逐维只有 0.0115–0.0467，而 floor 按 30 Hz 标定后是 1.0/帧（[context.py:271](../pipeline/validator/context.py) `floor = abs_floor · ref_fps / eff_fps`）。全库 52067 帧实测最大逐帧 Δ = 0.352 → 规则只在 >1.0 时报，对 0.35–1.0 这一段（典型尾部 p99.9 = 0.040 的 9–25 倍）不敏感。`config/default.yaml:95` 已注明 floor 是「弧度/米混用数据集的兜底」，所以这是「换机器人不改代码」换来的代价：低速高精度机型上 `state_jump` 退化为只抓灾难性瞬移。同一现象在 120 Hz 的 chingmu_subset 上是 36 维里 32 维落在 floor（0.250/帧）。
+
+#### 这 4 条现在的状态：已定位，**未修**
+
+我只做了定位和复算，没有动流水线代码——四条的修法代价不同，不宜在同一批里一起改：
+
+| # | 建议修法 | 为什么没顺手改 |
+|---|---|---|
+| M1 | 流式分片时聚合 `episode_index → task_index`（每集一个整数，不需要留整表），让 `task_of()` 在不加载帧时也能解析 | 会改 `--streaming`、precheck **以及清洗产物复检**的既有结论，17 个数据集那一轮的 disposition 需要重跑一遍才能继续引用 |
+| M2 | 把 200 集**前缀**换成蓄水池采样（统计侧已有 `Welford + reservoir`，复用即可），或在 detail 里写死「基于前 N 集」 | 换采样会改变所有历史 `stats_stale` 数值，含 [POSTMORTEM 案例 2](POSTMORTEM.md) 引用的 0.15 / 1.57 / 3.63 三个数，得同步改写 |
+| M3 | 二选一：`frame_count` 上限按 `task_index` 分组算；或给过长侧补上和 `action_jump` 一样的边际降级（<1.5× 降 review） | 分组算会遇到小样本问题——task 6 只有 29 集，MAD 本身不稳；这条要先定「按任务分组」是否是想要的语义，不是纯工程 |
+| M4 | 无 action 分支把 `nan_action` / `duplicate_episode` 一并写进 `skipped_checks`，而不是只留 `action_jump` 一个代理键 | 代价最小、方向最该修（把没跑的检查报成通过），改完要加一条负向用例 |
+
+M4 是四条里唯一「不改结论、只改报告诚实度」的，真要排优先级我把它放第一个；M1 让三条路径给出互相矛盾的结论——同一份数据全量判 `review 0`、流式判 1693 条 review，而清洗后自检又对刚产出的干净副本给出 1692 条 review，这对用户最致命，因为第三种连我自己都会被误导。
+
+#### 复现
+
+```bash
+# 直连 HF 全量下载（不走镜像，不裁剪文件）
+python -c "from huggingface_hub import snapshot_download as s; \
+           s('lerobot/libero', repo_type='dataset', local_dir='data/libero')"
+python main.py --dataset_path data/libero --output_dir outputs_libero --workers 8               # keep 1692 / drop 1
+python main.py --dataset_path data/libero --output_dir outputs_libero_stream --streaming --skip-clean  # review 1692
+python -m pipeline.precheck --dataset_path data/libero                                          # 同样 1692 条复核
+python main.py --dataset_path data/dual_lidar_umi_filtered --output_dir outputs_lidar            # 79 s，clean
+```
+
 ## 3. 并发加速（同一数据集，workers=1 vs workers=8）
 | 阶段 | workers=1 | workers=8 | 加速比 |
 |---|---|---|---|
@@ -160,8 +233,10 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 
 ## 5. 测试与 CI
 
-- **209 个单测**（本地实测 `209 passed, 1 skipped`，跳过项是未装 `rosbags` 时的 ROS Bag e2e）：校验器 30 + 审计加固 24 + 清洗策略 19 + 精确率/基准 16 + 动作分布 14 + 增量 9 + ROS Bag 9 + 点云 8 + 容错续传 8 + 配置 8 + 基线白名单 8 + 其余（对齐 / Dashboard / schema 契约 / 编号核对 / FZMotion / 调参 / 120Hz / 非标准字段 / 预检 / 版本 / 流式 / 导出 / 并发）56
-- 覆盖率 **65.35%**（branch=true，实测基线），CI 在 Python 3.12 上以 `fail_under=64` 强制门槛，只升不降
+- **300 个单测**（本地实测 `300 passed`，`tests/` 下 30 个测试文件，本机有收集的 29 个）：清洗矩阵 36 + 校验器 32 + 审计加固 27 + 清洗策略 24 + 增量 16 + 精确率/基准 16 + 配置 14 + 动作分布 14 + loader 边界 13 + ROS Bag 9 + 点云 8 + 容错续传 8 + 基线白名单 8 = **225**；其余 16 个文件 **75**（schema 契约 6 / 120Hz 6 / Dashboard 6 / 对齐 6 / 调参 5 / Mocap CSV 5 / FZMotion CSV 5 / 导出 5 / 编号核对 5 / 清洗 stats 5 / 版本 4 / 非标准字段 4 / 流式 3 / 并发 3 / 数据卡片 3）
+  - 另有 `tests/test_rosbag_loader_e2e.py` 的 2 项：本机未装可选依赖 `rosbags`，模块顶层 `importorskip` 使**整文件在收集阶段就被跳过**，所以既不计进 300、也不显示成 `skipped` 计数；CI 装了 `rosbags`，那一轮是 302。
+  - 这一格之前写 209，是 `test_cleaner_matrix.py`（+36）等文件落地前的旧口径一直没跟着改。复算只要 `python -m pytest tests -q --collect-only`，它逐文件报数。文档里的计数不留「大概」，只留能一键重算的。
+- 覆盖率 **65.35%**（branch=true，实测基线），CI 在 Python 3.12 上以 `fail_under=64` 强制门槛，只升不降。注意这个数字**在本机当前 venv 里一键算不出来**：`pytest-cov` 写在 `requirements-dev.txt` 但本机未装，直接跑 `--cov` 会 `unrecognized arguments` 退出码 4；65.35% 来自装有 dev 依赖的环境，要复算先 `pip install -r requirements-dev.txt`
 - GitHub Actions 在 **Python 3.10 / 3.11 / 3.12** 三个版本 × 干净 Linux 环境全部通过
 - 打包链路本地预演（2026-11-04）：`python -m build` 产出 wheel 181 KB + sdist 177 KB，`twine check` 双产物 PASSED；在全新 venv 中安装 wheel 后 5 个 console 脚本全部生成、`lerobot-data-quality --help` 退出码 0、`import lerobot_data_quality / pipeline / main` 正常。**OIDC 上传这一步需要 PyPI 侧配置好 Trusted Publisher 后由 CI 完成**，本地无法替代
 
@@ -175,6 +250,9 @@ python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_f
 - 点云只做几何/颜色/时序质量，不做语义级检查（物体缺失、遮挡、标注错误）
 - 固定点数契约下，`drop` 帧用 hold-last-good 占位：能保证训练张量对齐，但占位帧不是真实观测，全部记录在 `pointcloud_cleaning_notes.json`
 - 离群半径/工作空间是**整数据集自适应**；多机器人、多场景混采的数据集建议在 config 里用 `workspace.mode=fixed` 明确包围盒
+- **不加载逐帧表的两条路径（`--streaming`、precheck）解析不了 task**：`meta/episodes` 没有 task 列的数据集（如 `lerobot/libero`）会被全量误报 `missing_task`，清洗后自检也走这条路。修好前这两条的结论不能当全量用——见 §2.5 M1
+- **`checks` 里标 `enabled` 不等于真的跑过**：无 `action` 列的数据集只把 `action_jump` 记进 `skipped_checks`，`nan_action` / `duplicate_episode` 会以「已跑且 0 命中」出现（§2.5 M4）
+- 两处度量样本口径仍有已知偏差：`stats_stale` 取前缀 200 集而非随机样本（任务排序的集上会假阳性，§2.5 M2），`frame_count` 上下限算在跨任务池化分布上（最长任务类别会被判成分布尾部，§2.5 M3）
 - 时序规则只看质心平移，不检测纯旋转（需要位姿/坐标系参考才能判断）
 
 ## 7. Metrics & Precision

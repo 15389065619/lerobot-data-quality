@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-299%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-300%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 对本地 LeRobot v3 数据集做**质检 → 分级处置 → 报告 → 清洗（删除 + 修复）→ 3D 点云质检与清洗 → 可视化**的一站式数据治理工具。只做数据质量工程，不涉及任何训练代码。
@@ -60,7 +60,7 @@ docker run --rm \
 
 | 决策 | 理由 |
 |---|---|
-| **分级处置**，而非一刀切删除 | 数据稀缺——keep / repair / review / drop 四档，能修则修，实测把 8 条待删数据里的 2 条救了回来 |
+| **分级处置**，而非一刀切删除 | 数据稀缺——keep / repair / review / drop 四档，能修则修：demo 注入 13 处异常，一刀切要删 12 处，实际只删 7 处（2 处裁帧/重建后保留，1 处降为 info 记录） |
 | **规则引擎**，而非 ML | 确定性可审计、纯 CPU 分钟级、自适应阈值无冷启动；语义层判断通过复核队列契约留给 ML |
 | **计算与落盘分离** | worker 纯函数不写盘，主进程统一写入，并发结果与串行逐位一致 |
 
@@ -85,12 +85,12 @@ docker run --rm \
   - duplicate_episode          1 个 episode
 数据集级问题 [stats_stale] meta/stats.json 与实测数据偏差过大（归一化统计已过期）
 
-保留 24   修复 2   复核 2   剔除 8
+保留 24   修复 2   复核 3   剔除 7
   ep    5  error    repair  裁掉首3帧/尾0帧后保留
   ep    7  warning  review  人工复核后决定
   ep   15  warning  repair  用 frame_index/fps 重建时间轴
 
-预计保留    : 28 个 episode, 2388 帧（丢弃 617 帧，裁帧 3 帧）
+预计保留    : 29 个 episode, 2393 帧（丢弃 612 帧，裁帧 3 帧）
 ```
 
 ## 与真实业务流程对齐的设计
@@ -102,7 +102,7 @@ docker run --rm \
 | 质检结论必须能被人推翻 | **人工复核回路**：导出 `review_queue.csv`（带视频路径、时间窗、证据），填写后用 `--overrides` 回灌，覆盖自动判定并留痕 |
 | 真正想知道的是「哪批采集有问题」 | **归因分析**：按 episodes 元数据（如采集员/日期/批次）聚合异常率，输出给上游修流程 |
 | 全解码统计视频帧数在几十 GB 数据集上不可行 | 视频探针优先读容器元数据（nb_frames / duration×fps），必要时才精确解码 |
-| 结论要可追溯 | 报告带**数据集指纹**（内容哈希）、**配置与自适应阈值快照**（含推导依据）、**修复动作清单**，可 diff 历次报告 |
+| 结论要可追溯 | 报告带**数据集指纹**（info.json 字节 + episode/帧计数 + 至多 20 个 data 分片的名称与大小，是结构指纹而非全量内容哈希）、**配置与自适应阈值快照**（含推导依据）、**修复动作清单**，可 diff 历次报告 |
 
 ## Schema 契约审计（磁盘布局合规性）
 
@@ -253,7 +253,7 @@ python -m pipeline.precheck --dataset_path /data/gym_xarm --strict
 # 退出码：0 通过 / 2 被 drop 级数据阻断；--json 落盘结论，可直接接入 CI
 ```
 
-预检**只读**：不写数据集、不生成清洗产物，几秒钟给出「能不能开训」的结论。
+预检**只读**：不写数据集、不生成清洗产物，几秒钟给出「能不能开训」的结论。已知边界：预检与 `--streaming` 一样不把逐帧表读进内存，所以 `meta/episodes` 缺 `tasks` 列的数据集（如 `lerobot/libero`）会被整批误判 `missing_task`——判 `review` 不判 `drop`，不会删数据，但结论要以全量模式为准，见 [docs/EVAL.md §2.5](docs/EVAL.md) M1。
 `repair / review` 不阻断，只告警；需要更严格可加 `--on-review drop`。
 
 ### 3. 数据集版本管理（类 DVC，支持回滚）
@@ -302,7 +302,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 181 个单测
+python -m pytest tests                                  # 300 个单测
 ```
 
 > 打包与发布配置（`pyproject.toml` + console 脚本 + PyPI Trusted Publishing workflow）已就绪；未上传 PyPI 前请从源码 `pip install -e .` 安装。
@@ -333,6 +333,7 @@ python main.py --dataset_path ... --output_dir outputs \
 python main.py --dataset_path demo_dataset --output_dir outputs --incremental
 
 # 流式模式：按 parquet 分片扫描，不把整张逐帧表读进内存（大数据集；暂不支持清洗）
+# 注意：结论可能与全量模式不同（缺 tasks 列的数据集会全量误判 missing_task，见 docs/EVAL.md §2.5 M1）
 python main.py --dataset_path big_dataset --output_dir outputs --streaming
 ```
 
@@ -355,7 +356,7 @@ python main.py --dataset_path big_dataset --output_dir outputs --streaming
 | `--pointcloud-overrides` | 无 | 点云复核结果 CSV |
 | `--incremental` | 关 | 增量/断点续传：episode 级复用 manifest，点云帧级复用缓存 |
 | `--manifest` / `--force` | `quality_manifest.json` / 关 | 增量状态文件路径 / 忽略缓存强制全量重跑 |
-| `--streaming` | 关 | 流式模式：按 parquet 分片扫描（自动跳过清洗） |
+| `--streaming` | 关 | 流式模式：按 parquet 分片扫描（自动跳过清洗）。**结论不保证与全量一致**：`meta/episodes` 里没有 `tasks` 列的数据集（如 `lerobot/libero`）在此模式下会把全部 episode 误判成 `missing_task`，因为流式不把整张逐帧表读进内存、`task_index` 无从解析，见 [docs/EVAL.md §2.5](docs/EVAL.md) M1 |
 | `--plots-sample` | 20 | 可视化采样数 |
 | `--min-frames` / `--max-frames` / `--action-jump-threshold` | 自适应 | 快捷固定阈值（会切换出 fixed 模式） |
 
@@ -378,18 +379,18 @@ outputs/
 └── intermediate/            # 各阶段中间结果（01~07），任一步中断均可复用
 ```
 
-**安全约束**：源数据集严格只读（输出目录禁止等于/位于源数据集内部，有单测保障）；每个 episode 删了什么、修了什么、重映射到哪，全部记录在 `quality_cleaning_notes.json`。
+**安全约束**：源数据集严格只读——输出目录既不能等于/位于源数据集内部，也不能反过来包含源数据集（后者会让发布时的旧产物清理连带删掉源目录），CLI 入口与清洗器两道判断都有单测保障；每个 episode 删了什么、修了什么、重映射到哪，全部记录在 `quality_cleaning_notes.json`。
 
 ## 实测摘要
 
 | 场景 | 数据 | 结论 |
 |---|---|---|
-| demo_dataset | 36 episode / 3008 帧 | 13 处注入异常全命中、0 误报；保留 24 / 修复 2 / 复核 2 / 剔除 8；归因定位到采集人 |
+| demo_dataset | 36 episode / 3008 帧 | 13 处注入异常全命中（覆盖 12 类规则）、0 误报；默认策略保留 24 / 修复 2 / 复核 3 / 剔除 7，把 ep7 的 ±18 跳变裁决为 drop 后剔除 8；清洗产物 29 ep / 2393 帧；归因定位到采集人（bob 44.4% vs alice 27.8%） |
 | 真实点云数据集 | 50 episode / 18374 帧 | 8 步全跑通；点云 18374 帧全正常；故障注入 8 类规则全命中，修复后行数/点数/schema 全不变 |
 | 并发 | 同上 | `--workers 8`：190.1 s → 64.7 s（2.9×），产物与串行逐字节一致 |
 | 容错 + 续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫并全部恢复 |
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 episode / 128 万帧 | meta 用全局 ID、data 用 0..N-1 → 修复前 200/200 error、建议删光；自动对齐后 **195 保留 / 5 复核 / 0 剔除**，实测视频与 state 逐条对齐 |
-| 全仓 17 个数据集审计 | v3.0 / v2.1 混合，4108 episode | 查出 3 处工具缺陷（视频缺失误标、v2.1 套用 v3 index 契约、info 计数静默）与 3 处数据真实缺陷（缺模态、缺 3/4 episode、计数虚报），详见 [docs/EVAL.md §2.3](docs/EVAL.md) |
+| 19 个数据集审计（17 个仓库原有 + 2 份 Hugging Face 公开集） | v3.0 / v2.1 混合，5855 episode | 本地轮查出 3 处工具缺陷（视频缺失误标、v2.1 套用 v3 index 契约、info 计数静默）与 3 处数据真实缺陷（缺模态、缺 3/4 episode、计数虚报）。外部轮（`lerobot/libero` 1693 ep、`dual-lidar-umi-filtered` 54 ep）又推翻 4 条：`missing_task` 在流式/预检/清洗后自检三条路径假阳性（同一份数据全量判 keep 1692，清洗产物自检却判 review 1692）、`stats_stale` 前缀采样把正确的 stats 报成过期（报告 0.4809 vs 复算 0.0002）、全场唯一一次剔除是把最长任务类别判成分布异常、无 `action` 列时 2 条检查虚报「已跑通」。正向结果同样记录：两份外部集全量模式**逐位对上 info 声明**（1693 ep / 273465 帧、54 ep / 52067 帧），端到端 1617 s 与 79 s。详见 [docs/EVAL.md §2.3 与 §2.5](docs/EVAL.md) |
 | 清洗前后动作分布（下游代理） | demo_dataset：36 ep / 3008 帧 → 清洗后 28 ep / 2335 帧 | 把复核队列里那条单帧 ±18 碰撞跳变判为 `drop` 后：动作方差 **−10.0%**、归一化跳变（max\|Δ\|/std）**51.1 → 0.34**、超阈帧 **6 → 0**。默认策略（review 未裁决）时三项分别为 −2.4% / 未收窄 / 6→3 —— 差距全在「人有没有裁决」。**未训练模型，这是代理指标不是精度结论**，见 [docs/EVAL.md §9–§10](docs/EVAL.md) |
 | 同一套测量搬到真实规模 | behavior1k_task0042：200 ep / 128 万帧 | 把 5 条 `action_jump` review（超阈倍数仅 1.02–1.35）判 `drop` 后：超阈帧 **5 → 0**、归一化跳变 **3.28 → 2.44**（−25.7%），但动作方差只降 **1.2%**（且全部来自删样本）。结论：方差对边缘命中不敏感，能被稳定观测的是跳变指标 —— 「降方差 X%」这句话不能跨数据集通用，见 [docs/EVAL.md §11](docs/EVAL.md) |
 
@@ -408,7 +409,7 @@ outputs/
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（181 个单测，覆盖率门槛 64% 由 CI 强制）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（300 个单测，覆盖率门槛 64% 由 CI 强制）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。**不强依赖 lerobot 包**（体积大）；安装了 lerobot 时，纯删除场景自动优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 
