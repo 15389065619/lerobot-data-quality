@@ -28,10 +28,10 @@ README_TEMPLATE = """# {repo_id}
 
 ```bash
 pip install lerobot-data-quality
-lerobot-data-quality --dataset_path . --output_dir outputs
+lerobot-data-quality --dataset_path . --output_dir ../outputs
 ```
 
-期望输出：保留 24 / 修复 2 / 复核 2 / 剔除 8。
+期望输出：保留 24 / 修复 2 / 复核 3 / 剔除 7（清洗产物 29 episode / 2393 帧）。
 """
 
 
