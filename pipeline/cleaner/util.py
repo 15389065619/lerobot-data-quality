@@ -22,6 +22,9 @@ def assert_safe_output(src_root: Path, out_root: Path) -> None:
     out_root = out_root.resolve()
     if out_root == src_root or src_root in out_root.parents:
         raise ValueError(f"输出目录 {out_root} 位于源数据集 {src_root} 内部，拒绝写入（源数据集必须保持只读）")
+    if out_root in src_root.parents:
+        raise ValueError(f"输出目录 {out_root} 包含源数据集 {src_root}，发布旧产物时会连带删除源数据集，"
+                         "拒绝写入（源数据集必须保持只读）")
 
 
 def prepare_dir(out_root: Path, *, overwrite: bool) -> None:
@@ -86,12 +89,35 @@ def verify(out_root: Path, expected_episodes: int, expected_frames: int | None) 
     if view.num_episodes != expected_episodes:
         LOG.warning("校验：产出 %d 个 episode，预期 %d", view.num_episodes, expected_episodes)
     contiguous = view.episode_indices == list(range(view.num_episodes))
-    return {
+    result: dict[str, Any] = {
         "ok": bool(ok and contiguous),
         "episodes": view.num_episodes,
         "frames": view.num_frames,
         "episode_indices_contiguous": contiguous,
     }
+    # 结构之外再重跑一遍规则引擎：修复本身可能引入新问题（如裁剪后时间窗错位），
+    # 只验结构查不出来。strict=False 保证复检是告警性质，不阻断发布流程。
+    try:
+        from ..precheck import precheck
+
+        recheck = precheck(out_root, strict=False)
+        result["rule_recheck"] = {
+            "ok": recheck.ok,
+            "keep": recheck.keep,
+            "repair": recheck.repair,
+            "review": recheck.review,
+            "drop": recheck.drop,
+            "blocking": recheck.blocking,
+            "message": recheck.message,
+        }
+        if not recheck.ok:
+            LOG.warning("复检：清洗产物存在 %d 个 drop 级 episode（修复可能引入了新问题）", recheck.drop)
+            result["ok"] = False
+    except Exception as exc:  # noqa: BLE001
+        # 复检自身失败不吞掉校验结论，只降级为告警
+        LOG.warning("清洗后规则复检执行失败，跳过（%s）", exc)
+        result["rule_recheck"] = {"ok": None, "error": str(exc)}
+    return result
 
 
 def vec(arr: np.ndarray) -> list[float]:

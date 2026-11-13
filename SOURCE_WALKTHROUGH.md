@@ -642,7 +642,7 @@ out_root = output_dir / CLEANED_DIRNAME
 assert_safe_output(dataset.root, out_root)
 ```
 
-`assert_safe_output()` 拒绝"输出等于源"或"输出位于源内部"。因为 `prepare_dir` 会 `rmtree`，路径配错就是删库。
+`assert_safe_output()` 拒绝三种配置："输出等于源"、"输出位于源内部"，以及反向的"输出包含源"——`publish_dir` 发布时会把最终路径整体改名成 `.prev-*` 再 `rmtree`，输出目录是源的祖先时，被删掉的就是源数据集本身。
 
 `_parse_dispositions()` 把 `Decision` 归一成四个集合：
 

@@ -529,3 +529,49 @@ def test_single_episode_healthy_index_is_clean():
         codebase_version="v3.0",
     )
     assert [i for i in items if i["column"] == "index"] == []
+
+
+# ------------------------------------------------- 源数据集只读护栏（双向包含）
+
+
+def test_assert_safe_output_rejects_both_containment_directions(tmp_path):
+    """输出等于、位于源内部，或反过来包含源，三种都必须拒绝。"""
+    from pipeline.cleaner.util import assert_safe_output
+
+    src = (tmp_path / "ds").resolve()
+    assert_safe_output(src, (tmp_path / "out").resolve())  # 正常布局不受影响
+    with pytest.raises(ValueError, match="内部"):
+        assert_safe_output(src, src)
+    with pytest.raises(ValueError, match="内部"):
+        assert_safe_output(src, src / "inner")
+    with pytest.raises(ValueError, match="包含源数据集"):
+        assert_safe_output(src, src.parent)
+
+
+def test_clean_dataset_refuses_output_that_contains_source(tmp_path):
+    """out_root 是源数据集的祖先时，publish_dir 会把源目录整体改名再删除。"""
+    from pipeline import cleaner as cleaner_mod
+    from pipeline.loader import load_dataset
+
+    src = _dataset(tmp_path)
+    dataset = load_dataset(src)
+    decisions = {ep: "keep" for ep in dataset.episode_indices}
+
+    with pytest.raises(ValueError, match="包含源数据集"):
+        cleaner_mod.clean_dataset(dataset, decisions, tmp_path,
+                                  out_root=tmp_path, prefer_cli=False)
+
+    assert (src / "meta" / "info.json").is_file(), "源数据集被发布流程删掉了"
+
+
+def test_cli_refuses_output_dir_inside_dataset(tmp_path):
+    from main import main as cli_main
+
+    src = _dataset(tmp_path)
+    for out in (src, src / "outputs"):
+        code = cli_main(["--dataset_path", str(src), "--output_dir", str(out),
+                         "--skip-pointcloud", "--no-cli", "--skip-plots"])
+        assert code == 2, f"输出目录 {out} 在数据集内部，应拒绝（退出码 2）"
+
+    assert not (src / "quality_report.json").exists()
+    assert not (src / "outputs").exists()
