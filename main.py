@@ -161,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
 
     dataset_path = Path(args.dataset_path).expanduser()
     output_dir = Path(args.output_dir).expanduser()
+    # 在创建任何目录/文件之前拦住「输出等于或位于数据集内部」，否则报告、图表、
+    # 增量状态会写进源数据集，源只读承诺（README 安全约束）当场失效。
+    src_resolved, out_resolved = dataset_path.resolve(), output_dir.resolve()
+    if out_resolved == src_resolved or src_resolved in out_resolved.parents:
+        LOG.error("输出目录 %s 等于或位于数据集 %s 内部，拒绝写入："
+                  "源数据集必须保持只读，请把 --output_dir 指到数据集目录之外",
+                  output_dir, dataset_path)
+        return 2
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
