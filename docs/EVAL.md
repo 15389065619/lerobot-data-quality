@@ -236,7 +236,8 @@ python main.py --dataset_path data/dual_lidar_umi_filtered --output_dir outputs_
 - **300 个单测**（本地实测 `300 passed`，`tests/` 下 30 个测试文件，本机有收集的 29 个）：清洗矩阵 36 + 校验器 32 + 审计加固 27 + 清洗策略 24 + 增量 16 + 精确率/基准 16 + 配置 14 + 动作分布 14 + loader 边界 13 + ROS Bag 9 + 点云 8 + 容错续传 8 + 基线白名单 8 = **225**；其余 16 个文件 **75**（schema 契约 6 / 120Hz 6 / Dashboard 6 / 对齐 6 / 调参 5 / Mocap CSV 5 / FZMotion CSV 5 / 导出 5 / 编号核对 5 / 清洗 stats 5 / 版本 4 / 非标准字段 4 / 流式 3 / 并发 3 / 数据卡片 3）
   - 另有 `tests/test_rosbag_loader_e2e.py` 的 2 项：本机未装可选依赖 `rosbags`，模块顶层 `importorskip` 使**整文件在收集阶段就被跳过**，所以既不计进 300、也不显示成 `skipped` 计数；CI 装了 `rosbags`，那一轮是 302。
   - 这一格之前写 209，是 `test_cleaner_matrix.py`（+36）等文件落地前的旧口径一直没跟着改。复算只要 `python -m pytest tests -q --collect-only`，它逐文件报数。文档里的计数不留「大概」，只留能一键重算的。
-- 覆盖率 **65.35%**（branch=true，实测基线），CI 在 Python 3.12 上以 `fail_under=64` 强制门槛，只升不降。注意这个数字**在本机当前 venv 里一键算不出来**：`pytest-cov` 写在 `requirements-dev.txt` 但本机未装，直接跑 `--cov` 会 `unrecognized arguments` 退出码 4；65.35% 来自装有 dev 依赖的环境，要复算先 `pip install -r requirements-dev.txt`
+- 覆盖率 **73.73%**（branch=true；2026-11-13 那次 CI 运行 `Required test coverage of 64.0% reached. Total coverage: 73.73%`，门槛由 pyproject 的 `fail_under=64` 强制，只升不降）
+  - 这一格原来写 65.35%，是套件还小得多时候的基线，一直没跟着跑。**这个数在本机当前 venv 里一键算不出来**：`pytest-cov` 写在 `requirements-dev.txt` 但本机未装，直接 `--cov` 会 `unrecognized arguments` 退出码 4；要复算要么 `pip install -r requirements-dev.txt` 再 `python -m pytest tests -q --cov --cov-branch`，要么直接看 Actions 里最新一次 CI 的「运行测试」日志（公开可读，比我的文档更难狡辩）。CI 三个 Python 版本都装了 `rosbags`，所以那一轮收集的是 302 项，本机未装依赖是 300 项。
 - GitHub Actions 在 **Python 3.10 / 3.11 / 3.12** 三个版本 × 干净 Linux 环境全部通过
 - 打包链路本地预演（2026-11-04）：`python -m build` 产出 wheel 181 KB + sdist 177 KB，`twine check` 双产物 PASSED；在全新 venv 中安装 wheel 后 5 个 console 脚本全部生成、`lerobot-data-quality --help` 退出码 0、`import lerobot_data_quality / pipeline / main` 正常。**OIDC 上传这一步需要 PyPI 侧配置好 Trusted Publisher 后由 CI 完成**，本地无法替代
 
