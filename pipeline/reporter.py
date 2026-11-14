@@ -399,14 +399,22 @@ def attribute_by_metadata(
 
 
 def dataset_fingerprint(dataset: LeRobotDatasetView) -> str:
-    """数据集指纹：内容变了指纹就变，保证报告可追溯到具体那一版数据。"""
+    """数据集指纹：全量 data 分片的相对路径 + 大小 + mtime 都参与，结构变了指纹就变。"""
     h = hashlib.sha1()
-    info_path = dataset.root / "meta" / "info.json"
+    root = dataset.root
+    info_path = root / "meta" / "info.json"
     if info_path.is_file():
         h.update(info_path.read_bytes())
     h.update(f"{dataset.num_episodes}|{dataset.num_frames}|{dataset.codebase_version}".encode())
-    for path in sorted((dataset.root / "data").rglob("*.parquet"))[:20]:
-        h.update(f"{path.name}:{path.stat().st_size}".encode())
+    for path in sorted((root / "data").rglob("*.parquet")):
+        rel = path.relative_to(root).as_posix()
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            # 扫描与 stat 之间文件消失/无权限：留痕而不是让整次质检崩掉
+            h.update(f"{rel}:stat-error:{type(exc).__name__}".encode())
+            continue
+        h.update(f"{rel}:{stat.st_size}:{stat.st_mtime_ns}".encode())
     return h.hexdigest()[:16]
 
 
