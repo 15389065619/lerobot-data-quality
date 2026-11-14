@@ -18,6 +18,19 @@ from .utils import jsonable, to_matrix
 
 LOG = logging.getLogger(__name__)
 
+INDEX_COLUMNS = ("episode_index", "frame_index")
+
+
+def _scan_columns(names: list[str], ctx: PointCloudContext, path: str | Path) -> list[str] | None:
+    """返回可读取的列；缺点云列或索引列时返回 None（跳过该文件，不视为损坏）。"""
+    if ctx.feature_key not in names:
+        return None
+    missing = [c for c in INDEX_COLUMNS if c not in names]
+    if missing:
+        LOG.warning("点云数据文件缺少索引列 %s，已跳过: %s", missing, Path(path).name)
+        return None
+    return list(INDEX_COLUMNS) + [ctx.feature_key]
+
 
 def _evaluate_frame(points, key, ctx):
     """Late-binding wrapper: lets tests monkeypatch pipeline.pointcloud.evaluate_frame."""
@@ -50,8 +63,8 @@ def scan(
         try:
             pf = pq.ParquetFile(path)
             names = pf.schema_arrow.names
-            cols = [c for c in ("episode_index", "frame_index", ctx.feature_key) if c in names]
-            if ctx.feature_key not in cols:
+            cols = _scan_columns(names, ctx, path)
+            if cols is None:
                 continue
             for batch in pf.iter_batches(batch_size=batch_size, columns=cols):
                 data = batch.to_pydict()
@@ -186,8 +199,8 @@ def _scan_row_group_worker(job: tuple[str, int]) -> dict[str, Any]:
     try:
         pf = pq.ParquetFile(path)
         names = pf.schema_arrow.names
-        cols = [c for c in ("episode_index", "frame_index", ctx.feature_key) if c in names]
-        if ctx.feature_key not in cols:
+        cols = _scan_columns(names, ctx, path)
+        if cols is None:
             return {"file": path, "results": [], "corrupted": None}
         table = pf.read_row_group(rg_index, columns=cols)
     except Exception as exc:  # noqa: BLE001

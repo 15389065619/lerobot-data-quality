@@ -243,3 +243,16 @@ def test_noop_standalone_copies_data(tmp_path: Path):
     out_root = Path(result.output_root)
     assert result.method == "standalone"
     assert list((out_root / "data").rglob("*.parquet"))
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_missing_index_column_is_skipped_not_corrupted(tmp_path: Path, workers: int) -> None:
+    """缺 episode_index/frame_index 列属于不可扫描，不应被打成「文件损坏」。"""
+    frames = [_grid_cloud(seed=i) for i in range(4)]
+    root = _write_pc_dataset(tmp_path / f"ds{workers}", frames)
+    data_file = root / "data" / "chunk-000" / "file-000.parquet"
+    pq.write_table(pq.read_table(data_file).drop(["frame_index"]), data_file)
+
+    validation = validate_pointcloud_dataset(root, load_config(), workers=workers)
+    assert validation.corrupted_files == []
+    assert validation.total_frames == 0
