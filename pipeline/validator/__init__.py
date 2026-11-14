@@ -293,6 +293,7 @@ def _validate_non_video(
             check_joint_limits(arr_s, res, config, dataset)
     else:
         skipped.setdefault("nan_state", f"不存在 {STATE_KEY} 列")
+        skipped.setdefault("joint_limit_violation", f"不存在 {STATE_KEY} 列")
 
     if ACTION_KEY in ep_df.columns:
         arr_a = as_matrix(ep_df[ACTION_KEY], res, "nan_action")
@@ -306,6 +307,8 @@ def _validate_non_video(
             check_duplicate(res, arr_a, ctx, config)
     else:
         skipped.setdefault("action_jump", f"不存在 {ACTION_KEY} 列")
+        skipped.setdefault("nan_action", f"不存在 {ACTION_KEY} 列")
+        skipped.setdefault("duplicate_episode", f"不存在 {ACTION_KEY} 列")
 
     check_frame_count(res, ctx.frame_bounds, config)
     check_timestamp(ep_df, res, config, dataset.fps)
