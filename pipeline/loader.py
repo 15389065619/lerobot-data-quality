@@ -1110,8 +1110,11 @@ def _reconcile_episode_ids(
         .dropna(subset=["episode_index"])
         .sort_values("episode_index")
     )
-    lengths = pd.to_numeric(meta_sorted["length"], errors="coerce")
-    length_arr = lengths.fillna(-1).to_numpy(dtype="int64") if "length" in episodes_meta.columns else None
+    length_arr = None
+    if "length" in meta_sorted.columns:
+        lengths = pd.to_numeric(meta_sorted["length"], errors="coerce")
+        if len(lengths) == len(rows_arr):
+            length_arr = lengths.fillna(-1).to_numpy(dtype="int64")
 
     length_ok = int((rows_arr == length_arr).sum()) if length_arr is not None else 0
     diag["length_agreement"] = round(length_ok / len(data_ids), 4) if length_arr is not None else None
