@@ -48,6 +48,11 @@ def manual_clean(
     if FFMPEG is None:
         warnings.append("未找到 ffmpeg，视频文件将原样复制，可能残留已删除 episode 的画面（需后续重编码）。")
 
+    # 0) 判定保留却一行都写不出的 episode 必须提前剔除：写入后再改编号映射会让
+    #    parquet 里的 episode_index 与 meta 不一致，后续按行查元信息还会 KeyError。
+    kept, empty_warnings = _surviving_episodes(dataset, kept, trim_plan)
+    warnings.extend(empty_warnings)
+
     # 1) 视频窗口（裁帧的 episode 需要同步收窄窗口）
     windows = _collect_video_windows(dataset, kept, trim_plan, warnings)
 
@@ -273,6 +278,47 @@ def _index_values(values: list) -> np.ndarray:
     """把 parquet 列转成 int64；无效值记为 -1，保证仍能参与编号。"""
     arr = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=np.float64)
     return np.where(np.isfinite(arr), arr, -1).astype(np.int64)
+
+
+def _episode_row_counts(dataset: LeRobotDatasetView) -> dict[int, int]:
+    """每个 episode 在 data 中的实际行数。优先复用已加载的帧表，避免重复 IO。"""
+    frames = dataset.frames
+    if frames is not None and len(frames) and "episode_index" in frames.columns:
+        values = pd.to_numeric(frames["episode_index"], errors="coerce").dropna().astype("int64")
+        return {int(k): int(v) for k, v in values.value_counts().items()}
+    counts: dict[int, int] = {}
+    for src in _source_files_in_order(dataset):
+        try:
+            col = pq.read_table(src, columns=["episode_index"]).column("episode_index").to_pylist()
+        except (pa.ArrowInvalid, KeyError):
+            continue
+        for value in pd.to_numeric(pd.Series(col), errors="coerce").dropna():
+            counts[int(value)] = counts.get(int(value), 0) + 1
+    return counts
+
+
+def _surviving_episodes(
+    dataset: LeRobotDatasetView, kept: list[int], trim_plan: dict[int, dict[str, int]]
+) -> tuple[list[int], list[str]]:
+    """剔除「判定保留但一行都写不出」的 episode，返回 (可用 keep, 提示)。"""
+    counts = _episode_row_counts(dataset)
+    survivors: list[int] = []
+    warnings: list[str] = []
+    for ep in kept:
+        total = counts.get(ep, 0)
+        trim = trim_plan.get(ep) or {}
+        head = int(trim.get("head_frames", 0))
+        tail = int(trim.get("tail_frames", 0))
+        if total - head - tail > 0:
+            survivors.append(ep)
+            continue
+        detail = (
+            "在 data 中没有任何有效行"
+            if total == 0
+            else f"裁帧后没有任何有效行（共 {total} 帧，head {head} / tail {tail}）"
+        )
+        warnings.append(f"episode {ep} 判定为保留，但{detail}，已从清洗产物剔除。")
+    return survivors, warnings
 
 
 def _collect_video_windows(
