@@ -144,7 +144,15 @@ def _resolve_frame_bounds(
 
     median = float(np.median(counts)) if counts.size else 0.0
     mad = float(np.median(np.abs(counts - median))) if counts.size else 0.0
-    sigma = 1.4826 * mad if mad > 0 else 0.0
+    if mad > 0:
+        sigma = 1.4826 * mad
+    elif counts.size and np.ptp(counts) == 0:
+        # 全部等长时 MAD=0，允许区间会塌成单点，±1 帧就判 error 并整条 drop；
+        # 只有「没有任何离散」这一种情况需要补相对余量，存在离群值时应保持塌缩判定。
+        margin = float(cfg_get(config, "frame_count.min_margin_ratio", 0.05))
+        sigma = 1.4826 * margin * abs(median)
+    else:
+        sigma = 0.0
     auto_low = max(floor, median - float(cfg_get(config, "frame_count.mad_k_low", 3.0)) * sigma)
     auto_high = min(ceiling, median + float(cfg_get(config, "frame_count.mad_k_high", 8.0)) * sigma)
     auto_min = int(max(floor, np.floor(auto_low)))
