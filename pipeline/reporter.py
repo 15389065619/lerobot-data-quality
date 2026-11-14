@@ -578,6 +578,12 @@ def _recommendations(
                 "meta/episodes 的 episode_index 与数据文件不一致：task 与视频定位会整体失效，"
                 "episode 级缺失多为该问题的表象；需先统一两侧 episode 编号，否则清洗会误删整批数据。"
             )
+        elif issue.code == "meta_episode_duplicate":
+            recs.append(
+                "meta/episodes 同一 episode 有多行且 length/视频窗互相矛盾：多为重复导出叠加，"
+                "官方 reader 会重复加载并取错视频窗口；需先清理为每集一行，"
+                "并确认数据侧是否把两次录制拼进了同一集。"
+            )
 
     ratio = len(validation.invalid_episodes) / total
     if ratio > 0.3:

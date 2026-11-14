@@ -89,6 +89,9 @@ class LeRobotDatasetView:
     data_columns: set[str] = field(default_factory=set)
     #: Schema 契约违约项，见 pipeline/schema.py；空列表表示布局合规
     schema_contract: list[dict[str, Any]] = field(default_factory=list)
+    #: meta/episodes 同一 episode_index 出现多行且内容冲突时的诊断；
+    #: 空 dict 表示无重复或重复行内容一致（可安全去重）。
+    meta_duplicate_conflicts: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ 概览
     @property
@@ -523,7 +526,7 @@ def load_dataset(
     if load_frames and not data_files:
         raise DatasetFormatError(f"未在 {root} 下找到任何 data/*.parquet")
 
-    episodes_meta = _read_episodes_meta(root, info)
+    episodes_meta, meta_duplicates = _read_episodes_meta(root, info)
     video_index = _discover_videos(root)
 
     heavy = heavy_feature_keys(features) if not include_heavy else []
@@ -603,6 +606,7 @@ def load_dataset(
         meta_id_map=meta_id_map,
         id_reconciliation=reconciliation,
         data_columns=data_columns,
+        meta_duplicate_conflicts=meta_duplicates,
     )
     # info.total_frames 必须与 data 的**实际行数**对账。流式模式（--streaming）下
     # view.num_frames 是 meta 里 length 之和，用它校验等于用 meta 自证，抓不到
@@ -826,8 +830,12 @@ def _normalize_episodes_meta(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values("episode_index").reset_index(drop=True)
 
 
-def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
-    """episode 级元数据（length / tasks / from_index / 视频区间）。"""
+def _read_episodes_meta(root: Path, info: dict) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """episode 级元数据（length / tasks / from_index / 视频区间）。
+
+    返回 (去重后的元数据, 重复行冲突诊断)。多行本身可安全去重，但同一
+    episode 的 length 或视频窗口互相矛盾时说明多次导出叠加，必须报出来。
+    """
     ep_root = root / "meta" / "episodes"
     if ep_root.is_dir():
         files = sorted(ep_root.rglob("*.parquet"))
@@ -841,8 +849,9 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
             if frames:
                 df = pd.concat(frames, ignore_index=True)
                 df = _normalize_episodes_meta(df)
+                conflicts = _meta_duplicate_conflicts(df)
                 df = df.drop_duplicates(subset=["episode_index"]).reset_index(drop=True)
-                return df
+                return df, conflicts
 
     jsonl = root / "meta" / "episodes.jsonl"
     if jsonl.is_file():
@@ -857,8 +866,40 @@ def _read_episodes_meta(root: Path, info: dict) -> pd.DataFrame | None:
                 except json.JSONDecodeError:
                     continue
         if rows:
-            return _normalize_episodes_meta(pd.DataFrame(rows))
-    return None
+            return _normalize_episodes_meta(pd.DataFrame(rows)), {}
+    return None, {}
+
+
+def _meta_duplicate_conflicts(df: pd.DataFrame) -> dict[str, Any]:
+    """同一 episode_index 多行时，检查 length / 视频窗口是否互相矛盾。
+
+    重复行内容一致可以安全去重；一旦 length 或视频时间窗不同，说明同一集
+    被多次导出（甚至拼接了两次录制），静默保留首行会把长度不符误归因为
+    视频帧数问题。
+    """
+    if "episode_index" not in df.columns or not df.duplicated("episode_index").any():
+        return {}
+    columns = ["length"] if "length" in df.columns else []
+    columns += [
+        c
+        for c in df.columns
+        if c.startswith("videos/")
+        and (c.endswith("/from_timestamp") or c.endswith("/to_timestamp"))
+    ]
+    conflicting: list[int] = []
+    for ep, group in df.groupby("episode_index", sort=True):
+        if len(group) < 2:
+            continue
+        if any(group[c].nunique(dropna=False) > 1 for c in columns):
+            conflicting.append(int(ep))
+    if not conflicting:
+        return {}
+    return {
+        "episodes": conflicting,
+        "rows": int(len(df)),
+        "unique_episodes": int(df["episode_index"].nunique()),
+        "duplicate_rows": int(df.duplicated("episode_index").sum()),
+    }
 
 
 def _read_frames(

@@ -49,6 +49,7 @@ class DatasetContext:
             _check_stats_staleness(dataset, config, skipped),
             _check_episode_alignment(dataset),
             _check_index_continuity(dataset),
+            _check_meta_duplicates(dataset),
         ):
             if issue:
                 issues.append(issue)
@@ -509,6 +510,28 @@ def _check_episode_alignment(dataset: LeRobotDatasetView) -> DatasetIssue | None
     meta_ids = {int(x) for x in meta_values}
     issue = _episode_alignment_issue(data_ids, meta_ids)
     return _annotate_reconciliation(issue, dataset)
+
+
+def _check_meta_duplicates(dataset: LeRobotDatasetView) -> DatasetIssue | None:
+    """meta/episodes 同一 episode 多行且 length/视频窗冲突。
+
+    典型来源是多次导出叠加：同一集 meta 有两行、数据又把两次录制拼成一行集，
+    静默保留首行会让后续只看到「帧数不符」，看不到真正的重复导出。
+    """
+    conflicts = getattr(dataset, "meta_duplicate_conflicts", None) or {}
+    episodes = conflicts.get("episodes") or []
+    if not episodes:
+        return None
+    return DatasetIssue(
+        "meta_episode_duplicate",
+        f"meta/episodes 同一 episode 多行且内容冲突（{len(episodes)} 集）",
+        {
+            "episodes": episodes,
+            "duplicate_rows": conflicts.get("duplicate_rows", 0),
+            "rows": conflicts.get("rows"),
+            "unique_episodes": conflicts.get("unique_episodes"),
+        },
+    )
 
 
 def _annotate_reconciliation(issue: DatasetIssue | None, dataset: LeRobotDatasetView) -> DatasetIssue | None:
