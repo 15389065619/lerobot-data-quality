@@ -26,6 +26,7 @@ from typing import Any, Iterator
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .schema import audit_schema
@@ -877,7 +878,7 @@ def _read_frames(
         try:
             cols = _columns_excluding(path, exclude)
             df: pd.DataFrame | None = None
-            if keep is not None:
+            if keep is not None and _episode_index_is_integer(path):
                 try:
                     table = pq.read_table(
                         path, columns=cols, filters=[("episode_index", "in", sorted(keep))]
@@ -904,15 +905,17 @@ def _read_frames(
         return pd.DataFrame()
 
     out = pd.concat(parts, ignore_index=True)
+    # 类型归一必须在白名单过滤之前：字符串 episode_index 列与整数 keep 比较永远不命中，
+    # 先过滤会把所有帧静默丢光（--max_episodes 下数据集看起来是空的）。
+    for col in ("episode_index", "frame_index", "task_index", "index"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
     if keep is not None and "episode_index" in out.columns:
         out = out[out["episode_index"].isin(keep)]
     sort_cols = [c for c in ("episode_index", "frame_index") if c in out.columns]
     if sort_cols:
         out = out.sort_values(sort_cols, kind="stable")
     out = out.reset_index(drop=True)
-    for col in ("episode_index", "frame_index", "task_index", "index"):
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
     return out
 
 
@@ -1197,6 +1200,15 @@ def heavy_feature_keys(features: dict[str, Any]) -> list[str]:
         if values >= HEAVY_FEATURE_MIN_VALUES:
             out.append(key)
     return out
+
+
+def _episode_index_is_integer(path: Path) -> bool:
+    """parquet 下推过滤只对整数列安全：字符串列与整数白名单比较永远不命中。"""
+    try:
+        field = pq.read_schema(path).field("episode_index")
+    except Exception:  # noqa: BLE001 - schema 读不出来交给全量读取兜底
+        return False
+    return field is not None and pa.types.is_integer(field.type)
 
 
 def _columns_excluding(path: Path, exclude: tuple[str, ...]) -> list[str] | None:
