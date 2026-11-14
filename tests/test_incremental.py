@@ -15,7 +15,7 @@ from pipeline.manifest import QualityManifest, cleaning_signature
 from pipeline.policy import decide
 from pipeline.validator import validate_dataset
 
-from conftest import smooth_episode  # noqa: F401 - 与其它测试共用夹具构造方式
+from conftest import build_dataset, smooth_episode  # noqa: F401 - 与其它测试共用夹具构造方式
 
 
 def _prepare(normal_dataset, tmp_path):
@@ -119,6 +119,38 @@ def test_reusable_cleaning_requires_existing_output(tmp_path):
     assert manifest.reusable_cleaning("sig-b") is None
 
     output.rename(tmp_path / "moved")
+    assert manifest.reusable_cleaning("sig-a") is None
+
+
+def test_cleaning_cache_is_void_after_dataset_root_changes(normal_dataset, tmp_path):
+    """输出目录复用给另一个数据集时，旧数据集的清洗产物不得被复用。"""
+    _, _, _, _, manifest = _prepare(normal_dataset, tmp_path)
+    output = tmp_path / "cleaned_dataset"
+    output.mkdir()
+    manifest.store_cleaning("sig-a", {"output_path": str(output), "verification": {"ok": True}})
+    assert manifest.reusable_cleaning("sig-a") is not None
+
+    other = build_dataset(tmp_path / "other", {0: smooth_episode(40)})
+    other_dataset = load_dataset(other)
+    other_config = load_config(robot_type=other_dataset.info.get("robot_type"))
+    other_validation = validate_dataset(other_dataset, other_config)
+    other_decisions = decide(other_validation)
+    manifest.store_results(other_dataset, other_config, other_validation, other_decisions,
+                           manifest.episode_signatures(other_dataset))
+
+    assert manifest.payload.get("cleaning") is None
+    assert manifest.reusable_cleaning("sig-a") is None
+
+
+def test_cleaning_cache_bound_to_dataset_root(normal_dataset, tmp_path):
+    """清洗缓存要记录归属数据集：根变了就失效，即使 signature 相同。"""
+    _, _, _, _, manifest = _prepare(normal_dataset, tmp_path)
+    output = tmp_path / "cleaned_dataset"
+    output.mkdir()
+    manifest.store_cleaning("sig-a", {"output_path": str(output), "verification": {"ok": True}})
+    assert manifest.reusable_cleaning("sig-a") is not None
+
+    manifest.payload["dataset_root"] = str(tmp_path / "elsewhere")
     assert manifest.reusable_cleaning("sig-a") is None
 
 

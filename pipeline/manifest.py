@@ -162,7 +162,11 @@ class QualityManifest:
         decisions: Mapping[int, Any],
         signatures: Mapping[int, str],
     ) -> None:
-        self.payload["dataset_root"] = str(dataset.root.resolve())
+        root = str(dataset.root.resolve())
+        if self.payload.get("dataset_root") != root:
+            # 换数据集复用 output_dir 时旧产物属于别的根，必须作废
+            self.payload.pop("cleaning", None)
+        self.payload["dataset_root"] = root
         self.payload["config_digest"] = config_digest(config)
         self.payload["resolved_thresholds"] = validation.resolved_thresholds
         self.payload["episodes"] = {
@@ -175,11 +179,17 @@ class QualityManifest:
         }
 
     def store_cleaning(self, signature: str, result: dict[str, Any]) -> None:
-        self.payload["cleaning"] = {"signature": signature, "result": result}
+        self.payload["cleaning"] = {
+            "signature": signature,
+            "dataset_root": self.payload.get("dataset_root"),
+            "result": result,
+        }
 
     def reusable_cleaning(self, signature: str) -> dict[str, Any] | None:
         cleaning = self.payload.get("cleaning") or {}
         if cleaning.get("signature") != signature:
+            return None
+        if cleaning.get("dataset_root") != self.payload.get("dataset_root"):
             return None
         result = cleaning.get("result")
         if not isinstance(result, dict):
