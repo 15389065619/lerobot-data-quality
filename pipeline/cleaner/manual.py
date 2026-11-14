@@ -381,12 +381,18 @@ def _rewrite_frames(
         sub = set_column(sub, "frame_index", frame_idx)
         sub = set_column(sub, "index", idx_values)
 
-        # 时间轴重建：timestamp = frame_index / fps（修复非单调）
-        if any(int(e) in rebuild_new for e in new_eps):
-            ts = (frame_idx / fps).astype(np.float64)
-            sub = set_column(sub, "timestamp", ts)
-            LOG.info("%s 重建了 %d 个 episode 的时间轴", src_file.name,
-                     len({int(e) for e in new_eps if int(e) in rebuild_new}))
+        # 时间轴重建：只改需要修复的 episode，不能把同文件其它 episode 一起重写
+        if rebuild_new:
+            rebuild_mask = np.isin(new_eps, np.fromiter(rebuild_new, dtype=np.int64))
+            if rebuild_mask.any():
+                if "timestamp" in sub.column_names:
+                    ts = np.asarray(sub.column("timestamp").to_pylist(), dtype=np.float64)
+                else:
+                    ts = np.zeros(len(new_eps), dtype=np.float64)
+                ts[rebuild_mask] = frame_idx[rebuild_mask] / fps
+                sub = set_column(sub, "timestamp", ts)
+                LOG.info("%s 重建了 %d 个 episode 的时间轴", src_file.name,
+                         len({int(e) for e in new_eps[rebuild_mask]}))
 
         rel = template.format(chunk_index=0, file_index=file_index)
         out_path = out_root / rel
