@@ -332,7 +332,23 @@ def _rewrite_frames(
         for key in feature_keys
     })
 
-    for src_file in _source_files_in_order(dataset):
+    source_files = _source_files_in_order(dataset)
+    # 裁帧按整集计数：跨多个 parquet 的 episode 不能每个文件从 0 重新数
+    episode_totals: dict[int, int] = {}
+    if trim_plan:
+        for src_file in source_files:
+            try:
+                col = pq.read_table(src_file, columns=["episode_index"]).column("episode_index").to_pylist()
+            except (pa.ArrowInvalid, KeyError):
+                continue
+            for old in col:
+                old = int(old)
+                if old in ep_index_map:
+                    new = ep_index_map[old]
+                    episode_totals[new] = episode_totals.get(new, 0) + 1
+    row_pos_counter: dict[int, int] = {}
+
+    for src_file in source_files:
         table = pq.read_table(src_file)
         if "episode_index" not in table.column_names:
             continue
@@ -348,12 +364,10 @@ def _rewrite_frames(
         # 裁帧：丢掉每个 episode 的首 head 帧 / 尾 tail 帧
         if trim_plan:
             row_pos = np.empty(len(new_eps), dtype=np.int64)
-            counter: dict[int, int] = {}
             for i, e in enumerate(new_eps):
-                c = counter.get(int(e), 0)
+                c = row_pos_counter.get(int(e), 0)
                 row_pos[i] = c
-                counter[int(e)] = c + 1
-            totals = counter
+                row_pos_counter[int(e)] = c + 1
             keep_row = np.ones(len(new_eps), dtype=bool)
             for i, e in enumerate(new_eps):
                 trim = trim_plan.get(inverse_map[int(e)]) or {}
@@ -361,7 +375,7 @@ def _rewrite_frames(
                     continue
                 head = int(trim.get("head_frames", 0))
                 tail = int(trim.get("tail_frames", 0))
-                total = totals[int(e)]
+                total = episode_totals.get(int(e), int(row_pos_counter.get(int(e), 0)))
                 keep_row[i] = head <= row_pos[i] < total - tail
             if not keep_row.all():
                 sub = sub.take(pa.array(np.where(keep_row)[0], type=pa.int64()))
