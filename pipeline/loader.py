@@ -1011,7 +1011,10 @@ def _data_episode_summary(
         if has_index:
             raw_idx = pd.to_numeric(table.column("index").to_pandas(), errors="coerce")
             idx_values = raw_idx.to_numpy(dtype=float)[keep]
-        for value in np.unique(ep_values):
+        # 按物理行序的首次出现排序：np.unique 默认升序，会把乱序的 data 伪装成
+        # 「顺序正常」，让下游的顺序配对失去唯一的兜底证据。
+        uniq_vals, first_pos = np.unique(ep_values, return_index=True)
+        for value in uniq_vals[np.argsort(first_pos, kind="stable")]:
             ep = int(value)
             mask = ep_values == value
             if ep not in counts:
@@ -1100,6 +1103,13 @@ def _reconcile_episode_ids(
             mode="ambiguous",
             reason=f"episode 数量不一致（data {len(data_ids)} / meta {len(meta_ids)}），"
                    "无法建立一一映射，需人工确认后再质检",
+        )
+        return {}, diag
+
+    if not diag["data_order_sorted"]:
+        diag.update(
+            mode="ambiguous",
+            reason="data 中 episode 编号非升序，顺序配对不可信，需人工确认后再质检",
         )
         return {}, diag
 
