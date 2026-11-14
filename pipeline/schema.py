@@ -37,6 +37,26 @@ def _sample_episodes(summary: pd.DataFrame, positions: np.ndarray) -> list[int]:
     return [int(x) for x in np.asarray(summary.index)[positions]]
 
 
+def _index_mismatch_evidence(
+    summary: pd.DataFrame, actual_from: np.ndarray, expect_from: np.ndarray
+) -> str:
+    """指出**首个**起点不符的 episode。
+
+    只列前 3 个起点时，若错位发生在后面，输出会变成「实际 [a,b,c]，应为 [a,b,c]」，
+    两边一模一样，读者无从下手（so101_bomb ep 81 实测）。
+    """
+    mismatch = np.nonzero(actual_from != expect_from)[0]
+    first = int(mismatch[0])
+    episodes = _sample_episodes(summary, mismatch[:3])
+    text = (
+        f"index 起点与前序累计行数不符：{len(mismatch)}/{len(summary)} 个 episode 不符；"
+        f"首个为 episode {episodes[0]}（实际 {int(actual_from[first])}，应为 {int(expect_from[first])}）"
+    )
+    if len(episodes) > 1:
+        text += f"，其余 {episodes[1:]}"
+    return text
+
+
 def audit_schema(
     *,
     features: dict[str, Any],
@@ -139,8 +159,9 @@ def audit_schema(
                     "expected": f"每集 index 起点 = 前序 episode 累计行数，即 {expect_from[:3].tolist()} … {int(expect_from[-1])}",
                     "actual": (
                         f"{len(summary)} 个 episode 的 index 起点全为 0，取值范围仅 0..{span - 1}，"
-                        f"却承载 {total} 行" if restart else
-                        f"index 起点与前序累计行数不符：实际 {actual_from[:3].tolist()}，应为 {expect_from[:3].tolist()}"
+                        f"却承载 {total} 行" if restart else _index_mismatch_evidence(
+                            summary, actual_from, expect_from
+                        )
                     ),
                     "impact": (
                         "官方 DatasetReader 把 index 当绝对帧号做两件事："

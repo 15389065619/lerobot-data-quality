@@ -69,6 +69,28 @@ def test_index_start_not_matching_cumsum_is_error():
     assert "index" in _codes(items, "error")
 
 
+def test_index_mismatch_reports_first_offending_episode():
+    """首个不符出现在第 4 集时，证据必须指名到 ep 3，而不是只列前 3 个起点。
+
+    so101_bomb 实测：前 3 集起点正确、ep 81 起错位，旧消息输出
+    「实际 [0, 714, 1380]，应为 [0, 714, 1380]」，两边看似完全一样。
+    """
+    items = audit_schema(
+        features=_compliant_features(),
+        splits={"train": "0:4"},
+        total_episodes=4,
+        data_columns=set(REQUIRED_FRAME_COLUMNS),
+        data_summary=_summary([0, 10, 30, 55], [10, 20, 30, 40]),
+    )
+    index_items = [i for i in items if i["column"] == "index"]
+    assert len(index_items) == 1
+    actual = index_items[0]["actual"]
+    assert "episode 3" in actual
+    assert "55" in actual and "60" in actual
+    assert "1/4" in actual
+    assert "实际 [0, 10, 30]，应为 [0, 10, 30]" not in actual
+
+
 def test_missing_frame_index_is_warning():
     feats = _compliant_features()
     feats.pop("frame_index")
