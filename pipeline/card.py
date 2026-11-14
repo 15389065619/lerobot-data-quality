@@ -121,10 +121,14 @@ def build_card(
 
     skipped = report.get("skipped_checks") or []
     if skipped:
+        if isinstance(skipped, dict):
+            items = [f"- `{code}`：{reason or '未记录原因'}" for code, reason in skipped.items()]
+        else:
+            items = [f"- `{code}`" for code in skipped]
         lines += [
             "## 未执行的检查",
             "",
-            *[f"- `{item}`" for item in skipped],
+            *items,
             "",
             "> 通常是因为数据集没有视频/点云特征，对应检查被自动跳过。",
             "",
