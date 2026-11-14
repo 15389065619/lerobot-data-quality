@@ -256,3 +256,32 @@ def test_missing_index_column_is_skipped_not_corrupted(tmp_path: Path, workers: 
     validation = validate_pointcloud_dataset(root, load_config(), workers=workers)
     assert validation.corrupted_files == []
     assert validation.total_frames == 0
+
+
+def test_standalone_copies_parquet_without_pointcloud_column(dirty_dataset: Path, tmp_path: Path):
+    """standalone 输出里，缺点云列的分片不能被静默丢掉（不重写但必须原样复制）。"""
+    extra_rows = 4
+    extra = dirty_dataset / "data" / "chunk-000" / "file-001.parquet"
+    pq.write_table(
+        pa.table({
+            "timestamp": pa.array(np.arange(extra_rows, dtype=np.float32) / 30),
+            "frame_index": pa.array(np.arange(extra_rows, dtype=np.int64)),
+            "episode_index": pa.array(np.ones(extra_rows, dtype=np.int64)),
+            "index": pa.array(np.arange(extra_rows, dtype=np.int64) + 100),
+            "task_index": pa.array(np.zeros(extra_rows, dtype=np.int64)),
+        }),
+        extra,
+    )
+
+    validation = validate_pointcloud_dataset(dirty_dataset, load_config())
+    decisions = decide(validation)
+    assert any(d.disposition in {"repair", "drop"} for d in decisions.values())
+
+    result = clean_pointclouds(dirty_dataset, validation, decisions, tmp_path / "out")
+    out_root = Path(result.output_root)
+    copied = out_root / "data" / "chunk-000" / "file-001.parquet"
+
+    assert copied.is_file(), "缺点云列的分片在 standalone 输出里丢失"
+    assert pq.ParquetFile(copied).metadata.num_rows == extra_rows
+    assert result.verification.get("ok"), result.verification
+

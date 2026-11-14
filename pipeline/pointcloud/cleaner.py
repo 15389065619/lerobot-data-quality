@@ -101,10 +101,20 @@ def clean_pointclouds(
         try:
             pf = pq.ParquetFile(src_path)
             names = pf.schema_arrow.names
-            if key not in names or "episode_index" not in names or "frame_index" not in names:
-                result.warnings.append(f"{src_path.name} 缺少点云/索引列，跳过")
-                continue
             dst_path = dst_root / src_path.relative_to(src_root)
+            if key not in names or "episode_index" not in names or "frame_index" not in names:
+                # 不重写也要原样复制：standalone 输出必须保留全部分片，
+                # 否则「缺点云列」的文件在产物里静默消失，下游拿到的数据不完整。
+                warning = f"{src_path.name} 缺少点云/索引列，跳过"
+                if not same_tree:
+                    try:
+                        dst_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_path, dst_path)
+                        warning += "（已原样复制到输出）"
+                    except OSError as copy_exc:
+                        warning += f"（原样复制失败: {copy_exc}）"
+                result.warnings.append(warning)
+                continue
             dst_path.parent.mkdir(parents=True, exist_ok=True)
             if same_tree:
                 tmp_path = dst_path.with_name(dst_path.name + ".tmp")
@@ -360,10 +370,19 @@ def _write_notes(result: PointCloudCleaningResult, validation: PointCloudValidat
 
 def _verify(dst_root: Path, validation: PointCloudValidation, feature_key: str, result: PointCloudCleaningResult) -> None:
     try:
-        pf = pq.ParquetFile(discover_data_files(dst_root, read_info(dst_root))[0])
-        rows = sum(pq.ParquetFile(p).metadata.num_rows for p in discover_data_files(dst_root, read_info(dst_root)))
+        files = discover_data_files(dst_root, read_info(dst_root))
+        # 只统计含点云列的分片：缺点云列的文件被扫描阶段跳过，本来就不在
+        # validation.total_frames 里，把它们算进行数会让校验无谓地失败。
+        rows = 0
+        has_feature = False
+        for path in files:
+            pf = pq.ParquetFile(path)
+            if feature_key not in pf.schema_arrow.names:
+                continue
+            has_feature = True
+            rows += pf.metadata.num_rows
         result.verification = {
-            "ok": bool(feature_key in pf.schema_arrow.names and rows == validation.total_frames),
+            "ok": bool(has_feature and rows == validation.total_frames),
             "rows": rows,
             "expected_rows": validation.total_frames,
             "feature_key": feature_key,
