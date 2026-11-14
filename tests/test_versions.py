@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -69,3 +70,24 @@ def test_missing_object_blocks_restore(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError):
         vstore.restore(v1["version_id"], apply=True)
+
+
+def test_restore_rejects_path_escape(store: tuple[DatasetVersionStore, Path]) -> None:
+    """版本记录里的相对路径必须落在数据集根内，不能被 ../ 或绝对路径带出去。"""
+    vstore, root = store
+    v1 = vstore.snapshot("v1")
+    record_path = vstore.versions_dir / f"{v1['version_id']}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["files"]["../escaped.txt"] = {
+        "sha1": record["files"]["meta/stats.json"]["sha1"],
+        "size": 1,
+        "mtime_ns": 0,
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    (root / "meta" / "stats.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError):
+        vstore.restore(v1["version_id"], apply=True)
+
+    assert not (root.parent / "escaped.txt").exists()
+    assert (root / "meta" / "stats.json").read_text(encoding="utf-8") == "{}"

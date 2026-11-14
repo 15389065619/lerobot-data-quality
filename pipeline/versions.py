@@ -57,6 +57,14 @@ def _iter_files(root: Path, store: Path) -> list[Path]:
     return sorted(files, key=lambda p: p.relative_to(root).as_posix())
 
 
+def _safe_dest(root: Path, rel: str) -> Path:
+    """版本记录里的相对路径必须落在数据集根内，拒绝 ../ 与绝对路径（可被手改的 JSON 不可信）。"""
+    dest = (root / rel).resolve()
+    if Path(rel).is_absolute() or not dest.is_relative_to(root):
+        raise ValueError(f"版本记录包含越界路径，拒绝回滚：{rel}")
+    return dest
+
+
 class DatasetVersionStore:
     """把某个数据集的每个变更记成不可变快照。"""
 
@@ -167,6 +175,8 @@ class DatasetVersionStore:
     def restore(self, version_id: str, *, apply: bool = False,
                 delete_extra: bool = False) -> dict[str, Any]:
         record = self._read(version_id)
+        for rel in record["files"]:
+            _safe_dest(self.root, rel)
         current = {rel: _sha1_file(self.root / rel)
                    for rel in (p.relative_to(self.root).as_posix()
                                for p in _iter_files(self.root, self.store))
