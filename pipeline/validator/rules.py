@@ -328,11 +328,17 @@ def check_joint_limits(
         above = finite > (hi[:dim] + tol)
     if not below.any() and not above.any():
         return
+    # 配置限位长度可以大于 info 声明的关节名数量（数据列比 info 宽是野外常见情况），
+    # 越界维度按 dim_N 兜底，不能让报错路径自己 IndexError。
+    names = list(dataset.joint_names)
     res.add(
         "joint_limit_violation",
         violation_count=int(below.sum() + above.sum()),
         dims=[int(d) for d in np.where((below | above).any(axis=0))[0]],
-        joint_names=[dataset.joint_names[d] for d in range(dim) if (below | above)[:, d].any()][:5],
+        joint_names=[
+            names[d] if d < len(names) else f"dim_{d}"
+            for d in range(dim) if (below | above)[:, d].any()
+        ][:5],
     )
 
 
