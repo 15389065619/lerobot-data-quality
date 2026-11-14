@@ -757,4 +757,6 @@ def frame_column(ep_df: pd.DataFrame) -> np.ndarray | None:
 
 def _frame_labels(frame_col: np.ndarray | None, positions: np.ndarray, limit: int) -> list[int]:
     vals = frame_col[positions] if frame_col is not None else positions
-    return [int(v) for v in np.asarray(vals)[:limit]]
+    finite = np.asarray(vals, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    return [int(v) for v in finite[:limit]]
