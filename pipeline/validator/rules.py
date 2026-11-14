@@ -717,6 +717,10 @@ def check_blank_video(
     path, from_ts, to_ts = loc
     if not path.is_file():
         return
+    if from_ts < 0:
+        # meta 给不出该集的视频时间窗（v3 缺列时为 (-1,-1)）：从文件 0 点抽帧
+        # 实际判的是同文件里别的 episode 画面，属于不可评估而非数据异常。
+        return
     dur = (to_ts - from_ts) if to_ts > from_ts else res.frame_count / max(dataset.fps, 1e-6)
     stats = probe_frame_brightness(path, max(from_ts, 0.0), max(dur, 0.1))
     if stats is None:
