@@ -40,6 +40,8 @@ RULES: tuple[Rule, ...] = (
          "两侧编号体系不同（如 meta 用全局 ID、data 用 0..N-1）；task/视频定位整体失效，需先统一编号", None),
     Rule("meta_episode_duplicate", "meta/episodes 同一 episode 多行且内容冲突",
          "多次导出叠加导致 length/视频窗互相矛盾；静默去重会掩盖拼接错误，需清理为每集一行", None),
+    Rule("feature_missing_declaration", "info.json 缺少相机特征声明",
+         "上传/导出时元数据丢失，但视频与 meta 时间窗仍在；读侧会静默忽略该模态，训练时少一路视角", None),
     Rule("missing_task", "任务描述缺失或为空", "语言条件策略会直接报错；需补标", None),
     Rule("static_episode", "空转 episode（动作几乎无变化）", "机器人未真正执行任务，属无效采集", None),
     Rule("blank_video", "视频黑屏/纯色遮挡", "镜头被挡或相机未推流；模态信息完全丢失", None),

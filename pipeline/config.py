@@ -133,6 +133,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "stats_stale": "warning",
         "meta_episode_mismatch": "error",
         "meta_episode_duplicate": "error",
+        "feature_missing_declaration": "error",
         # 点云规则
         "pc_non_finite": "error",
         "pc_empty_or_sparse": "error",

@@ -584,6 +584,13 @@ def _recommendations(
                 "官方 reader 会重复加载并取错视频窗口；需先清理为每集一行，"
                 "并确认数据侧是否把两次录制拼进了同一集。"
             )
+        elif issue.code == "feature_missing_declaration":
+            cameras = "、".join((issue.detail.get("cameras") or [])[:3])
+            recs.append(
+                f"info.json 未声明 {cameras}，但对应视频与 meta 时间窗仍在：官方 reader 只遍历 "
+                "features，会整体忽略该相机，训练时等于少一路视角；需补齐 features 条目，"
+                "或确认该模态是否本就不该存在。"
+            )
 
     ratio = len(validation.invalid_episodes) / total
     if ratio > 0.3:

@@ -50,6 +50,7 @@ class DatasetContext:
             _check_episode_alignment(dataset),
             _check_index_continuity(dataset),
             _check_meta_duplicates(dataset),
+            _check_feature_declarations(dataset),
         ):
             if issue:
                 issues.append(issue)
@@ -531,6 +532,51 @@ def _check_meta_duplicates(dataset: LeRobotDatasetView) -> DatasetIssue | None:
             "rows": conflicts.get("rows"),
             "unique_episodes": conflicts.get("unique_episodes"),
         },
+    )
+
+
+def _check_feature_declarations(dataset: LeRobotDatasetView) -> DatasetIssue | None:
+    """info.json 的 features 必须覆盖磁盘与 meta 中出现的每一路相机。
+
+    Pico 上传链路丢过相机特征：``features`` 里删掉 wrist，`videos/` 目录与
+    `meta/episodes` 的 ``videos/*`` 时间窗仍在。读侧只遍历 ``features``，
+    该相机因此静默消失，所有帧级规则照常通过——报告必须显式指出。
+    """
+    declared = set((dataset.features or {}).keys())
+    # v2.x 的部分数据集用短名存目录（features 为 observation.images.egocentric，
+    # 目录却是 videos/chunk-000/egocentric/），不能因此误判为「缺声明」。
+    declared |= {key.rsplit(".", 1)[-1] for key in declared}
+    cameras: set[str] = set()
+    evidence: set[str] = set()
+
+    video_root = dataset.root / "videos"
+    if video_root.is_dir():
+        # v3.0：videos/<camera>/chunk-xxx/file-xxx.mp4
+        # v2.x：videos/chunk-xxx/<camera>/episode_xxx.mp4
+        for entry in video_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith("chunk-"):
+                cameras.update(c.name for c in entry.iterdir() if c.is_dir())
+            else:
+                cameras.add(entry.name)
+            evidence.add("videos/")
+
+    episodes = getattr(dataset, "episodes", None)
+    if episodes is not None and len(episodes.columns):
+        for column in episodes.columns:
+            parts = str(column).split("/")
+            if len(parts) >= 3 and parts[0] == "videos":
+                cameras.add(parts[1])
+                evidence.add("meta/episodes")
+
+    missing = sorted(cameras - declared)
+    if not missing:
+        return None
+    return DatasetIssue(
+        "feature_missing_declaration",
+        f"info.json 缺少 {len(missing)} 路相机的特征声明",
+        {"cameras": missing, "evidence": sorted(evidence)},
     )
 
 
