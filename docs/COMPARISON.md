@@ -106,6 +106,78 @@ sed -n '114,118p' src/lerobot_doctor/report.py             # 非 verbose 下 PAS
 
 > 行号对应 `0.2.0`；后续版本变化以源码为准。**这张表的价值在于它可被推翻，而不在于它证明我更好**——包括上面这六条结论本身。
 
+## Schema 契约严谨度对照
+
+> 前文比较的是「检查项 + 处置闭环」；这一节回答一个更尖锐的问题：**本项目的 schema 契约本身，严谨度对不对得上官方与同类工具。**
+
+### 先纠正一个前提
+
+`lerobot-doctor`（jashshah999）**不是官方工具**，也不依赖 `lerobot` 包。官方侧的「质检」分散在三处：**写侧**（`record` 的 `validate_frame`、`finalize()` 强制收敛）、**读侧加载器**（刻意宽松）、**官方 CLI**（`lerobot-edit-dataset` 只删不修）。v3 文档第一段写明设计目标是 "decoupling storage from the user API"——读侧信任元数据、软失败，严谨性被前置到生产者。
+
+这决定了比较的正确姿势：**官方读侧不是标准答案，本项目补的是它不查的洞。**
+
+### 官方读侧到底查什么
+
+据官方 main 分支源码（`datasets/utils.py`、`lerobot_dataset.py`，核实于 2026-11）：
+
+| 官方读侧行为 | 证据位置 |
+|---|---|
+| `DatasetInfo` 只强制 `fps > 0`、`chunks_size > 0`、两个文件大小字段 > 0 | `DatasetInfo.__post_init__` |
+| `info.json` 未知字段忽略（warning，不报错） | `DatasetInfo.from_dict` |
+| `splits` 仅声明为 `dict[str, str]`，不校验区间长度、连续性、与 `total_episodes` 的一致性 | 字段定义 |
+| 越界 episode index：**丢弃 + warning**，不报错 | `resolve_episode_indices`、`LeRobotDataset.__init__` |
+| 无 meta/episodes 行数 vs parquet 实际行数、`total_episodes` / `total_frames` 对账 | 全链路未见断言 |
+| 时间戳同步检查存在，但由 `tolerance_s` 参数化 | reader 模块与 `lerobot_dataset.py` 文档字符串 |
+
+一句话：读侧是**信任包装标签的收货员**——标签写 50 箱就按 50 箱上架，缺箱记一笔警告照收。软失败的后果正是本项目 `schema.py` docstring 开头那句：「数据集能跑起来」不等于「Schema 合规」。
+
+### 三方逐项对照
+
+| 契约点 | 官方读侧 | `lerobot-doctor` | 本项目 |
+|---|---|---|---|
+| `info.json` 必填字段 + `fps > 0` | ✓（仅此） | ✓ | 读，缺字段走兜底（见 G3） |
+| **index 全局唯一 / 起点 = 前序累计行数**（v3），集内连续（v2，按版本分支） | ✗（重复键在 `_build_index_mapping` 处塌缩，是官方自身隐患） | 部分（temporal 查 broken index） | **✓ 独有**，`schema.py:166` |
+| `total_episodes` / `total_frames` 对账 | ✗ | ✓ | ✓ `schema.py:245`，超 1% 升 error |
+| `splits` 区间长度 == `total_episodes` | **✗** | ✗ | **✓ 独有**，`schema.py:224` |
+| 时间戳单调 / 与 fps 一致 | ✓（`tolerance_s` 参数化） | ✓ | ✓（`step_tolerance_ratio` 0.25） |
+| `features` 声明 dtype / shape vs 实际 | 仅保证结构存在，不验值 | ✓（跨数据集 `consistency`） | **✗ 缺口 G1** |
+| `total_tasks` / `total_videos` / `total_chunks` 对账 | ✗ | 部分（tasks.parquet 相关） | **✗ 缺口 G2** |
+| chunks 布局不变量（chunk / file 编号） | 写侧有 rollover 规则，读侧不查 | 部分（portability） | **✗ 缺口 G3** |
+| 去重 / 跨 split 泄漏 | ✗ | ✓ `identity`（SHA-256 全列签名 + 泄漏判 FAIL） | 近似：`duplicate_episode`，按 episode 判 |
+| URDF 物理限位 | ✗ | ✓ `kinematics` | ✗（刻意，无外部真值） |
+| 黑屏 / 点云 8 条 / 自适应阈值 | ✗ | 视频部分，无黑屏、无点云 | **✓ 独有** |
+
+### 判定：补洞，而不是追标准
+
+**契约面：本项目不是「达不到官方严谨度」。** 上表前三条硬契约（index 语义、splits 长度、两级对账）官方读侧根本不查——本项目是在补洞，不是在追标准。官方的严谨在写侧与 v2 时代；v3 读侧是刻意宽松。
+
+**但确实有三个真实缺口**，按优先级排列：
+
+| 编号 | 缺口 | 风险 | 修法 | 状态 |
+|---|---|---|---|---|
+| **G3** | `chunks_size` 缺声明时按 `1000` 兜底，两处各自兜底：`loader.py:404`（拼路径）、`loader.py:760`（扫分片） | **归因错误**：把「元数据没声明」偷换成「文件丢失」，用户会去查存储而不是查 `info.json` | 统一为单一解析函数，兜底值保留但标记来源为 assumed 并产出 warning | 未修 |
+| **G2** | 无 `total_tasks` / `total_videos` / `total_chunks` 对账，未查 `task_index` 越界 | 与已修的 episodes/frames 两条完全同构，属同类漏检 | 复用现有对账结构，约 10 行，warning 起步 | 未修 |
+| **G1** | 只把实际 dtype 打印出来（`loader.py:260-277`），从不拿 `info.json` 声明对账 | 声明 `action` 7 维、实际 8 维时，`delta_timestamps` 取帧静默错位；dtype 不一致则依赖下游 cast | 两条检查：声明 dtype vs parquet physical dtype；声明 shape vs 实际列长。`image` / `video` 列必须白名单跳过 | 未修 |
+
+G1 需要先在现有 25 个数据集上跑一遍统计误报率，再决定严重级；`image` / `video` 列的 parquet dtype 与声明天然不同，直接全量比较会制造噪声。
+
+### 不补的项与理由
+
+- **SHA-256 全列签名去重**：`duplicate_episode` 是近似判据（长度 + 采样帧），应对「同长度不同内容」与「同内容不同长度」都有边界，文档标明即可，不引入全列哈希的 IO 成本
+- **跨 split 泄漏**：v3 的 splits 是单一 `train` 区间，暴露面远小于 NLP 数据集的多 split 场景
+- **URDF 物理限位**：无外部真值，已在前文声明
+- **字段命名规范前缀**：属训练侧契约，下游自会失败
+
+### 一句话定位
+
+> 官方把契约压在生产侧，读侧是软失败；`lerobot-doctor` 用巡检补读侧；本项目在读侧补了 3 条官方根本不查的硬契约（index 语义、splits 长度、两级对账），缺 features/chunks 两张表，但多一条分级处置闭环。
+
+每个分句都能当场指到代码，避免说成「比官方严得多」——官方写侧仍有本项目不具备的强约束。
+
+### 与本章前文的关系
+
+前文源码核实的是 PyPI `0.2.0`（11 个 check）。截至 2026-11 其 README 已声明 13 类，新增 `identity` 与 `kinematics`；新增项的源码**未复核**，因此本节 `lerobot-doctor` 一列只按其 README 能力描述对照，不与 0.2.0 的源码结论混用。
+
 ## 上下游工具链对比
 
 | 维度 | 本项目<br/>lerobot-data-quality | LeRobot 官方<br/>`lerobot-edit-dataset` 等 | ROS 2 工具链<br/>rosbag2 / rosbag_editor | OpenVLA 数据管线<br/>RLDS/OXE 转换脚本 |
