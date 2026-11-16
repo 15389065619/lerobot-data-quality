@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """generate_report.py — 把质检流水线的产物渲染成单文件 HTML 可视化大屏。
 
-读取的输出文件（全部来自某次 main.py 运行的 --output_dir）：
-
-1. quality_manifest.json          —— 增量状态文件，含每个 episode 的 decision
-                                      （keep/repair/review/drop + reasons + severity）。
-2. pointcloud_review_queue.csv    —— 点云复核队列，含坏帧的 episode/frame/规则/metrics。
-3. quality_report.json            ——（可选）主质检报告，用于顶部大盘的真实总帧数等。
-4. pointcloud_report.json         ——（可选）点云质检报告，用于点云帧健康环图。
+读取 --output_dir 下的 quality_manifest.json（每个 episode 的 decision）与
+pointcloud_review_queue.csv，可选 quality_report.json / pointcloud_report.json
+补充顶部大盘数据。
 
 用法：
     python generate_report.py --output_dir outputs_fault
     python generate_report.py --output_dir outputs_fault --report my_report.html --top 30
 
-设计说明：
-- 纯标准库（json/csv/argparse），不依赖后端与 Jinja2；HTML 用模板字符串注入数据。
-- 图表用 ECharts（jsdelivr CDN），无网络时图表区域会显示占位文字但表格仍可读。
-- 深色科技风：深蓝黑底 + 霓虹青/品红点缀 + 毛玻璃卡片 + 等宽数字。
+纯标准库，不依赖后端与 Jinja2；图表用 ECharts（CDN），无网络时表格仍可读。
 """
 
 from __future__ import annotations
@@ -33,9 +26,7 @@ from typing import Any
 
 LOG = logging.getLogger("generate_report")
 
-# ---------------------------------------------------------------------------
 # 处置档位 -> 展示颜色（与流水线 policy/pointcloud 的四档一一对应）
-# ---------------------------------------------------------------------------
 DISPOSITION_COLORS = {
     "keep": "#22d3a7",    # 绿：保留
     "repair": "#38bdf8",  # 蓝：已自动修复
@@ -51,9 +42,7 @@ DISPOSITION_LABELS = {
 SEVERITY_COLORS = {"error": "#f43f5e", "warning": "#fbbf24", "info": "#38bdf8", "ok": "#22d3a7"}
 
 
-# ---------------------------------------------------------------------------
 # 数据加载：每一步都容错（缺文件/字段缺失时不让整个报告崩掉）
-# ---------------------------------------------------------------------------
 def _load_json(path: Path) -> dict[str, Any]:
     """读 JSON；文件不存在或损坏时返回空 dict 并告警。"""
     if not path.is_file():
@@ -96,14 +85,12 @@ def load_pointcloud_report(output_dir: Path) -> dict[str, Any]:
     return _load_json(output_dir / "pointcloud_report.json")
 
 
-# ---------------------------------------------------------------------------
 # 数据聚合：把原始 JSON/CSV 变成「图表直接可用」的结构
-# ---------------------------------------------------------------------------
 def aggregate(manifest: dict[str, Any], quality: dict[str, Any],
               pointcloud: dict[str, Any], queue_rows: list[dict[str, str]]) -> dict[str, Any]:
     """统一汇总出渲染层需要的所有数据。"""
 
-    # ---- episode 级处置分布：优先 manifest（增量），退回 quality_report 的 summary ----
+    # episode 级处置分布：优先 manifest（增量），退回 quality_report 的 summary
     ep_dispositions: Counter[str] = Counter()
     ep_reasons: Counter[str] = Counter()
     episodes = manifest.get("episodes") or {}
@@ -122,7 +109,7 @@ def aggregate(manifest: dict[str, Any], quality: dict[str, Any],
         for code, n in (quality.get("reason_frequency") or {}).items():
             ep_reasons[str(code)] += int(n or 0)
 
-    # ---- 点云帧级分布与规则频次 ----
+    # 点云帧级分布与规则频次
     pc_summary = pointcloud.get("summary") or {}
     pc_dispositions: Counter[str] = Counter()
     pc_reasons: Counter[str] = Counter()
@@ -131,14 +118,14 @@ def aggregate(manifest: dict[str, Any], quality: dict[str, Any],
     for code, n in (pc_summary.get("reason_frequency") or pointcloud.get("reason_frequency") or {}).items():
         pc_reasons[str(code)] += int(n or 0)
 
-    # ---- 规则排行榜：episode 规则 + 点云规则合并 ----
+    # 规则排行榜：episode 规则 + 点云规则合并
     rule_board = sorted(
         {**{f"[episode] {k}": v for k, v in ep_reasons.items()},
          **{f"[点云] {k}": v for k, v in pc_reasons.items()}}.items(),
         key=lambda kv: kv[1], reverse=True,
     )
 
-    # ---- 顶部大盘 KPI ----
+    # 顶部大盘 KPI
     dataset_info = quality.get("dataset") or pointcloud.get("dataset") or {}
     kpis = {
         "dataset": dataset_info.get("root") or manifest.get("dataset_root") or "-",
@@ -162,9 +149,7 @@ def aggregate(manifest: dict[str, Any], quality: dict[str, Any],
     }
 
 
-# ---------------------------------------------------------------------------
 # 坏帧明细表：CSV 前 N 行 + metrics JSON 的关键指标展开
-# ---------------------------------------------------------------------------
 def build_frame_rows(queue_rows: list[dict[str, str]], top: int) -> list[dict[str, str]]:
     """把 CSV 行转成模板友好的结构，并解析 metrics 里的关键数值。"""
     rows: list[dict[str, str]] = []
@@ -196,9 +181,7 @@ def build_frame_rows(queue_rows: list[dict[str, str]], top: int) -> list[dict[st
     return rows
 
 
-# ---------------------------------------------------------------------------
 # HTML 模板：深色监控大屏。数据通过 __DATA_JSON__ 占位符注入。
-# ---------------------------------------------------------------------------
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -391,9 +374,7 @@ renderOrFallback("chartRules", rulesOption(DATA.rule_board));
 """
 
 
-# ---------------------------------------------------------------------------
 # 渲染：模板占位符替换 + JSON 注入
-# ---------------------------------------------------------------------------
 def render(agg: dict[str, Any], frame_rows: list[dict[str, str]], top: int) -> str:
     kpis = agg["kpis"]
 
@@ -450,9 +431,7 @@ def render(agg: dict[str, Any], frame_rows: list[dict[str, str]], top: int) -> s
     return page
 
 
-# ---------------------------------------------------------------------------
 # CLI 入口
-# ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="generate_report",

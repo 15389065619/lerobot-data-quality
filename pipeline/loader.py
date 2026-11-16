@@ -93,12 +93,12 @@ class LeRobotDatasetView:
     #: 空 dict 表示无重复或重复行内容一致（可安全去重）。
     meta_duplicate_conflicts: dict[str, Any] = field(default_factory=dict)
 
-    # ------------------------------------------------------------------ 概览
+    # 概览
     @property
     def num_episodes(self) -> int:
         return int(len(self.episodes))
 
-    # ---------------------------------------------------- 编号空间与 meta 定位
+    # 编号空间与 meta 定位
     @property
     def locator_available(self) -> bool:
         """能否可靠地把 episode 映射到 meta 行（决定视频/任务能否定位）。
@@ -284,7 +284,7 @@ class LeRobotDatasetView:
                 out[key] = f"video {shape}"
         return out
 
-    # ------------------------------------------------------------- episode 级
+    # episode 级
     def episode_frame(self, episode_index: int) -> pd.DataFrame:
         """取某个 episode 的所有帧，按 frame_index 升序。
 
@@ -449,7 +449,7 @@ class LeRobotDatasetView:
         path = self.root / rel
         return path if path.is_file() or not require_exists else None
 
-    # ----------------------------------------------------------------- 摘要
+    # 摘要
     def summary(self) -> dict[str, Any]:
         per_ep = self.frames_by_episode()
         columns = self.column_names
@@ -485,7 +485,7 @@ class LeRobotDatasetView:
         }
 
 
-# --------------------------------------------------------------------- 加载
+# 加载
 def load_dataset(
     dataset_path: str | Path,
     max_episodes: int | None = None,
@@ -538,10 +538,8 @@ def load_dataset(
     truncated_to = None
     keep: set[int] | None = None
 
-    # ---------------------------------------------- episode 编号空间对齐
-    # behavior1k 这类数据集：meta/episodes 用全局 ID（420010, 420020, …），
-    # 而 data/*.parquet 里的 episode_index 是 0..N-1。不先对齐，所有 meta 定位
-    # （视频窗口、任务、data 文件）都会落空，进而把整批数据误判为不可用。
+    # episode 编号空间对齐：behavior1k 这类数据集 meta/episodes 用全局 ID（420010, 420020, …），
+    # data 里是 0..N-1，不对齐则视频窗口、任务等 meta 定位全部落空
     data_summary = _data_episode_summary(frames if load_frames else None, data_files)
     meta_id_map, reconciliation = _reconcile_episode_ids(episodes_meta, data_summary, fps)
 
@@ -608,10 +606,9 @@ def load_dataset(
         data_columns=data_columns,
         meta_duplicate_conflicts=meta_duplicates,
     )
-    # info.total_frames 必须与 data 的**实际行数**对账。流式模式（--streaming）下
-    # view.num_frames 是 meta 里 length 之和，用它校验等于用 meta 自证，抓不到
-    # data 被截断而 meta/info 内部一致的情况。data_summary 始终来自逐文件实际读取，
-    # 行数取它才成立；仅在无数据文件时退回 num_frames。
+    # info.total_frames 必须与 data 的实际行数对账：流式模式下 view.num_frames 来自
+    # meta 的 length 之和，用它校验等于 meta 自证，抓不到 data 被截断而 meta/info
+    # 内部一致的情况。data_summary 始终来自逐文件实际读取；仅无数据文件时退回 num_frames。
     data_rows_actual = (
         int(data_summary["rows"].sum())
         if data_summary is not None and len(data_summary) and "rows" in data_summary.columns
@@ -644,7 +641,7 @@ def load_dataset(
     return view
 
 
-# ------------------------------------------------------------------ 读取细节
+# 读取细节
 def _read_json(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -986,7 +983,7 @@ def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -
     return sorted(seen)
 
 
-# ------------------------------------------------------------ episode 编号对齐
+# episode 编号对齐
 def _data_episode_summary(
     frames: pd.DataFrame | None, data_files: list[Path]
 ) -> pd.DataFrame:
@@ -1157,7 +1154,7 @@ def _reconcile_episode_ids(
         )
         return {}, diag
 
-    # ---- 顺序假设验证：同名位置上的行数、视频窗口必须自洽
+    # 顺序假设验证：同名位置上的行数、视频窗口必须自洽
     rows_arr = data_summary["rows"].to_numpy(dtype="int64")
     meta_sorted = (
         episodes_meta.assign(episode_index=meta_values)

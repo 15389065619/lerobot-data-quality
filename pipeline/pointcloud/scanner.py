@@ -174,7 +174,7 @@ class ScanCache:
             LOG.warning("点云扫描缓存写入失败（不影响本次结果）: %s", exc)
 
 
-# ------------------------------------------------------------------ 多进程扫描
+# 多进程扫描
 _PC_CTX: PointCloudContext | None = None
 
 

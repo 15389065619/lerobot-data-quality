@@ -1,22 +1,7 @@
 """多进程并发执行器：任务分发、tqdm 进度条、结果归并。
 
-并发安全架构（本模块的唯一职责就是守住这几条契约）：
-
-1. **worker 是纯函数**：只读自己的输入，返回可 pickle 的结果；
-   绝不写文件、绝不写共享变量。因此「多个进程同时写同一目录/同一 JSON」
-   的冲突在设计上就不存在——worker 根本不写盘。
-2. **主进程统一写入**：所有 JSON / CSV / parquet 落盘都发生在主进程。
-   结果回收直接用 Future 的返回值（`wait(FIRST_COMPLETED)`），
-   Future 队列本身就是线程安全的结果通道，不需要再引入
-   `multiprocessing.Manager().Queue()` 这一层转发进程。
-3. **共享上下文只分发一次**：配置、阈值、指纹表等只读大数据通过
-   `initializer/initargs` 在每个子进程启动时注入一次（存到子进程全局变量），
-   而不是随每个任务重复 pickle 传输。
-4. **结果与顺序无关**：Future 完成顺序不确定，调用方必须把结果按业务 key
-   归并进 dict、再排序输出，保证并发跑出的结果与串行逐位一致
-   （tests/test_parallel.py 会强制验证这一点）。
-5. **Windows spawn 兼容**：worker 函数必须是模块顶层函数（按限定名 pickle），
-   所有参数必须可 pickle；入口已有 `if __name__ == "__main__"` 保护。
+worker 是纯函数、不写盘，所有落盘都在主进程完成；结果按完成顺序产出，
+调用方负责按业务 key 归并排序，保证并发结果与串行一致（tests/test_parallel.py 验证）。
 """
 
 from __future__ import annotations
@@ -56,7 +41,7 @@ def run_pool(
         initializer: 子进程初始化函数（接收 shared 作为唯一参数）。
 
     Yields:
-        worker 的返回值，顺序为完成顺序（不确定！）——调用方负责按 key 归并。
+        worker 的返回值，顺序为完成顺序，调用方负责按 key 归并。
     """
     from tqdm import tqdm  # 延迟导入：串行路径不引入 tqdm 开销
 
@@ -68,8 +53,8 @@ def run_pool(
     initargs = () if shared is None else (shared,)
 
     LOG.info("并发执行：%d 个任务 / %d 个进程（%s）", len(job_list), workers, desc)
-    # 有界提交：只让 2×workers 个任务同时进入执行队列。一次性 submit 全部任务
-    # 会把所有 episode 的 DataFrame 都 pickle 进 feeder 线程，峰值内存随总集数增长。
+    # 有界提交：一次性 submit 全部任务会把所有 DataFrame pickle 进 feeder 线程，
+    # 峰值内存随总集数增长；只让 2×workers 个任务同时进执行队列。
     pending = deque(job_list)
     in_flight: dict[Any, T] = {}
     window = workers * 2
@@ -89,15 +74,12 @@ def run_pool(
             done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
             for fut in done:
                 in_flight.pop(fut, None)
-                # worker 抛出的异常会在这里原样上抛（附带子进程 traceback），
-                # 由主流程的阶段级 try/except 统一处理，行为与串行一致
+                # worker 抛出的异常在这里原样上抛，由主流程按阶段统一处理
                 yield fut.result()
                 bar.update(1)
                 _submit()
     except BrokenProcessPool as exc:
-        # 子进程被 OOM/段错误直接杀死时，尚未完成的任务不会再返回结果。
-        # 此时把剩余任务在主进程串行跑完，保住已完成与未完成 episode 的完整结论；
-        # 若主进程也扛不住，异常会继续上抛，由调用方决定如何降级。
+        # 子进程被 OOM/段错误杀死时，剩余任务回退主进程串行跑完，保住完整结论
         remaining = list(in_flight.values()) + list(pending)
         LOG.error("进程池异常终止（worker 可能被系统杀死），剩余 %d 个任务回退串行: %s",
                   len(remaining), exc)
@@ -109,7 +91,7 @@ def run_pool(
             yield worker_fn(job)
             bar.update(1)
     except KeyboardInterrupt:
-        # 不再等待运行中的任务收尾，否则长 episode 上 Ctrl+C 会表现为「卡住」
+        # 不等运行中的任务收尾，否则长 episode 上 Ctrl+C 表现为卡住
         for fut in in_flight:
             fut.cancel()
         pool.shutdown(wait=False, cancel_futures=True)

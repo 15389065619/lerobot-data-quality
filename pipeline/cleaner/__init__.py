@@ -1,17 +1,11 @@
 """按处置策略清洗数据集，输出一份新的 LeRobot 数据集。
 
-设计原则：
-1. **原始数据集严格只读**：所有写入都落在 output_dir/cleaned_dataset 下，入口处校验
-   「输出目录不得等于、也不得位于源数据集内部」。
-2. **不只是删除**：按 policy 层的处置执行
-   - drop  -> 剔除
-   - repair -> 执行修复（边界裁帧 / 时间轴重建 / meta 索引重建 / stats 重算）
-   - keep / review -> 保留
-   修复优先于删除，是真实业务里「尽可能保住数据」的基本要求。
-3. **优先调用 `lerobot-edit-dataset` CLI**：但它只能删不可修，因此只要存在 repair 项
-   就强制走内置实现，并在结果里记录原因，不静默降级。
-4. 手写实现基于 pyarrow 表操作（table.take / set_column），不做 pandas 往返，
-   避免固定长度向量列（state/action）的 schema 被破坏。
+原始数据集严格只读：所有写入都落在 output_dir/cleaned_dataset 下，入口校验
+输出目录不得等于或位于源数据集内部。按 policy 处置执行——drop 剔除、repair
+执行修复（边界裁帧 / 时间轴重建 / meta 索引重建 / stats 重算）、keep 与 review
+保留；修复优先于删除。纯删除场景优先调用 lerobot-edit-dataset CLI，存在 repair
+项时走内置实现（官方 CLI 不能修），并记录原因。内置实现基于 pyarrow 表操作，
+不做 pandas 往返，避免固定长度向量列的 schema 被破坏。
 
 子模块：types（结果结构）、cli（官方 CLI 路径）、manual（内置重写路径）、
 meta（meta 目录重建）、util（共用文件/表工具）。
@@ -36,7 +30,7 @@ LOG = logging.getLogger(__name__)
 __all__ = ["CLEANED_DIRNAME", "NOTES_FILENAME", "CleaningResult", "clean_dataset"]
 
 
-# ------------------------------------------------------------------ 主入口
+# 主入口
 def clean_dataset(
     dataset: LeRobotDatasetView,
     dispositions: dict[int, Any] | Iterable[int],

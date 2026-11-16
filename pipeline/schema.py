@@ -1,11 +1,9 @@
 """LeRobot v3 磁盘布局的 Schema 契约审计。
 
-只读元数据与两列极值，不加载整表，因此对几十 GB 的数据集也是秒级。
-
-存在的原因：很多"数据集能跑起来"并不等于"Schema 合规"。像 `index` 列退化成
-episode 内帧号这种问题，全量读取不报错、吞吐正常，只在按 episode 过滤或开
-`delta_timestamps` 时静默取错帧。这类问题必须在报告里指名到列，而不是笼统
-说"数据质量差"。
+只读元数据与两列极值，不加载整表，几十 GB 的数据集也是秒级。
+全量读取不报错不代表 schema 合规：像 index 退化成 episode 内帧号这种问题，
+全量读取与吞吐都正常，只会在按 episode 过滤或开 delta_timestamps 时静默
+取错帧。这类问题必须指名到列报告，而不是笼统说"数据质量差"。
 """
 from __future__ import annotations
 
@@ -40,7 +38,7 @@ def _sample_episodes(summary: pd.DataFrame, positions: np.ndarray) -> list[int]:
 def _index_mismatch_evidence(
     summary: pd.DataFrame, actual_from: np.ndarray, expect_from: np.ndarray
 ) -> str:
-    """指出**首个**起点不符的 episode。
+    """指出首个起点不符的 episode。
 
     只列前 3 个起点时，若错位发生在后面，输出会变成「实际 [a,b,c]，应为 [a,b,c]」，
     两边一模一样，读者无从下手（so101_bomb ep 81 实测）。
@@ -90,7 +88,7 @@ def audit_schema(
     per_ep_index = summary is not None and "idx_min" in summary.columns
     is_v2 = str(codebase_version or "").startswith("v2")
 
-    # ---------------------------------------------------------------- 1. frame_index
+    # 1. frame_index
     if not has("frame_index"):
         detail = {
             "column": "frame_index",
@@ -104,7 +102,7 @@ def audit_schema(
             detail["actual"] += "；而 index 在每集都从 0 重新开始，说明 index 承担了 frame_index 的语义"
         out.append(detail)
 
-    # ---------------------------------------------------------------- 2. index 语义
+    # 2. index 语义
     # v2.1：每集一个 parquet，index 就是 episode 内帧号（0..rows-1）。
     #       用 v3 的「全局唯一」判据会把完全合规的 v2.1 数据判成 error 并置顶阻断。
     if per_ep_index and len(summary) > 1 and is_v2:
@@ -197,7 +195,7 @@ def audit_schema(
                     )
 
     # 单 episode 数据集没有可比对象，无法判「起点是否等于前序累计行数」；
-    # 但集内连续与唯一性是**单集即可证伪**的性质，与版本无关，不能一并放过——
+    # 但集内连续与唯一性是单集即可证伪的性质，与版本无关，不能一并放过——
     # 否则单任务子集（--max_episodes 1 或本就只有一个 episode）上 index 损坏会完全静默。
     elif per_ep_index and len(summary) == 1:
         n = int(summary["rows"].iloc[0])
@@ -220,7 +218,7 @@ def audit_schema(
                 }
             )
 
-    # ---------------------------------------------------------------- 3. splits
+    # 3. splits
     if isinstance(splits, dict) and total_episodes:
         for name, spec in splits.items():
             try:
@@ -239,7 +237,7 @@ def audit_schema(
                     }
                 )
 
-    # ------------------------------------------------- 4. info 与 meta/episodes 对账
+    # 4. info 与 meta/episodes 对账
     # 数据集可能被裁剪/截断过而 info.json 没同步。这类缺口不会让任何单条
     # episode 规则命中（缺失的 episode 根本没有数据可查），只能靠计数对账发现。
     if not truncated and info_total_episodes is not None and meta_episode_rows is not None:
@@ -261,7 +259,7 @@ def audit_schema(
                 }
             )
 
-    # ------------------------------------------------- 5. info 与 data 实际行数对账
+    # 5. info 与 data 实际行数对账
     if not truncated and info_total_frames is not None and data_rows is not None:
         declared, actual = int(info_total_frames), int(data_rows)
         if declared != actual:

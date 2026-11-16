@@ -1,26 +1,12 @@
-"""LeRobot v3 三维点云质量校验与清洗。
+"""LeRobot v3 点云特征的质检与清洗。
 
-业务定位：LeRobot 数据集里除 state/action/视频之外，还可能带二维点云特征
-（info.json 中 shape=[N, D] 的 float 特征，例如 observation.environment_state）。
-点云和关节数值的脏法完全不同：NaN、离群点、重复点、坐标系跳变、越出工作空间、
-颜色通道越界，都会直接污染几何编码器/策略的输入，而且不会在 state/action 上体现。
+点云是 info.json 里 shape=[N, D] 的二维浮点特征，脏法与关节数值不同
+（离群点、重复点、越出工作空间等，且不会在 state/action 上体现）。
+处理约定与数值侧一致：按 parquet batch 流式读；只改点不删行；
+修复后保持 N 点不变（下游按定长 shape 取 batch）；离群半径按点云自身尺度缩放。
 
-设计原则（与数值质检保持一致）：
-1. **流式读取**：512×6 的点云 × 2 万帧用 pandas 读会占用 GB 级内存，
-   这里直接按 parquet batch 迭代，逐帧评估，只保留结论。
-2. **能修不删**：点云是逐帧模态，删行会让 state/action/视频错位；
-   因此清洗只改「点」，不改「行」。可修复的坏帧做过滤 + 抖动重采样补点；
-   不可修复的帧用同一 episode 内最近的好帧占位（hold-last-good），并留痕。
-3. **固定点数契约**：LeRobot 的 Array2D 特征声明了固定 [N, D]，修复后仍保持 N 点，
-   不能用变长数组偷偷破坏下游 shape。
-4. **阈值自适应**：离群半径按点云自身包围盒尺度缩放；工作空间包围盒默认从
-   样本帧的分位数推导，避免不同机器人/场景共用一套绝对坐标。
-
-对外入口：
-    detect_pointcloud_feature(features)
-    validate_pointcloud_dataset(root_or_view, config, feature_key)
-    decide(validation, on_review)
-    clean_pointclouds(root, validation, decisions, output_dir, feature_key)
+对外入口：detect_pointcloud_feature / validate_pointcloud_dataset / decide /
+clean_pointclouds。
 """
 
 from __future__ import annotations

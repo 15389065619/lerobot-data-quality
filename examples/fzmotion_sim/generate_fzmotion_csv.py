@@ -62,7 +62,7 @@ def _build_episode(seed: int, *, variant: int) -> pd.DataFrame:
         }))
     df = pd.concat(frames, ignore_index=True)
 
-    # ---- 缺陷注入（不同 episode 注入位置不同，模拟真实的不确定性）----
+    # 缺陷注入（不同 episode 注入位置不同，模拟真实的不确定性）
     if variant == 0:
         drop_frames = range(300, 305)        # 丢帧：第 2.5s 附近连续 5 帧
         nan_marker, nan_span = 2, range(500, 510)     # NaN：marker 2 在 ~4.2s 起 10 帧

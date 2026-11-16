@@ -19,7 +19,7 @@ from .types import EpisodeResult
 LOG = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------- 数值类检查
+# 数值类检查
 def check_finite(
     arr: np.ndarray, code: str, res: EpisodeResult, frame_col: np.ndarray | None, config: dict[str, Any]
 ) -> None:
@@ -359,7 +359,7 @@ def check_duplicate(res: EpisodeResult, arr: np.ndarray, ctx: DatasetContext, co
             note=f"与 ep {first} 的 action 轨迹完全一致")
 
 
-# ------------------------------------------------------------------ 结构类检查
+# 结构类检查
 def check_frame_count(res: EpisodeResult, bounds: dict[str, Any], config: dict[str, Any]) -> None:
     """帧数区间检查。
 
@@ -437,7 +437,7 @@ def check_alignment(
     """多模态对齐：时间戳 ↔ 标称时间轴 ↔ 视频时间窗 ↔ frame_index 连续性。
 
     逐模态「各自是否合理」由 nan/timestamp/frame_mismatch 规则负责；这里只回答
-    一个跨模态问题：**它们在时间上是否指向同一段物理时间**。
+    一个跨模态问题：它们在时间上是否指向同一段物理时间。
     """
     if not cfg_get(config, "alignment.enabled", True):
         return
@@ -487,14 +487,9 @@ def _check_timestamp_drift(
     """state 的首/末时间戳应落在视频时间窗内（位置对不对）。
 
     长度对不对由 video_span_mismatch 负责；这里只查「起点/终点偏移」，两者互不重叠。
-
-    LeRobot v3 有两种时间戳约定，必须都支持：
-
-    * ``timestamp`` 以 episode 起点为 0（v3 常见）：视频窗是**文件内绝对时间**，
-      两者不存在可比较的绝对位置，位置检查直接跳过，时长由 ``video_span_mismatch`` 负责；
-    * ``timestamp`` 是文件内全局时间：直接与 ``from/to`` 比较，偏移超容差即漂移。
-
-    用 ``ts[0]≈0`` 区分两者；否则多 episode 拼接的 mp4 会被整体误报偏移。
+    v3 有两种时间戳约定：timestamp 以 episode 起点为 0（视频窗是文件内绝对时间，无
+    可比较位置，直接跳过）；或 timestamp 为文件内全局时间（直接与 from/to 比较）。
+    用 ts[0]≈0 区分，否则多 episode 拼接的 mp4 会被整体误报偏移。
     """
     if "timestamp" not in ep_df.columns or res.frame_count < 2:
         return
@@ -704,7 +699,7 @@ def check_task(res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView) -
         res.add("missing_task", reason="任务描述为空字符串")
 
 
-# ------------------------------------------------------------------ 视频内容
+# 视频内容
 def check_blank_video(
     res: EpisodeResult, ep_index: int, dataset: LeRobotDatasetView, camera: str | None, config: dict[str, Any]
 ) -> None:
@@ -743,7 +738,7 @@ def check_blank_video(
     )
 
 
-# -------------------------------------------------------------------- 小工具
+# 小工具
 def as_matrix(series: pd.Series, res: EpisodeResult, code: str) -> np.ndarray | None:
     try:
         arr = np.asarray(series.to_list(), dtype=float)

@@ -39,7 +39,7 @@ _NON_ATTRIBUTION_COLUMNS = {
 }
 
 
-# ------------------------------------------------------------------- 构建
+# 构建
 def _check_severity(validation: ValidationResult, code: str) -> str:
     """规则在报告里的展示级别：以实际命中 episode 的有效级别为准。
 
@@ -242,7 +242,7 @@ def attach_artifacts(report_path: str | Path, artifacts: dict[str, str]) -> None
         json.dump(report, fh, ensure_ascii=False, indent=2, default=_json_default)
 
 
-# ------------------------------------------------------------------- 终端版
+# 终端版
 def print_summary(report: dict[str, Any], *, invalid_limit: int = 12) -> None:
     ds = report["dataset"]
     sm = report["summary"]
@@ -353,7 +353,7 @@ def print_summary(report: dict[str, Any], *, invalid_limit: int = 12) -> None:
     print(line)
 
 
-# ------------------------------------------------------------------- 归因分析
+# 归因分析
 def attribute_by_metadata(
     dataset: LeRobotDatasetView,
     validation: ValidationResult,
@@ -418,7 +418,7 @@ def dataset_fingerprint(dataset: LeRobotDatasetView) -> str:
     return h.hexdigest()[:16]
 
 
-# ------------------------------------------------------------------- 内部
+# 内部
 def _field_issue_stats(dataset: LeRobotDatasetView, validation: ValidationResult) -> dict[str, Any]:
     aggregates = getattr(validation, "aggregates", None) or {}
     streamed = aggregates.get("field_stats")
@@ -486,7 +486,7 @@ def _recommendations(
     mode = str(recon.get("mode", "native"))
     guarded = systemic_decisions(decisions)
 
-    # ---- 阻断级结论放最前面：这类情况下任何「剔除」建议都不能直接执行
+    # 阻断级结论放最前面：这类情况下任何「剔除」建议都不能直接执行
     if mode == "ambiguous":
         recs.append(
             "【阻断】meta 与 data 的 episode 编号无法对齐，视频/任务定位整体失效："
@@ -628,7 +628,7 @@ def _ratio(num: float, den: float, digits: int = 4) -> float:
     return round(float(num) / float(den), digits)
 
 
-# --- 终端表格对齐：中文按 2 个显示宽度计算，否则列会错位 ---
+# 终端表格对齐：中文按 2 个显示宽度计算，否则列会错位
 def _display_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in str(text))
 

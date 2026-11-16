@@ -1,19 +1,12 @@
-"""数据集版本管理（轻量 DVC）：内容寻址快照 + 差异对比 + 回滚。
+"""数据集版本管理：内容寻址快照 + 差异对比 + 回滚。
 
-设计要点：
-- **内容寻址**：每个文件的 sha1 决定存储位置（``.lrdq/objects/<前两位>/<sha1>``），
-  同一文件内容只存一份，多版本之间自动去重。
-- **增量快照**：与父版本相比 mtime_ns + size 未变的文件直接沿用父版本哈希，不重读
-  （百万级数据集上二次快照几乎不耗 IO）。
-- **回滚是显式动作**：默认只输出「将要改哪些文件」的 plan，必须加 ``--apply`` 才写盘，
-  且不会删除目标版本里不存在的文件（除非 ``--delete-extra``）。
+对象库在 .lrdq/objects/<前两位>/<sha1>，同一文件内容只存一份；
+快照时 mtime_ns + size 未变的文件直接沿用父版本哈希，不重读。
+回滚默认只打印 plan，加 --apply 才写盘，缺失对象直接报错。
 
 用法（--dataset_path 是父级参数，必须写在子命令之前）：
-    python -m pipeline.versions --dataset_path data/gym_xarm commit  --note "清洗前基线"
-    python -m pipeline.versions --dataset_path data/gym_xarm log
-    python -m pipeline.versions --dataset_path data/gym_xarm diff
-    python -m pipeline.versions --dataset_path data/gym_xarm restore --version <id>          # 只看 plan
-    python -m pipeline.versions --dataset_path data/gym_xarm restore --version <id> --apply  # 真回滚
+    python -m pipeline.versions --dataset_path data/gym_xarm commit --note "清洗前基线"
+    python -m pipeline.versions --dataset_path data/gym_xarm restore --version <id> [--apply]
 """
 
 from __future__ import annotations
@@ -77,8 +70,6 @@ class DatasetVersionStore:
         self.objects_dir = self.store / "objects"
         self.versions_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------- 快照 ----------
-
     def _latest(self) -> dict[str, Any] | None:
         paths = sorted(self.versions_dir.glob("*.json"), reverse=True)
         if not paths:
@@ -128,8 +119,6 @@ class DatasetVersionStore:
                  record["total_bytes"] / 1e6)
         return record
 
-    # ---------- 查询 ----------
-
     def _read(self, version_id: str | None) -> dict[str, Any]:
         if not version_id:
             latest = self._latest()
@@ -169,8 +158,6 @@ class DatasetVersionStore:
             "modified": modified,
             "unchanged": len(set(ba["files"]) & set(tgt["files"])) - len(modified),
         }
-
-    # ---------- 回滚 ----------
 
     def restore(self, version_id: str, *, apply: bool = False,
                 delete_extra: bool = False) -> dict[str, Any]:

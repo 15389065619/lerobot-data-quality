@@ -107,7 +107,7 @@ def validate_dataset_streaming(
     max_probes = int(cfg_get(config, "blank_video.max_probes", 400))
     revalidate = None if only is None else {int(ep) for ep in only}
 
-    # ------------------------------------------------------------ Pass 2
+    # Pass 2
     results: dict[int, EpisodeResult] = {}
     frames_by_episode: dict[int, int] = {}
     bad_episode_rows = 0
@@ -178,7 +178,7 @@ def validate_dataset_streaming(
     return result
 
 
-# ------------------------------------------------------------------ Pass 1
+# Pass 1
 def _build_context(
     dataset: LeRobotDatasetView,
     config: dict[str, Any],
@@ -255,7 +255,7 @@ def _build_context(
                     prev = fingerprints.get(fingerprint)
                     fingerprints[fingerprint] = ep_index if prev is None else min(prev, ep_index)
 
-    # ---- 帧数区间：优先实际行数（与内存模式一致），完全没有行时退回 meta length
+    # 帧数区间：优先实际行数（与内存模式一致），完全没有行时退回 meta length
     if counts:
         count_values = np.asarray([counts[ep] for ep in sorted(counts)], dtype=float)
     else:
@@ -263,13 +263,13 @@ def _build_context(
         count_values = meta_counts.to_numpy(dtype=float) if len(meta_counts) else np.asarray([], dtype=float)
     frame_bounds = _resolve_frame_bounds(count_values, config, dataset.fps)
 
-    # ---- action 阈值（采样）
+    # action 阈值（采样）
     threshold_arrays = [_stack(action_parts[ep]) for ep in sorted(action_parts)]
     action_thresholds, action_meta = _thresholds_from_arrays(threshold_arrays, config, fps=dataset.fps)
     if not action_thresholds:
         skipped["action_jump"] = "无可用 action 数据推导阈值"
 
-    # ---- state 阈值（同一批采样 episode）
+    # state 阈值（同一批采样 episode）
     state_thresholds, state_meta = _thresholds_from_arrays(
         [_stack(state_parts[ep]) for ep in sorted(state_parts)],
         config,
@@ -279,7 +279,7 @@ def _build_context(
     if not state_thresholds:
         skipped["state_jump"] = "无可用 state 数据推导阈值"
 
-    # ---- stats.json 时效性（采样）
+    # stats.json 时效性（采样）
     issues: list[DatasetIssue] = []
     if not dataset.episodes.empty and "episode_index" in dataset.episodes.columns:
         meta_values = pd.to_numeric(dataset.episodes["episode_index"], errors="coerce").dropna()
@@ -389,7 +389,7 @@ def _finite_mean(arrays: list[np.ndarray]) -> np.ndarray | None:
     return finite.mean(axis=0)
 
 
-# --------------------------------------------------------------- 字段统计
+# 字段统计
 class _FieldStats:
     """流式累计 state/action 的 min/max/mean/NaN/Inf，产物字段与 reporter 内存版一致。"""
 

@@ -39,9 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "floor": 8, "ceiling": 20000, "min": None, "max": None,
         },
         # action 跳变：逐维阈值 = max(abs_floor, median(每集最大|Δ|) + k * 1.4826 * MAD(每集最大|Δ|))
-        # 以「每集峰值」而非逐帧 |Δ| 建模，避免步进保持型 action 的 median 被大量 0 拉崩
-        # min_episodes_for_peak：episode 数不足时退回逐帧非零 |Δ| 的稳健尺度
-        # discrete_max_unique：取值种类 ≤ 该值的维视为二值/离散（如夹爪 ±1），不按连续跳变判定
+        # 按每集峰值而非逐帧 |Δ| 建模，避免步进保持型 action 的 median 被大量 0 拉崩
         "action_jump": {
             "abs_floor": 1.0, "max_jump_mad_k": 3.0,
             "min_episodes_for_peak": 8, "min_margin_ratio": 0.05,

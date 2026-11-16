@@ -1,16 +1,10 @@
-"""基线白名单（Baseline Whitelist）：把「已确认的已知误报」沉淀成可复用的白名单。
+"""基线白名单：把已确认的误报沉淀下来，重跑时自动摘除。
 
-纯统计学阈值在不同数据集上总会有少量稳定误报（例如片段库的长度分布、光捕的
-四元数重采样）。每次重跑都人工复核同一条告警是浪费，因此给每条告警一个稳定指纹：
-
-    fingerprint = md5(dataset_name|episode_index|rule_code)[:16]
-
-用户确认是误报后，把指纹写进配置文件顶层的 ``baseline_whitelist``。命中的告警会从
-episode 的 ``reasons`` 中摘除（不再参与处置决策与健康度计算），同时保留在
-``ignored_baseline`` 里，报告仍能追溯「哪条告警被白名单忽略了」。
-
-指纹只锚定「数据集名 + episode 编号 + 规则」，不包含帧数/阈值等易变信息，
-因此重跑、重新推导阈值都不会让白名单失效。
+纯统计阈值在不同数据集上总会有少量稳定误报（如光捕的四元数重采样）。
+每条告警的指纹 = md5(dataset_name|episode_index|rule_code)[:16]，只锚定
+数据集名/episode/规则，不含阈值等易变信息，重跑不会失效。确认后的指纹
+写进配置顶层 baseline_whitelist；命中的告警从 reasons 摘除、不参与处置
+与健康度，但保留在 ignored_baseline 供追溯。
 """
 
 from __future__ import annotations

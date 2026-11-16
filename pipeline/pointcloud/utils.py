@@ -149,7 +149,7 @@ def copy_data_parquets(src_root: Path, dst_root: Path) -> None:
         shutil.copy2(path, dst)
 
 
-# --- 终端表格对齐（中文按 2 宽） ---
+# 终端表格对齐（中文按 2 宽）
 def display_width(text: str) -> int:
     import unicodedata
     return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in str(text))

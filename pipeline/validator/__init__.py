@@ -1,16 +1,12 @@
 """逐 episode 数据质检。
 
-设计取向（对齐真实数据工程）：
-1. **阈值自适应**：帧数区间、action 跳变阈值都由数据集自身分布（median + k·MAD）推导，
-   配置里的 abs_floor / floor 只是安全下限。不同机器人的关节单位不同，绝对阈值必然误报。
-2. **严重度分级**：error（不可用）/ warning（需人审或可修）/ info（仅记录），
-   而不是所有异常一律删除——处置动作由 policy 层决定。
-3. **可修性判定**：时间戳错乱、NaN 仅出现在首尾、meta 索引漂移都属于「可修复」，
-   在细节里给出修复所需参数（如 head_frames / tail_frames），交由 cleaner 执行。
-4. **性能**：视频探针优先读容器元数据（nb_frames / duration），仅在必要时全解码；
-   黑屏检测一次 ffmpeg 调用抽多帧，避免逐帧 subprocess。
+阈值自适应：帧数区间、action 跳变阈值由数据集自身分布（median + k·MAD）推导，
+配置里的 abs_floor / floor 只是安全下限——不同机器人的关节单位不同，绝对阈值
+必然误报。异常按 error / warning / info 分级，处置由 policy 层决定；可修项
+（时间戳错乱、首尾 NaN 等）在 details 里带修复参数交 cleaner 执行。视频探针
+优先读容器元数据，必要时才解码。
 
-规则清单见 RULES。类型定义在 types，探针在 probes，数据集级上下文在 context，
+规则清单见 RULES；类型在 types，探针在 probes，数据集级上下文在 context，
 逐条规则在 rules。
 """
 
@@ -74,7 +70,7 @@ __all__ = [
 ]
 
 
-# ------------------------------------------------------------------ 主入口
+# 主入口
 def _corrupted_episode_map(dataset: LeRobotDatasetView) -> dict[int, dict[str, str]]:
     """把 loader 记录的损坏文件映射到受影响的 episode。
 

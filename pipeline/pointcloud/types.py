@@ -19,7 +19,7 @@ CLEANED_DIRNAME = "pointcloud_cleaned"
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
 
 
-# --------------------------------------------------------------------- 规则表
+# 规则表
 @dataclass(frozen=True)
 class Rule:
     code: str
@@ -45,7 +45,7 @@ REPAIRABLE = {r.code for r in RULES if r.repair}
 REPAIR_ACTIONS = {"filter", "dedupe", "bounds", "color", "resample"}
 
 
-# ------------------------------------------------------------------- 结果结构
+# 结果结构
 @dataclass
 class FrameResult:
     episode_index: int
@@ -169,7 +169,7 @@ class PointCloudValidation:
         return payload
 
 
-# ------------------------------------------------------------------ 处置决策
+# 处置决策
 @dataclass
 class PointCloudDecision:
     key: FramesKey
@@ -191,7 +191,7 @@ class PointCloudDecision:
         }
 
 
-# ------------------------------------------------------------------ 清洗结果
+# 清洗结果
 @dataclass
 class PointCloudCleaningResult:
     success: bool

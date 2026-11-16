@@ -13,16 +13,8 @@
     # 视频整文件保留时用硬链接省磁盘（跨盘会自动回退复制）
     python export_clean_dataset.py --report ... --output_dir ... --hardlink
 
-输出目录结构：
-    exported_dataset/
-    ├── data/chunk-000/file-*.parquet      # 只含保留 episode，index/frame_index 连续
-    ├── meta/info.json                     # total_episodes / total_frames 已更新
-    ├── meta/episodes/chunk-000/file-000.parquet   # v3 主元数据，episode_index 0..N-1
-    ├── meta/episodes.jsonl                # 同步副本，方便人工核对
-    ├── meta/stats.json                    # 在导出数据上重算
-    ├── meta/tasks.parquet
-    ├── videos/...                         # 有视频时按保留区间重建
-    └── cleaning_summary.md                # 剔除了哪些 episode、释放了多少帧
+产物是标准 v3 布局（data/ + meta/ + videos/），stats.json 在导出数据上重算，
+另带 cleaning_summary.md 记录剔除了哪些 episode、释放了多少帧。
 """
 
 from __future__ import annotations

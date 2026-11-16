@@ -1,18 +1,13 @@
 """从历史人工复核结果学习处置策略（阈值 / 严重度建议）。
 
-不自动改配置：输出一份 **YAML patch**，由人评审后合并进 ``config/default.yaml``。
-这是刻意的：训练数据的判定规则必须可审计，机器学习只应「提议」，不应「静默生效」。
+只输出 YAML patch 建议，由人评审后合并进 config/default.yaml，不自动生效。
+统计每条规则命中且被人工复核的 episode 里人判 drop 的比例：≥0.8（样本≥2）
+建议升 error，≤0.2（样本≥3）建议降 info，样本不足不提建议；对带数值证据的
+规则（action_jump.max_delta）额外做可分离性分析。
 
 用法：
     python -m pipeline.tuning --report outputs/quality_report.json \
         --reviews outputs/review_queue_reviewed.csv --out config/tuned.yaml
-
-学习逻辑：
-1. 统计每条规则「命中且被人工复核」的 episode 里，人最终判 keep / repair / drop 的比例；
-2. drop 比例 ≥ 0.8 且样本 ≥ 2 → 建议升级为 severity=error（全自动剔除）；
-   drop 比例 ≤ 0.2 且样本 ≥ 3 → 建议降级为 info（只记录，不阻断）；
-3. 其余保持不变——**样本不足时不做任何建议**，避免小样本过拟合。
-4. 对带数值证据的规则（目前是 action_jump.max_delta）额外给出可分离性分析。
 """
 
 from __future__ import annotations

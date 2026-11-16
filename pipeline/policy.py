@@ -249,7 +249,7 @@ def _action_text(d: Decision) -> str:
     return "自动修复后保留"
 
 
-# ------------------------------------------------------------------ 人工复核
+# 人工复核
 def write_review_queue(
     path: str | Path,
     validation: ValidationResult,
@@ -334,7 +334,7 @@ def summarize(decisions: dict[int, Decision]) -> dict[str, Any]:
     }
 
 
-# --------------------------------------------------------------------- 小工具
+# 小工具
 def _summarize_details(res: EpisodeResult) -> str:
     parts: list[str] = []
     for code, detail in res.details.items():

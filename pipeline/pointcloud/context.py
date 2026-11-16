@@ -116,7 +116,7 @@ def build_context(
     )
 
 
-# ------------------------------------------------------------------ 采样函数
+# 采样函数
 def sample_points(files: list[Path], feature_key: str, limit: int) -> np.ndarray:
     """取前 limit 帧的点云，拼成 (M, D) 用于推导尺度/包围盒/颜色范围。"""
     chunks: list[np.ndarray] = []

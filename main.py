@@ -62,8 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strict-config", action="store_true",
                    help="严格校验配置文件：未知键、类型不匹配、未知 severity 规则直接报错并退出（退出码 2）")
     p.add_argument("--accept-baseline", nargs="+", metavar="FINGERPRINT", default=None,
-                   help="把报告里的误报指纹写入 --config 的 baseline_whitelist；"
-                        "可单独使用（不需要 --dataset_path），下次运行自动忽略这些告警")
+                   help="把误报指纹写进 --config 的 baseline_whitelist，下次运行自动忽略"
+                        "（可单独使用，不需要 --dataset_path）")
     p.add_argument("--overrides", default=None, help="人工复核结果 CSV（来自 review_queue.csv）")
     p.add_argument("--on-review", choices=["keep", "drop"], default="keep",
                    help="未经人工复核的 warning 级 episode 如何处理")
@@ -86,16 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-cli", action="store_true", help="不调用 lerobot-edit-dataset，强制使用内置清洗实现")
     p.add_argument("--plots-sample", type=int, default=20, help="可视化采样 episode 数量")
     p.add_argument("--incremental", action="store_true",
-                   help="增量/断点续传：episode 级复用 manifest 中未变更的结论，"
-                        "点云帧级复用 pointcloud_scan_cache.json；损坏/新增/改动自动重检")
+                   help="增量/断点续传：复用 manifest 中未变更的 episode 结论与点云扫描缓存，"
+                        "损坏/新增/改动自动重检")
     p.add_argument("--manifest", default=None,
                    help=f"增量状态文件路径（默认 <output_dir>/{MANIFEST_FILENAME}）")
     p.add_argument("--force", action="store_true", help="忽略增量缓存，强制全量重跑")
     p.add_argument("--streaming", action="store_true",
                    help="流式模式：按 parquet 文件分片扫描，不把整张逐帧表读进内存（大数据集用；暂不支持清洗）")
     p.add_argument("--workers", type=int, default=1,
-                   help="多进程并发数：>1 时 episode 质检与点云扫描用 ProcessPoolExecutor 并行"
-                        "（worker 为纯函数不写盘，结果由主进程统一归并落盘；1=串行）")
+                   help="多进程并发数（episode 质检与点云扫描；worker 不写盘，结果由主进程归并）")
     p.add_argument("--verbose", "-v", action="store_true", help="输出 DEBUG 日志")
     return p
 
@@ -222,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_run_summary(output_dir, run)
         return code
 
-    # ----------------------------------------------------- 0. 增量状态
+    # 0. 增量状态
     manifest_path = Path(args.manifest).expanduser() if args.manifest else output_dir / MANIFEST_FILENAME
     manifest = QualityManifest.load(manifest_path)
     incremental = args.incremental and not args.force
@@ -252,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - 增量判断失败不应阻断全量流程
             LOG.warning("增量预检失败，按全量处理: %s", exc)
 
-    # ---------------------------------------------------------- 1. loader
+    # 1. loader
     step("加载数据集（loader）", 1, total_steps)
     try:
         dataset = load_dataset(dataset_path, max_episodes=args.max_episodes,
@@ -274,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
           f"tasks: {summary['total_tasks']}   相机: {len(summary['video_features'])}")
     print(f"  state 维度: {summary['num_state_dims']}   action 维度: {summary['num_action_dims']}")
 
-    # ------------------------------------------------------- 2. validator
+    # 2. validator
     step("逐 episode 质检（validator）", 2, total_steps)
     try:
         config = _build_config(args, dataset.info.get("robot_type"))
@@ -331,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     for issue in validation.dataset_issues:
         LOG.warning("数据集级问题 [%s] %s", issue.code, issue.label)
 
-    # ---------------------------------------------------------- 3. policy
+    # 3. policy
     step("处置决策（policy：保留/修复/复核/剔除）", 3, total_steps)
     try:
         overrides = policy_mod.read_overrides(args.overrides) if args.overrides else {}
@@ -357,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         if d.disposition != "keep":
             print(f"    ep {ep:>4}  {d.severity:<8} {d.disposition:<7} {d.recommended_action}")
 
-    # -------------------------------------------------------- 4. reporter
+    # 4. reporter
     step("生成质检报告（reporter）", 4, total_steps)
     report_path: Path | None = None
     review_path: Path | None = None
@@ -374,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_failure(output_dir, "reporter", exc)
         return _finish(5)
 
-    # --------------------------------------------------------- 5. cleaner
+    # 5. cleaner
     cleaning_dict: dict[str, Any] | None = None
     cleaning_sig = cleaning_signature(decisions, signatures) if (store_manifest and not args.skip_clean) else None
     reused_cleaning = manifest.reusable_cleaning(cleaning_sig) if cleaning_sig else None
@@ -422,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             print("  ! 清洗阶段失败，但 quality_report.json 仍然保留；"
                   "退出码将为 6（不能当作可训练数据集）")
 
-    # ------------------------------------------- 6. pointcloud validation
+    # 6. pointcloud validation
     pc_validation = None
     pc_decisions: dict[Any, Any] = {}
     pc_clean_dict: dict[str, Any] | None = None
@@ -477,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             print("  ! 点云质检失败，主链路继续（退出码将为 6）。")
             pc_validation = None
 
-    # ----------------------------------------------- 7. pointcloud cleaning
+    # 7. pointcloud cleaning
     if pc_validation is None:
         step("3D 点云清洗（pointcloud）— 已跳过", 7, total_steps)
     else:
@@ -511,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
             _write_failure(output_dir, "pointcloud_cleaner", exc, keep_going=True)
             print("  ! 点云清洗失败，但 pointcloud_report.json 仍然保留（退出码将为 6）。")
 
-    # ------------------------------------------------------ 8. visualizer
+    # 8. visualizer
     if args.skip_plots:
         step("可视化（visualizer）— 已跳过", 8, total_steps)
         plots: dict[str, Path] = {}
@@ -543,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             artifacts["pointcloud_cleaned_dataset"] = str(pc_clean_dict["output_path"])
         reporter_mod.attach_artifacts(report_path, artifacts)
 
-    # ------------------------------------------------------------ 收尾
+    # 收尾
     elapsed = time.time() - started
     run["reports"] = {
         "quality_report": str(report_path) if report_path else None,

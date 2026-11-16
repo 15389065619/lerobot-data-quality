@@ -10,7 +10,7 @@ from ..config import severity_of
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
 
 
-# --------------------------------------------------------------------- 规则表
+# 规则表
 @dataclass(frozen=True)
 class Rule:
     code: str
@@ -55,7 +55,7 @@ RULE_MAP = {r.code: r for r in RULES}
 RULE_ORDER = [r.code for r in RULES]
 
 
-# ------------------------------------------------------------------- 结果结构
+# 结果结构
 @dataclass
 class EpisodeResult:
     episode_index: int

@@ -85,7 +85,7 @@ def generate_plots(
     return paths
 
 
-# ------------------------------------------------------------------- 图 1
+# 图 1
 def _plot_frame_distribution(plt, dataset: LeRobotDatasetView, sample_eps, invalid, path: Path) -> Path:
     per_ep = dataset.frames_by_episode()
     counts = per_ep[per_ep.index.isin(sample_eps)]
@@ -107,7 +107,7 @@ def _plot_frame_distribution(plt, dataset: LeRobotDatasetView, sample_eps, inval
     return path
 
 
-# ------------------------------------------------------------------- 图 2
+# 图 2
 def _plot_pie(plt, validation: ValidationResult, path: Path) -> Path:
     total = validation.total_episodes
     valid = validation.valid_episodes
@@ -143,7 +143,7 @@ def _plot_pie(plt, validation: ValidationResult, path: Path) -> Path:
     return path
 
 
-# ------------------------------------------------------------------- 图 3
+# 图 3
 def _plot_state_curves(plt, dataset: LeRobotDatasetView, validation: ValidationResult,
                        sample_eps, invalid, path: Path) -> Path:
     if not dataset.has_column(STATE_KEY) or not sample_eps:
@@ -185,7 +185,7 @@ def _plot_state_curves(plt, dataset: LeRobotDatasetView, validation: ValidationR
     return path
 
 
-# ------------------------------------------------------------------- 图 4
+# 图 4
 def _plot_action_scatter(plt, dataset: LeRobotDatasetView, sample_eps, invalid, path: Path) -> Path:
     if not dataset.has_column(ACTION_KEY) or not sample_eps:
         return _placeholder(plt, path, "数据中不存在 action，无法绘制散点图")
@@ -225,7 +225,7 @@ def _plot_action_scatter(plt, dataset: LeRobotDatasetView, sample_eps, invalid, 
     return path
 
 
-# ------------------------------------------------------------------- 图 5
+# 图 5
 def _plot_before_after(plt, dataset: LeRobotDatasetView, validation: ValidationResult,
                        cleaning: dict[str, Any] | None, path: Path) -> Path:
     before_eps = validation.total_episodes
@@ -279,7 +279,7 @@ def _plot_before_after(plt, dataset: LeRobotDatasetView, validation: ValidationR
     return path
 
 
-# ------------------------------------------------------------------- 工具
+# 工具
 def _annotate(ax, text: str) -> None:
     if text:
         ax.text(0.99, 0.97, text, transform=ax.transAxes, ha="right", va="top",

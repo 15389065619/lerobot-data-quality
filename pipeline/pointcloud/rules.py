@@ -134,7 +134,7 @@ def apply_temporal_rule(results: dict[FramesKey, FrameResult], ctx: PointCloudCo
                     note="质心突变，可能是跟踪丢失/坐标系切换；需回放确认")
 
 
-# ------------------------------------------------------------------ 几何工具
+# 几何工具
 def neighbor_counts(coords: np.ndarray, radius: float) -> np.ndarray:
     """每个点在半径内的邻居数（不含自己），按行分块以控制内存。"""
     n = len(coords)

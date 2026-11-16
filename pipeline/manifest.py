@@ -57,7 +57,7 @@ class QualityManifest:
     path: Path
     payload: dict[str, Any] = field(default_factory=dict)
 
-    # ------------------------------------------------------------- 读写
+    # 读写
     @classmethod
     def load(cls, path: str | Path) -> "QualityManifest":
         p = Path(path)
@@ -89,7 +89,7 @@ class QualityManifest:
             raise
         LOG.info("增量状态已保存: %s", self.path)
 
-    # ------------------------------------------------------------- 状态查询
+    # 状态查询
     @property
     def has_results(self) -> bool:
         return bool(self.payload.get("episodes"))
@@ -124,7 +124,7 @@ class QualityManifest:
                 out[ep] = decision
         return out
 
-    # ------------------------------------------------------------- 指纹
+    # 指纹
     def episode_signatures(self, dataset: LeRobotDatasetView) -> dict[int, str]:
         """每个 episode 的廉价指纹；只依赖 meta 与文件 stat，不读帧数据。"""
         stat_cache: dict[str, dict[str, Any]] = {}
@@ -153,7 +153,7 @@ class QualityManifest:
         unchanged = self.unchanged_episodes(dataset, config)
         return {ep for ep in dataset.episode_indices if ep not in unchanged}
 
-    # ------------------------------------------------------------- 写入
+    # 写入
     def store_results(
         self,
         dataset: LeRobotDatasetView,
@@ -203,7 +203,7 @@ class QualityManifest:
         return result
 
 
-# ------------------------------------------------------------------ 指纹细节
+# 指纹细节
 def _episode_signature(
     dataset: LeRobotDatasetView,
     episode_index: int,

@@ -258,31 +258,22 @@ def _thresholds_from_arrays(
 ) -> tuple[list[float], dict[str, Any]]:
     """由若干 episode 的 action 矩阵推导逐维跳变阈值。
 
-    估计对象是「每集最大 |Δ|」而非逐帧 |Δ|：真实数据里 action 常是
-    「保持若干帧 → 跳一步」的步进指令，逐帧分布因此双峰（大量 0 + 运动帧），
-    以 median|Δ| 为中心的自适应尺度会被大量 0 拉崩，导致度制机器人（±100°）
-    几乎每集都被误报。改用每集峰值后，阈值刻画的是「这个数据集里正常 episode
-    的运动包络」，只有明显超出同类 episode 的才判异常。
-
-    episode 太少（< min_episodes_for_peak）时峰值分布的 MAD 极不稳定
-    （n=2 时退化成极差），退回逐帧非零 Δ 的稳健尺度，同时忽略保持帧的 0。
-
-    流式模式只采样部分 episode，因此把「收集 episode」与「算阈值」拆开。
+    估计对象是「每集最大 |Δ|」而非逐帧 |Δ|：步进保持型 action 的逐帧分布双峰
+    （大量 0 + 运动帧），median|Δ| 会被 0 拉崩，改用每集峰值刻画正常 episode
+    的运动包络。episode 太少（< min_episodes_for_peak）时峰值分布的 MAD 不稳，
+    退回逐帧非零 Δ 的稳健尺度。流式模式只采样部分 episode，因此把收集与计算拆开。
     """
     abs_floor = float(cfg_get(config, f"{section}.abs_floor", 1.0))
     mad_k = float(cfg_get(config, f"{section}.max_jump_mad_k", 3.0))
     min_eps = int(cfg_get(config, f"{section}.min_episodes_for_peak", 8))
     margin = float(cfg_get(config, f"{section}.min_margin_ratio", 0.05))
-    # abs_floor 的含义是「单个采样间隔内可接受的最大位移」，写在配置里时按 30Hz 标定。
-    # 120Hz 光捕数据每帧只走 1/4 的路程，若不按帧率折算，阈值会高得整条规则失效；
-    # 反过来低帧率数据集则需要放宽。折算后阈值等价于「每秒位移」，与帧率解耦。
+    # abs_floor 按 30Hz 标定，按数据集 fps 折算成「每秒位移」，与帧率解耦
     ref_fps = float(cfg_get(config, "action_jump.ref_fps", 30.0))
     eff_fps = float(fps) if fps and fps > 0 else ref_fps
     floor = abs_floor * ref_fps / eff_fps
 
     def _threshold(med: float, mad: float) -> float:
-        # MAD=0 时阈值正好落在典型峰值上，float32 舍入噪声就会把「正常」判成异常；
-        # 留 5% 相对余量（可由 min_margin_ratio 调整）
+        # MAD=0 时阈值正好落在典型峰值上，留 5% 相对余量防 float32 舍入噪声误报
         spread = max(mad, margin * abs(med))
         return max(floor, med + mad_k * 1.4826 * spread)
 
