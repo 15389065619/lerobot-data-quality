@@ -11,7 +11,7 @@ version = "1.0.0"
 description = "机器人多模态数据质量治理流水线：视频 / 动作 / 点云质检，Keep-Repair-Review-Drop 分级处置与可视化报告"
 readme = "README.md"
 requires-python = ">=3.10"
-# 与 requirements.txt 保持同一套下限（依据见该文件逐行注释）
+# 依赖下限与 requirements.txt 保持一致
 dependencies = [
     "pandas>=1.5",
     "pyarrow>=7.0",
@@ -32,7 +32,6 @@ Homepage = "https://github.com/15389065619/lerobot-data-quality"
 Architecture = "https://github.com/15389065619/lerobot-data-quality/blob/main/ARCHITECTURE.md"
 
 # console 入口：lerobot-data-quality = python main.py 的同义封装
-# main.py 顶层本就有 main() 与 sys.exit(main()) 守卫，无需改动业务逻辑
 [project.scripts]
 lerobot-data-quality = "main:main"
 lerobot-data-quality-precheck = "pipeline.precheck:main"
@@ -40,8 +39,7 @@ lerobot-data-quality-version = "pipeline.versions:main"
 lerobot-data-quality-tune = "pipeline.tuning:main"
 lerobot-data-quality-dashboard = "tools.dashboard_server:main"
 
-# 覆盖率门槛：本机基线 65.35%（branch=true），门槛取 64 留出跨平台差异的余量
-# （dev 依赖含 rosbags，CI 与本地一样会跑全部用例）。只升不降，覆盖率提升后同步抬高此值。
+# 覆盖率门槛只升不降；当前门槛低于本机基线，留出跨平台差异余量
 [tool.coverage.run]
 branch = true
 source = ["pipeline", "src"]
