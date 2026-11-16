@@ -15,14 +15,15 @@
 
 复现命令（仓库根目录执行；前两步会重建本文用到的数据集）：
 
-```bash
+```powershell
 pip install -e .[dev]
 python tools/make_demo_dataset.py                      # 注入缺陷的 demo_dataset
 python main.py --dataset_path demo_dataset --output_dir outputs
 python -m pytest tests -q --cov --cov-branch           # 覆盖率门槛见 pyproject
 
-# 点云数据集（需联网；HF 直连不通时用镜像，下载到 data/gym_xarm_pointcloud）
-set HF_ENDPOINT=https://hf-mirror.com        # PowerShell；bash 用 export
+# 点云数据集（需联网，统一走 hf-mirror，下载到 data/gym_xarm_pointcloud）
+$env:HF_ENDPOINT = 'https://hf-mirror.com'   # bash 用 export HF_ENDPOINT=...
+$env:HF_HUB_DISABLE_XET = '1'                # 镜像不支持 Xet，走普通 HTTP
 python -c "from huggingface_hub import snapshot_download; snapshot_download('rishabhrj11/gym-xarm-pointcloud', repo_type='dataset', local_dir='data/gym_xarm_pointcloud')"
 python main.py --dataset_path data/gym_xarm_pointcloud --output_dir outputs_pc_full
 ```
@@ -202,14 +203,42 @@ M4 是四条里唯一「不改结论、只改报告诚实度」的，真要排�
 
 #### 复现
 
-```bash
-# 直连 HF 全量下载（不走镜像，不裁剪文件）
+```powershell
+# 走 hf-mirror 全量下载（不裁剪文件）
+$env:HF_ENDPOINT = 'https://hf-mirror.com'   # bash 用 export HF_ENDPOINT=...
+$env:HF_HUB_DISABLE_XET = '1'
 python -c "from huggingface_hub import snapshot_download as s; \
            s('lerobot/libero', repo_type='dataset', local_dir='data/libero')"
 python main.py --dataset_path data/libero --output_dir outputs_libero --workers 8               # keep 1692 / drop 1
 python main.py --dataset_path data/libero --output_dir outputs_libero_stream --streaming --skip-clean  # review 1692
 python -m pipeline.precheck --dataset_path data/libero                                          # 同样 1692 条复核
 python main.py --dataset_path data/dual_lidar_umi_filtered --output_dir outputs_lidar            # 79 s，clean
+```
+
+### 2.6 复测补充：lerobot/tokyo_u_lsmo（2026-11-17，第 3 份外部集）
+
+数据：`lerobot/tokyo_u_lsmo`，24 MB，v3.0，50 集 / 11925 帧，**fps=5**，`robot_type` 未声明；经 hf-mirror.com 下载至 `data/hf_retest/`。§0 的「19 集 / 5855 ep」口径不变，含本集为 20 集 / 5905 ep。
+
+| 项 | 结果 |
+|---|---|
+| 预检 / 全量 | 预检通过（24 集有告警）；全量 **5.1 s**；第三次运行 `--incremental` 快路径直接复用（首次从非增量切增量时做过一次全量重建，处置结论逐位一致） |
+| v3.0 契约 | 全绿：index 连续、视频窗换算帧数逐集一致（fps=5 下无翻车）、meta 对账、时间戳单调、0 NaN、0 重复、编号对账 `mode=native`、schema 契约 0 违反 |
+| 处置 | 保留 26 / 修复 0 / **复核 24** / 剔除 0，预计丢弃 0 帧 |
+| 24 条复核的构成 | 全部命中 `frame_count_abnormal`（过短：1 集 237 帧、23 集 238 帧，对照塌缩下限 239；`severity` 自动降 warning）；其中 3 条同时命中 `state_jump`。视频 / meta / 时间戳 / index 零命中 |
+| `state_jump` 证据 | 3 条 `max_delta` = 6.2831 / 6.2820 / 6.2797，均 ≈ 2π 且全在 dim5——疑似关节角 ±π 卷绕，规则未识别 → 缺口 G5 |
+| 阈值口径 | state/action 跳变阈值全部被 floor 托住：自适应项 ≈0.003，`abs_floor_effective = 6.0`（floor 按 fps 折算 1.0×30/5，同 §2.5 dual-lidar 一节的已知代价，低速数据上跳变检测退化为绝对阈值） |
+| 清洗 | `method=noop-copy`，结构完整副本 + `stats.json` 重算，自检通过 |
+
+复测暴露两条规则层缺口（长侧无边际降级的第 2 个现实案例、±π 卷绕盲区），连同修法记入 [COMPARISON.md 规则层缺口表 G4/G5](COMPARISON.md)。
+
+复现：
+
+```bash
+export HF_ENDPOINT='https://hf-mirror.com'   # PowerShell 用 $env:HF_ENDPOINT=...
+export HF_HUB_DISABLE_XET='1'
+python -c "from huggingface_hub import snapshot_download as s; \
+           s('lerobot/tokyo_u_lsmo', repo_type='dataset', local_dir='data/hf_retest/tokyo_u_lsmo')"
+python main.py --dataset_path data/hf_retest/tokyo_u_lsmo --output_dir outputs_hf_retest        # 保留 26 / 复核 24 / 剔除 0
 ```
 
 ## 3. 并发加速（同一数据集，workers=1 vs workers=8）
