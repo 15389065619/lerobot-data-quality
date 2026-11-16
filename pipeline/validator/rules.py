@@ -102,6 +102,14 @@ class _SpikeScan(NamedTuple):
     kept: list
     sign_flips: int
     smooth_ignored: int
+    #: 连续 ≥3 个超阈 Δ 的包络段数（整段跳过，不参与尖峰核验）
+    envelope_runs: int
+    #: 长度恰为 2 的候选段中出现命中的个数（成对脉冲被救回的证据）
+    paired_spike: int
+    #: 命中的脉冲物理帧（同一脉冲的 up/down 两个 diff 去重为一个帧）
+    spike_frames: list
+    global_hits: int
+    local_hits: int
 
 
 def _scan_spikes(
@@ -113,12 +121,17 @@ def _scan_spikes(
     min_frames: int,
     fps: float | None = None,
     dim_names: list[str] | None = None,
+    diff_ref: list[float] | None = None,
 ) -> _SpikeScan | None:
     """check_action_jump / check_state_jump 的公共核验（提取自两份重复实现）。
 
-    判据三步：超阈值（必要条件）→ 离散维豁免 → 相对邻域突跳。
-    四元数整体取反两规则共用；flip 参数刻意沿用 action_jump.*（state_jump
-    历史上就复用同一组标定，本次提取不改变约定）。
+    判据分四步：超阈值（必要条件）→ 离散维豁免 / 四元数取反豁免 →
+    连续 run 分组（≥3 视为运动包络整体跳过）→ 相对邻域突跳核验。
+    邻域 ref 计算时剔除其他超阈 Δ：成对尖峰（脉冲的 up/down 两个 diff）互为
+    对方的邻域，会把中位数抬到 ~脉冲幅值的一半，spike_ratio=3 判不过而双双漏检
+    （tokyo fps=5 实测 4 个 ±2π 脉冲全部漏报）。剔除后剩余邻居 <2 时回退
+    全局逐维 median(|Δ|)（ctx 提供，来源口径见 resolved_thresholds.diff_ref）。
+    flip 参数刻意沿用 action_jump.*（state_jump 历史上就复用同一组标定）。
     min_frames / 配置前缀由调用方决定，本函数不做任何严重度判断。
     """
     if arr.shape[0] < min_frames or not thresholds:
@@ -164,24 +177,78 @@ def _scan_spikes(
         mirror &= quat_mask[None, :]
     # 只有同一帧上「多个维同时镜像翻转」才算四元数整体取反，单维翻转仍按真实跳变处理
     flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
-    kept: list = []
-    sign_flips = 0
-    for f, d in zip(frames.tolist(), dims.tolist()):
-        if flip_mask[f, d]:
-            sign_flips += 1
+
+    # 四元数取反先行剔除（保号：flip 的记账口径与提取前一致），剩下的超阈 Δ
+    # 按维分组为连续 run——run≥3 是连续加速/减速的运动包络，整体跳过；
+    # run≤2 才是尖峰候选（成对脉冲即长度 2 的 run）。
+    sign_flips = int(flip_mask[frames, dims].sum())
+    candidate_set = {(int(f), int(d)) for f, d in zip(frames.tolist(), dims.tolist())
+                     if not flip_mask[f, d]}
+    envelope_runs = 0
+    for d in range(dim):
+        fs = sorted(f for f, dd in candidate_set if dd == d)
+        if len(fs) < 3:
             continue
-        lo, hi = max(0, f - window), min(deltas.shape[0], f + window + 1)
-        neighbours = np.delete(deltas[lo:hi, d], f - lo)
-        neighbours = neighbours[np.isfinite(neighbours)]
-        ref = float(np.median(neighbours)) if neighbours.size else 0.0
-        # 邻域全静止（ref≈0）时任何超阈值的跳变都算尖峰
-        if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
-            kept.append((int(f), int(d)))
+        splits = np.where(np.diff(fs) != 1)[0] + 1
+        for run in np.split(np.asarray(fs), splits):
+            if run.size >= 3:
+                envelope_runs += 1
+                for f in run:
+                    candidate_set.discard((int(f), int(d)))
+
+    kept: list = []
+    global_hits = 0
+    local_hits = 0
+    hit_runs_len2 = 0
+    spike_frames: list = []
+    # 按维重走候选（保持 run 与命中的对应关系）
+    for d in range(dim):
+        fs = sorted(f for f, dd in candidate_set if dd == d)
+        if not fs:
+            continue
+        splits = np.where(np.diff(fs) != 1)[0] + 1
+        for run in np.split(np.asarray(fs), splits):
+            hits_in_run = 0
+            for f in run.tolist():
+                lo, hi = max(0, f - window), min(deltas.shape[0], f + window + 1)
+                neighbours = np.delete(deltas[lo:hi, d], f - lo)
+                neighbours = neighbours[np.isfinite(neighbours)]
+                # 剔除邻域里的其他超阈 Δ：成对尖峰会互相把对方抬成「邻域中位数」
+                if thr.size:
+                    neighbours = neighbours[neighbours <= thr[d]]
+                ref_source = "local"
+                if neighbours.size >= 2:
+                    ref = float(np.median(neighbours))
+                else:
+                    # 剩余邻居不足（fps 低时窗口塌缩，成对尖峰剔除后只剩 0~1 个）：
+                    # 回退全局逐维 median(|Δ|)。无全局统计时 ref=0，维持
+                    # 「邻域全静止 → 任何超阈都算尖峰」的旧语义。
+                    g = float(diff_ref[d]) if diff_ref and d < len(diff_ref) else 0.0
+                    ref = float(g)
+                    ref_source = "global"
+                if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
+                    kept.append((f, d))
+                    hits_in_run += 1
+                    if ref_source == "global":
+                        global_hits += 1
+                    else:
+                        local_hits += 1
+            if hits_in_run:
+                if run.size == 2:
+                    hit_runs_len2 += 1
+                # 脉冲物理帧：run 覆盖 diff i..j → 候选帧 i+1..j+1，取 |值| 最大者
+                lo_f, hi_f = int(run[0]) + 1, min(int(run[-1]) + 2, arr.shape[0])
+                vals = np.abs(arr[lo_f:hi_f, d])
+                if vals.size:
+                    spike_frames.append(int(lo_f + int(np.argmax(vals))))
     smooth_ignored = int(frames.size) - len(kept) - sign_flips
     return _SpikeScan(
         deltas=deltas, dim=dim, thr=thr, discrete_dims=discrete_dims,
         spike_ratio=spike_ratio, window=window, kept=kept,
         sign_flips=sign_flips, smooth_ignored=smooth_ignored,
+        envelope_runs=envelope_runs, paired_spike=hit_runs_len2,
+        spike_frames=sorted(set(spike_frames)),
+        global_hits=global_hits, local_hits=local_hits,
     )
 
 
@@ -192,9 +259,10 @@ def check_action_jump(
     config: dict[str, Any],
     fps: float | None = None,
     dim_names: list[str] | None = None,
+    diff_ref: list[float] | None = None,
 ) -> None:
     scan = _scan_spikes(arr, thresholds, config, prefix="action_jump", min_frames=2,
-                        fps=fps, dim_names=dim_names)
+                        fps=fps, dim_names=dim_names, diff_ref=diff_ref)
     if scan is None or not scan.kept:
         return
     kept = scan.kept
@@ -212,6 +280,17 @@ def check_action_jump(
         severity = "error"
     elif exceed_ratio < downgrade_ratio:
         severity = "info"
+    # 成对尖峰不做幅度降级：downgrade_ratio 针对「快速但连续」的正常运动，
+    # 而成对 ±2π 脉冲是语义伪影（如 ±π 卷绕的忠实 delta），keep 会把它放回训练数据。
+    # 下限 warning（进复核）；escalate_ratio 仍可升到 error。
+    if scan.paired_spike > 0 and severity != "error":
+        severity = "warning"
+    if scan.global_hits and scan.local_hits:
+        ref_source = "mixed"
+    elif scan.global_hits:
+        ref_source = "global"
+    else:
+        ref_source = "local"
     res.add(
         "action_jump",
         severity=severity,
@@ -222,7 +301,11 @@ def check_action_jump(
         discrete_dims=[int(x) for x in scan.discrete_dims],
         smooth_peaks_ignored=scan.smooth_ignored,
         sign_flips_ignored=scan.sign_flips,
+        envelope_runs_ignored=scan.envelope_runs,
         spike_ratio=scan.spike_ratio,
+        paired_spike=scan.paired_spike,
+        spike_frames=scan.spike_frames[:20],
+        ref_source=ref_source,
         worst_frame=kept[worst_pos][0],
         worst_dim=worst_dim,
         examples=[
@@ -240,6 +323,7 @@ def check_state_jump(
     config: dict[str, Any],
     fps: float | None = None,
     dim_names: list[str] | None = None,
+    diff_ref: list[float] | None = None,
 ) -> None:
     """state 单帧突跳（追踪丢失、设备重置、瞬移）的软规则。
 
@@ -250,7 +334,7 @@ def check_state_jump(
     if not cfg_get(config, "state_jump.enabled", True):
         return
     scan = _scan_spikes(arr, thresholds, config, prefix="state_jump", min_frames=3,
-                        fps=fps, dim_names=dim_names)
+                        fps=fps, dim_names=dim_names, diff_ref=diff_ref)
     if scan is None or not scan.kept:
         return
     kept = scan.kept

@@ -284,7 +284,7 @@ def _validate_non_video(
             check_static(arr_s, "state", res, config, dataset.fps)
             check_state_jump(
                 arr_s, res, ctx.state_thresholds, config, dataset.fps,
-                dim_names=ctx.state_dim_names,
+                dim_names=ctx.state_dim_names, diff_ref=ctx.state_diff_ref,
             )
             check_joint_limits(arr_s, res, config, dataset)
     else:
@@ -297,7 +297,7 @@ def _validate_non_video(
             check_finite(arr_a, "nan_action", res, frame_col, config)
             check_action_jump(
                 arr_a, res, ctx.action_thresholds, config, dataset.fps,
-                dim_names=ctx.action_dim_names,
+                dim_names=ctx.action_dim_names, diff_ref=ctx.action_diff_ref,
             )
             check_static(arr_a, "action", res, config, dataset.fps)
             check_duplicate(res, arr_a, ctx, config)

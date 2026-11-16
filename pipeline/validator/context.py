@@ -26,6 +26,9 @@ class DatasetContext:
     resolved: dict[str, Any]
     #: state 跳变阈值（与 action 同一套「每集峰值」推导），空列表表示不可评估
     state_thresholds: list[float] = field(default_factory=list)
+    #: 全局逐维 median(|Δ|)：spike 核验「剩余邻居 <2」时的回退参照（空 = 不可用）
+    action_diff_ref: list[float] = field(default_factory=list)
+    state_diff_ref: list[float] = field(default_factory=list)
     #: 特征维度名，用于按四元数分组识别 q≡-q（元数据缺失时为 None）
     action_dim_names: list[str] | None = None
     state_dim_names: list[str] | None = None
@@ -76,6 +79,8 @@ class DatasetContext:
         return cls(
             frame_bounds, action_thresholds, fingerprints, issues, resolved,
             state_thresholds=state_thresholds,
+            action_diff_ref=action_meta.get("diff_ref") or [],
+            state_diff_ref=state_meta.get("diff_ref") or [],
             action_dim_names=dataset.feature_names(ACTION_KEY) or None,
             state_dim_names=dataset.feature_names(STATE_KEY) or None,
         )
@@ -304,7 +309,14 @@ def _thresholds_from_arrays(
                     "fps": eff_fps,
                     "abs_floor_effective": round(floor, 6),
                     "spike_ratio": float(cfg_get(config, f"{section}.spike_ratio", 3.0)),
+                    "diff_ref": [], "diff_ref_basis": "unavailable",
                     "dim_mismatch_episodes": dim_mismatch, "per_dim": []}
+
+    # 全局逐维 median(|Δ|)：spike 核验中「剩余邻居 <2」时的回退参照。
+    # 成对尖峰互为对方的邻域，剔除后邻居不足 2 个，只能退到全局口径；
+    # 与阈值同源（同一批 Δ），流式模式下同样是采样口径，basis 如实记录。
+    stacked_all = np.vstack(deltas)
+    diff_ref = [round(float(m), 6) for m in np.median(stacked_all, axis=0)]
 
     if len(peaks) >= min_eps:
         stacked = np.vstack(peaks)
@@ -347,6 +359,8 @@ def _thresholds_from_arrays(
             "min_margin_ratio": margin,
             "spike_ratio": float(cfg_get(config, f"{section}.spike_ratio", 3.0)),
             "basis": basis,
+            "diff_ref": diff_ref,
+            "diff_ref_basis": basis,
             "per_dim": [round(float(t), 4) for t in thresholds],
             **detail,
         },
