@@ -1,43 +1,18 @@
 #!/usr/bin/env python3
 """清洗前后动作分布对比：方差、跳变峰值、均值漂移。
 
-为什么需要这个脚本
-------------------
-质检报告回答的是「哪些 episode 有问题」。但它不回答下一个问题：**清洗之后，
-动作序列到底变成了什么样？** 没有这一步，「数据变干净了」只是主观判断。
+质检报告回答「哪些 episode 有问题」，不回答「清洗之后动作序列变成了什么样」。
+本脚本把三个可复算统计量摆到同一张表上，原始侧与清洗侧对齐。取数分三份：
+原始全量（基线）、原始仅保留集（把剔除的选择效应与裁剪/重建时间戳的修复效应
+拆开，少了它任何「方差下降」都无法归因）、清洗后。大数据集上若报告证明本次
+只做整集剔除（trim/repair 帧数为 0），可用 --proxy-from-kept 跳过清洗产物生成
+（省掉数小时视频重编码），代价是修复效应记为「未测量」而不是 0。
 
-本脚本只做一件事：把三个可复算的统计量摆到同一张表上，原始侧和清洗侧对齐。
-
-取数与算账
-----------
-取数分三份，缺一不可：
-
-1. **原始全量** —— 基线，含所有已剔除的坏 episode；
-2. **原始仅保留集** —— 只取清洗后仍在的那些 episode。这一份用来把「剔除」和
-   「修复」两种效应拆开：删样本必然改变方差，那是选择效应；裁剪边界帧、重建
-   时间戳带来的变化才是修复效应。少了这一份，任何「方差下降」都无法归因；
-3. **清洗后** —— 结果。
-
-大数据集上还有一条省时间的路：`--proxy-from-kept`。当报告证明本次清洗只做整集
-剔除（`trim_frames`、`repair_frames` 均为 0）时，「清洗后」与「原始仅保留集」在
-动作数值上逐帧等价，于是可以跳过生成清洗产物（那一步要把所有视频重新编码，动辄
-几小时），代价是修复效应记为「未测量」而不是 0。
-
-三个指标的口径：
-
-- **方差**：逐维总体方差（ddof=0）跨维平均；另算离差平方和（SSE）用于归因，
-  SSE 可跨 episode 相加，方差不可；
-- **跳变峰值**：episode 内相邻帧 |Δ| 的 L∞ 范数（跨维取最大）的全局最大值，
-  另报「每集最大跳变」的中位数/分位数，以及超过阈值的帧数——单看最大值会被
-  一个尖峰主导，分位数才看得出整体分布是否收敛；
-- **均值漂移**：逐维均值差的最大绝对值，并按池化标准差归一化（等价于 Cohen's d
-  的分子），避免用绝对值比较不同量纲的维度。
-
-明确不做的
-----------
-不训练模型，因此不声称 loss 曲线变化。这里报的是**代理指标**（归一化跳变幅度、
-超阈帧数），只能说明「梯度被异常样本放大的通道变少了」，不能说明「最终精度提升
-了多少」。真要那条结论，需要跑训练对照，见 docs/EVAL.md §8.5。
+指标口径：方差为逐维总体方差（ddof=0）跨维平均，另算 SSE 用于归因（SSE 可跨
+episode 相加）；跳变峰值为 episode 内相邻帧 |Δ| 的跨维最大值，同时报分位数与
+超阈帧数（单看最大值会被尖峰主导）；均值漂移为逐维均值差的最大绝对值，按池化
+标准差归一化（等价 Cohen's d 的分子）。不训练模型，只报代理指标，不声称精度
+提升；那条结论需要训练对照，见 docs/EVAL.md §8.5。
 """
 
 from __future__ import annotations
@@ -74,7 +49,7 @@ def _markers(section_id: str) -> tuple[str, str]:
 _BYTES = 8
 
 
-# --------------------------------------------------------------------------- 读
+# 读
 def _to_matrix(column: pa.ChunkedArray) -> np.ndarray:
     """把 action 列转成 (帧数, 维度) 的 float64 矩阵，非有限值置 NaN。
 
@@ -151,7 +126,7 @@ class ActionAccumulator:
         self.dim = 0
         self.corrupted: list[dict[str, str]] = []
 
-    # ------------------------------------------------------------------ 累加
+    # 累加
     def add(self, table: pa.Table) -> None:
         names = table.column_names
         if "episode_index" not in names or ACTION_KEY not in names:
@@ -236,7 +211,7 @@ class ActionAccumulator:
                     acc.over += int((row_max > self.threshold).sum())
             acc.last = sub[-1].copy()
 
-    # ------------------------------------------------------------------ 汇总
+    # 汇总
     def summary(self, root: str = "") -> dict[str, Any]:
         per_episode: list[dict[str, Any]] = []
         means: list[np.ndarray] = []
@@ -278,7 +253,7 @@ class ActionAccumulator:
         var = np.maximum(var, 0.0)  # 抵消浮点抵消误差带来的 -1e-18
         sse = float(np.nansum(total_s2 - total_s1**2 / np.maximum(total_n, 1)))
 
-        # 单集对总 SSE 的**可加**贡献 = 组间项 n·(均值差)² + 组内 SSE。
+        # 单集对总 SSE 的可加贡献 = 组间项 n·(均值差)² + 组内 SSE。
         # 只用组内 SSE 会让各集之和小于总量（差额是集间差异），报「占比」时会自相矛盾。
         for row, ep_mean, ep_n, sse_within in zip(per_episode, means, counts, within):
             between = float(np.nansum(ep_n * (ep_mean - mean) ** 2))
@@ -428,7 +403,7 @@ def _stats_std(stats: dict[str, Any]) -> float | None:
         return None
 
 
-# ------------------------------------------------------------------- episode 映射
+# episode 映射
 def resolve_episode_map(cleaned_root: Path, report: dict[str, Any] | None) -> tuple[dict[int, int], str]:
     """返回 ({清洗后编号: 原始编号}, 来源)。
 
@@ -474,11 +449,11 @@ def _episode_ids(root: Path) -> list[int]:
     return sorted(ids)
 
 
-# ---------------------------------------------------------------------- 对比
+# 对比
 def _require_drop_only(report: dict[str, Any] | None) -> None:
     """代理模式下必须先证明「清洗只做剔除」。
 
-    代理模式拿「原始仅保留集」冒充清洗后，这在数学上只在**没有裁剪/修复帧**时成立。
+    代理模式拿「原始仅保留集」冒充清洗后，这在数学上只在没有裁剪/修复帧时成立。
     报告里 `trim_frames` / `repair_frames` 就是这两类改动的计数；非 0 说明清洗改写
     了帧内容，此时等价关系不成立，必须老老实实跑一次清洗产物，不能拿代理糊过去。
     """
@@ -703,7 +678,7 @@ def _max_abs_diff(a: list[float], b: list[float]) -> float:
     return max(pairs)[0] if pairs else float("nan")
 
 
-# ---------------------------------------------------------------------- 渲染
+# 渲染
 def _num(value: float | int | None, digits: int = 3) -> str:
     if value is None:
         return "—"
@@ -994,7 +969,7 @@ def _conclusion(cmp: dict[str, Any], sec: str) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------- 注入
+# 注入
 def inject_into_eval(eval_path: Path, section: str, section_id: str = DEFAULT_SECTION_ID) -> None:
     """把章节写进 docs/EVAL.md：有标记就替换，没有就追加。可重复执行。"""
     begin, end = _markers(section_id)
@@ -1009,7 +984,7 @@ def inject_into_eval(eval_path: Path, section: str, section_id: str = DEFAULT_SE
     eval_path.write_text(new_text, encoding="utf-8")
 
 
-# ----------------------------------------------------------------------- CLI
+# CLI
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="对比清洗前后的动作方差 / 跳变峰值 / 均值漂移",

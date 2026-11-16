@@ -55,9 +55,7 @@ MAX_POINTS_DEFAULT = 600
 FRAME_CACHE_SIZE = 16
 
 
-# ---------------------------------------------------------------------------
 # 状态：启动时只读元信息，帧数据按 episode 点播（带小容量 LRU）
-# ---------------------------------------------------------------------------
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -100,7 +98,7 @@ class DashboardState:
         self._frame_cache: dict[int, tuple[pd.DataFrame, list[int]]] = {}
         self._lock = threading.Lock()
 
-    # ------------------------------------------------------------ 元信息
+    # 元信息
     @staticmethod
     def _read_pc_queue(out: Path | None) -> list[dict[str, str]]:
         if out is None:
@@ -205,7 +203,7 @@ class DashboardState:
             "colors": {"disposition": DISPOSITION_COLORS, "severity": SEVERITY_COLORS},
         }
 
-    # ------------------------------------------------------------ 曲线数据
+    # 曲线数据
     def _frames(self, episode_index: int) -> tuple[pd.DataFrame, list[int]]:
         with self._lock:
             hit = self._frame_cache.get(episode_index)
@@ -255,9 +253,7 @@ class DashboardState:
         return loc[0] if loc else None
 
 
-# ---------------------------------------------------------------------------
 # HTTP 层
-# ---------------------------------------------------------------------------
 def _finite(obj: Any) -> Any:
     """NaN/Inf 不是合法 JSON，转换成 null（曲线在坏数据处断开，正好暴露问题）。"""
     if isinstance(obj, float):
@@ -273,7 +269,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "LeRobotQualityDashboard/1.0"
     state: DashboardState  # 由 make_server 注入到子类
 
-    # ------------------------------------------------------------ 输出助手
+    # 输出助手
     def _json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(_finite(payload), ensure_ascii=False, allow_nan=False,
                           default=str).encode("utf-8")
@@ -298,7 +294,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # 不污染 stdout
         LOG.debug("%s - %s", self.address_string(), fmt % args)
 
-    # ------------------------------------------------------------ 路由
+    # 路由
     def do_GET(self) -> None:  # noqa: N802
         try:
             self._route(head=False)
@@ -336,7 +332,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._error(HTTPStatus.NOT_FOUND, f"未知路径: {path}")
 
-    # ------------------------------------------------------------ 视频
+    # 视频
     def _video(self, episode_index: int, camera: str, head: bool) -> None:
         if camera not in self.state.dataset.video_index:
             self._error(HTTPStatus.NOT_FOUND, f"相机 {camera} 不存在")
@@ -402,9 +398,7 @@ def make_server(state: DashboardState, host: str = "127.0.0.1",
     return server
 
 
-# ---------------------------------------------------------------------------
 # 单页前端（ECharts 走 CDN；离线时只退化为文字，不影响数据浏览）
-# ---------------------------------------------------------------------------
 PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -723,9 +717,7 @@ boot().catch(err => {
 """
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="dashboard_server",

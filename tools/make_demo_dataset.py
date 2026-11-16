@@ -3,7 +3,7 @@
 
 用途：
 1. 端到端验证 pipeline（含视频重建、meta 重写等分支）；
-2. 面试演示时有可复现的输入，不必依赖 HuggingFace 下载。
+2. 提供可复现的演示输入，不必依赖 HuggingFace 下载。
 
 生成的目录结构与 LeRobot v3.0 一致：
     demo_dataset/
@@ -95,7 +95,7 @@ def main() -> int:
             "task": frames_by_ep[2]["task"],
         }
 
-    # ---------------- data parquet + episode 元数据 ----------------
+    # data parquet + episode 元数据
     ep_meta_rows: list[dict] = []
     global_index = 0
     video_cursor = {cam: {gi: 0 for gi in range(len(groups))} for cam in CAMERAS}
@@ -138,7 +138,7 @@ def main() -> int:
                  "data/chunk_index": 0, "data/file_index": gi}
             )
 
-    # ---------------- videos ----------------
+    # videos
     for cam_i, cam in enumerate(CAMERAS):
         for gi, eps in enumerate(groups):
             all_frames = []
@@ -159,7 +159,7 @@ def main() -> int:
                 video_from_to[(cam, gi, ep)] = (cursor / fps, (cursor + n_video) / fps)
                 cursor += n_video
 
-    # ---------------- meta/episodes ----------------
+    # meta/episodes
     ep_rows = []
     for row in ep_meta_rows:
         ep, gi = row["episode_index"], row["data/file_index"]
@@ -183,14 +183,14 @@ def main() -> int:
         ep_rows.append(out)
     pq.write_table(pa.Table.from_pylist(ep_rows), root / "meta/episodes/chunk-000/file-000.parquet")
 
-    # ---------------- meta/tasks.parquet ----------------
+    # meta/tasks.parquet
     pq.write_table(
         pa.table({"task_index": pa.array(list(range(len(TASKS))), type=pa.int64()),
                   "task": pa.array(TASKS, type=pa.string())}),
         root / "meta/tasks.parquet",
     )
 
-    # ---------------- meta/info.json + stats.json ----------------
+    # meta/info.json + stats.json
     total_frames = sum(len(frames_by_ep[e]["state"]) for e in range(args.episodes))
     info = {
         "codebase_version": "v3.0",
@@ -230,7 +230,7 @@ def main() -> int:
     return 0
 
 
-# ------------------------------------------------------------------ 数据构造
+# 数据构造
 def _make_episode(ep: int, n: int, rng: np.random.Generator, fps: int) -> dict:
     t = np.arange(n) / fps
     amp = rng.uniform(0.4, 1.2, size=JOINTS)
