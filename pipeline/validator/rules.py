@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -90,22 +90,45 @@ def _quaternion_dim_mask(dim_names: list[str] | None, dim: int) -> np.ndarray | 
     return mask
 
 
-def check_action_jump(
+class _SpikeScan(NamedTuple):
+    """spike 核验的公共中间结果；两条规则各自决定证据字段与严重度。"""
+
+    deltas: np.ndarray
+    dim: int
+    thr: np.ndarray
+    discrete_dims: np.ndarray
+    spike_ratio: float
+    window: int
+    kept: list
+    sign_flips: int
+    smooth_ignored: int
+
+
+def _scan_spikes(
     arr: np.ndarray,
-    res: EpisodeResult,
     thresholds: list[float],
     config: dict[str, Any],
+    *,
+    prefix: str,
+    min_frames: int,
     fps: float | None = None,
     dim_names: list[str] | None = None,
-) -> None:
-    if arr.shape[0] < 2 or not thresholds:
-        return
+) -> _SpikeScan | None:
+    """check_action_jump / check_state_jump 的公共核验（提取自两份重复实现）。
+
+    判据三步：超阈值（必要条件）→ 离散维豁免 → 相对邻域突跳。
+    四元数整体取反两规则共用；flip 参数刻意沿用 action_jump.*（state_jump
+    历史上就复用同一组标定，本次提取不改变约定）。
+    min_frames / 配置前缀由调用方决定，本函数不做任何严重度判断。
+    """
+    if arr.shape[0] < min_frames or not thresholds:
+        return None
     deltas = np.abs(np.diff(arr, axis=0))
     deltas = np.nan_to_num(deltas, nan=0.0, posinf=np.inf)
     dim = min(deltas.shape[1], len(thresholds))
     thr = np.asarray(thresholds[:dim], dtype=float)
     # 夹爪等二值/离散维的「开合」本身就是 ±2 的跳变，属正常控制指令，不能按连续维阈值判异常
-    discrete_max = int(cfg_get(config, "action_jump.discrete_max_unique", 3))
+    discrete_max = int(cfg_get(config, f"{prefix}.discrete_max_unique", 3))
     nunique = np.array([
         len(np.unique(arr[np.isfinite(arr[:, d]), d])) if np.isfinite(arr[:, d]).any() else 0
         for d in range(dim)
@@ -115,16 +138,12 @@ def check_action_jump(
         deltas[:, discrete_dims] = 0.0
     over = deltas[:, :dim] > thr
     if not over.any():
-        return
+        return None
     frames, dims = np.where(over)
-    # 超过阈值只是「必要」条件：阈值本身是「每集峰值」的 3σ 上界，
-    # 而峰值是重尾统计量，干净数据里总会有几集因为「快速但连续」的摆动略微越界。
-    # 真正的跳变是相对邻近帧的突跳，因此再要求 |Δ| 至少是邻域中位数的 spike_ratio 倍，
-    # 这样连续加速/减速的运动包络不会被当成跳变，单帧尖峰仍会命中。
-    spike_ratio = float(cfg_get(config, "action_jump.spike_ratio", 3.0))
+    spike_ratio = float(cfg_get(config, f"{prefix}.spike_ratio", 3.0))
     # spike_window 按 30Hz 标定（默认 3 帧≈0.1s），高帧率下需按 fps 折算，
     # 否则 120Hz 的邻域过短，正常的连续加减速会被误判成单帧尖峰。
-    window = scale_frames(int(cfg_get(config, "action_jump.spike_window", 3)), config, fps)
+    window = scale_frames(int(cfg_get(config, f"{prefix}.spike_window", 3)), config, fps)
     # 四元数 q 与 -q 表示同一姿态：整体取反会让 4 个分量在同一帧同时出现 ~2|x| 的跳变。
     # 这是表示等价而非数据缺陷（120Hz 光捕数据里很常见），需要逐帧成组识别后排除；
     # 只翻转单个维度的仍按真实跳变处理。
@@ -145,7 +164,7 @@ def check_action_jump(
         mirror &= quat_mask[None, :]
     # 只有同一帧上「多个维同时镜像翻转」才算四元数整体取反，单维翻转仍按真实跳变处理
     flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
-    kept: list[tuple[int, int]] = []
+    kept: list = []
     sign_flips = 0
     for f, d in zip(frames.tolist(), dims.tolist()):
         if flip_mask[f, d]:
@@ -159,15 +178,33 @@ def check_action_jump(
         if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
             kept.append((int(f), int(d)))
     smooth_ignored = int(frames.size) - len(kept) - sign_flips
-    if not kept:
+    return _SpikeScan(
+        deltas=deltas, dim=dim, thr=thr, discrete_dims=discrete_dims,
+        spike_ratio=spike_ratio, window=window, kept=kept,
+        sign_flips=sign_flips, smooth_ignored=smooth_ignored,
+    )
+
+
+def check_action_jump(
+    arr: np.ndarray,
+    res: EpisodeResult,
+    thresholds: list[float],
+    config: dict[str, Any],
+    fps: float | None = None,
+    dim_names: list[str] | None = None,
+) -> None:
+    scan = _scan_spikes(arr, thresholds, config, prefix="action_jump", min_frames=2,
+                        fps=fps, dim_names=dim_names)
+    if scan is None or not scan.kept:
         return
-    kept_deltas = np.array([deltas[f, d] for f, d in kept], dtype=float)
+    kept = scan.kept
+    kept_deltas = np.array([scan.deltas[f, d] for f, d in kept], dtype=float)
     worst_pos = int(np.argmax(kept_deltas))
     # 超阈幅度分级：这个阈值是「每集峰值」的 3σ 上界，本身就在分布尾部，
     # 所以 1.0~1.5 倍的命中几乎都是「快速但连续」的正常动作，报成 warning 只会制造
     # 稳定误报（实测 pusht 17/206）。真正的跳变通常远超阈值，按倍数区分。
     worst_dim = kept[worst_pos][1]
-    exceed_ratio = float(kept_deltas[worst_pos] / max(float(thr[worst_dim]), 1e-9))
+    exceed_ratio = float(kept_deltas[worst_pos] / max(float(scan.thr[worst_dim]), 1e-9))
     downgrade_ratio = float(cfg_get(config, "action_jump.downgrade_ratio", 1.5))
     escalate_ratio = cfg_get(config, "action_jump.escalate_ratio")
     severity: str | None = None
@@ -181,16 +218,16 @@ def check_action_jump(
         exceed_ratio=round(exceed_ratio, 2),
         jump_count=len(kept),
         max_delta=round(float(kept_deltas[worst_pos]), 4),
-        thresholds_used=[round(float(t), 4) for t in thr],
-        discrete_dims=[int(x) for x in discrete_dims],
-        smooth_peaks_ignored=smooth_ignored,
-        sign_flips_ignored=sign_flips,
-        spike_ratio=spike_ratio,
+        thresholds_used=[round(float(t), 4) for t in scan.thr],
+        discrete_dims=[int(x) for x in scan.discrete_dims],
+        smooth_peaks_ignored=scan.smooth_ignored,
+        sign_flips_ignored=scan.sign_flips,
+        spike_ratio=scan.spike_ratio,
         worst_frame=kept[worst_pos][0],
         worst_dim=worst_dim,
         examples=[
-            {"frame": f, "dim": d, "delta": round(float(deltas[f, d]), 4),
-             "threshold": round(float(thr[d]), 4)}
+            {"frame": f, "dim": d, "delta": round(float(scan.deltas[f, d]), 4),
+             "threshold": round(float(scan.thr[d]), 4)}
             for f, d in kept[:5]
         ],
     )
@@ -212,68 +249,26 @@ def check_state_jump(
     """
     if not cfg_get(config, "state_jump.enabled", True):
         return
-    if arr.shape[0] < 3 or not thresholds:
+    scan = _scan_spikes(arr, thresholds, config, prefix="state_jump", min_frames=3,
+                        fps=fps, dim_names=dim_names)
+    if scan is None or not scan.kept:
         return
-    deltas = np.abs(np.diff(arr, axis=0))
-    deltas = np.nan_to_num(deltas, nan=0.0, posinf=np.inf)
-    dim = min(deltas.shape[1], len(thresholds))
-    thr = np.asarray(thresholds[:dim], dtype=float)
-    discrete_max = int(cfg_get(config, "state_jump.discrete_max_unique", 3))
-    nunique = np.array([
-        len(np.unique(arr[np.isfinite(arr[:, d]), d])) if np.isfinite(arr[:, d]).any() else 0
-        for d in range(dim)
-    ])
-    discrete_dims = np.where(nunique <= discrete_max)[0]
-    if discrete_dims.size:
-        deltas[:, discrete_dims] = 0.0
-    over = deltas[:, :dim] > thr
-    if not over.any():
-        return
-
-    spike_ratio = float(cfg_get(config, "state_jump.spike_ratio", 3.0))
-    window = scale_frames(int(cfg_get(config, "state_jump.spike_window", 3)), config, fps)
-    # 四元数 q≡-q 同样适用于 state；元数据缺失时退回数值启发式
-    flip_tol = float(cfg_get(config, "action_jump.sign_flip_tol", 0.25))
-    flip_min_dims = int(cfg_get(config, "action_jump.sign_flip_min_dims", 2))
-    head, tail = arr[:-1, :dim], arr[1:, :dim]
-    finite = np.isfinite(head) & np.isfinite(tail)
-    with np.errstate(invalid="ignore"):
-        step = np.abs(tail - head)
-        mirror = (np.abs(head + tail) <= flip_tol * step) & (step > 0)
-    mirror &= finite
-    quat_mask = _quaternion_dim_mask(dim_names, dim)
-    if quat_mask is not None:
-        mirror &= quat_mask[None, :]
-    flip_mask = mirror & (mirror.sum(axis=1, keepdims=True) >= flip_min_dims)
-
-    frames, dims = np.where(over)
-    kept: list[tuple[int, int]] = []
-    for f, d in zip(frames.tolist(), dims.tolist()):
-        if flip_mask[f, d]:
-            continue
-        lo, hi = max(0, f - window), min(deltas.shape[0], f + window + 1)
-        neighbours = np.delete(deltas[lo:hi, d], f - lo)
-        neighbours = neighbours[np.isfinite(neighbours)]
-        ref = float(np.median(neighbours)) if neighbours.size else 0.0
-        if ref <= 0 or deltas[f, d] >= spike_ratio * ref:
-            kept.append((int(f), int(d)))
-    if not kept:
-        return
-    kept_deltas = np.array([deltas[f, d] for f, d in kept], dtype=float)
+    kept = scan.kept
+    kept_deltas = np.array([scan.deltas[f, d] for f, d in kept], dtype=float)
     worst_pos = int(np.argmax(kept_deltas))
     res.add(
         "state_jump",
         severity="warning",  # 软规则上限：即使配置成 error 也只提示复核
         jump_count=len(kept),
         max_delta=round(float(kept_deltas[worst_pos]), 4),
-        thresholds_used=[round(float(t), 4) for t in thr],
-        discrete_dims=[int(x) for x in discrete_dims],
+        thresholds_used=[round(float(t), 4) for t in scan.thr],
+        discrete_dims=[int(x) for x in scan.discrete_dims],
         worst_frame=kept[worst_pos][0],
         worst_dim=kept[worst_pos][1],
         note="state 单帧突跳，疑似追踪丢失/重置/瞬移，需人工确认",
         examples=[
-            {"frame": f, "dim": d, "delta": round(float(deltas[f, d]), 4),
-             "threshold": round(float(thr[d]), 4)}
+            {"frame": f, "dim": d, "delta": round(float(scan.deltas[f, d]), 4),
+             "threshold": round(float(scan.thr[d]), 4)}
             for f, d in kept[:5]
         ],
     )
