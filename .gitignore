@@ -21,8 +21,15 @@ coverage.xml
 
 # 工具与编辑器
 .workbuddy/
+.codeartsdoer/
+.zcode/
+.screenshots/
 .vscode/
 .idea/
+
+# 内部复核数据与冒烟产物
+annotation/
+exports_smoke_*/
 
 # 系统
 .DS_Store
