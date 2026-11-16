@@ -37,6 +37,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "frame_count": {
             "mode": "auto", "mad_k_low": 3.0, "mad_k_high": 8.0,
             "floor": 8, "ceiling": 20000, "min": None, "max": None,
+            # MAD=0 且存在离散时的最小宽度（median ± max(1, ceil(ratio×median))）；
+            # 1% 对应 239 帧 ±3，覆盖 ±1~2 帧的录制抖动，截断级离群仍在界外
+            "mad0_min_width_ratio": 0.01,
         },
         # action 跳变：逐维阈值 = max(abs_floor, median(每集最大|Δ|) + k * 1.4826 * MAD(每集最大|Δ|))
         # 按每集峰值而非逐帧 |Δ| 建模，避免步进保持型 action 的 median 被大量 0 拉崩

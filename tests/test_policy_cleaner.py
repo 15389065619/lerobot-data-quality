@@ -350,7 +350,8 @@ def test_short_episode_is_warning_and_review(tmp_path):
     assert detail["direction"] == "too_few"
     assert detail["direction_label"] == "过短"
     assert detail["frame_count"] == 15
-    assert detail["min_allowed"] == 40 and detail["max_allowed"] == 40
+    # MAD=0 且有离散时改用最小宽度（G4）：median 40、ratio 1% → [39, 41]
+    assert detail["min_allowed"] == 39 and detail["max_allowed"] == 41
 
     long = result.results[4]
     assert "frame_count_abnormal" in long.reasons

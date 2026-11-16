@@ -151,17 +151,35 @@ def _resolve_frame_bounds(
 
     median = float(np.median(counts)) if counts.size else 0.0
     mad = float(np.median(np.abs(counts - median))) if counts.size else 0.0
+    # MAD=0 且存在离散（如录制工艺稳定、帧数只有 ±1~2 帧抖动的流水线数据）：
+    # 旧实现塌缩成单点，tokyo 实测 237/238/239 三种长度把 24/50 集全体判越界。
+    # 改为最小宽度区间 median ± max(1, ceil(ratio×median))，ratio 可配。
+    # 刻意不用观测 [min,max]——那等于用被检样本定义边界，49×239+1×100 的
+    # 上传截断集从此永久合规（零检测）。真正唯一的离群集仍落在界外照常告警。
+    # 注意这是对旧「刻意塌缩」策略的策略变更：塌缩抓离群的价值由
+    # mad>0 路径与全等长 margin 路径保留，此处只处理「高一致性 + 微抖动」场景。
+    # 只改 auto 路径的区间值，不提前返回——manual/fixed 的优先级更高。
+    mad0_half: int | None = None
     if mad > 0:
         sigma = 1.4826 * mad
     elif counts.size and np.ptp(counts) == 0:
-        # 全部等长时 MAD=0，允许区间会塌成单点，±1 帧就判 error 并整条 drop；
+        # 全部等长时 MAD=0，区间会塌成单点，±1 帧就判 error 并整条 drop；
         # 只有「没有任何离散」这一种情况需要补相对余量，存在离群值时应保持塌缩判定。
         margin = float(cfg_get(config, "frame_count.min_margin_ratio", 0.05))
         sigma = 1.4826 * margin * abs(median)
+    elif counts.size:
+        mad0_half = max(1, int(np.ceil(
+            float(cfg_get(config, "frame_count.mad0_min_width_ratio", 0.01)) * abs(median)
+        )))
+        sigma = 0.0
     else:
         sigma = 0.0
-    auto_low = max(floor, median - float(cfg_get(config, "frame_count.mad_k_low", 3.0)) * sigma)
-    auto_high = min(ceiling, median + float(cfg_get(config, "frame_count.mad_k_high", 8.0)) * sigma)
+    if mad0_half is not None:
+        auto_low = median - mad0_half
+        auto_high = median + mad0_half
+    else:
+        auto_low = max(floor, median - float(cfg_get(config, "frame_count.mad_k_low", 3.0)) * sigma)
+        auto_high = min(ceiling, median + float(cfg_get(config, "frame_count.mad_k_high", 8.0)) * sigma)
     auto_min = int(max(floor, np.floor(auto_low)))
     auto_max = int(min(ceiling, np.ceil(auto_high)))
 
@@ -207,7 +225,10 @@ def _resolve_frame_bounds(
         "max": auto_max,
         "median": round(median, 1),
         "mad": round(mad, 1),
-        "source": {"min": "auto", "max": "auto"},
+        "source": {
+            "min": "auto:mad0-min-width" if mad0_half is not None else "auto",
+            "max": "auto:mad0-min-width" if mad0_half is not None else "auto",
+        },
     }
 
 

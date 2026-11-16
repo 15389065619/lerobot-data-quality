@@ -76,6 +76,7 @@ defaults:
     mad_k_high: 8.0       # 高于 median + k·σ 判异常
     floor: 8              # 帧数硬下限（fixed 模式的主判据）
     ceiling: 20000        # 帧数硬上限
+    mad0_min_width_ratio: 0.01  # MAD=0 且存在离散时的最小宽度（median±max(1,ceil(ratio*median))）
   # 时间戳：允许的单步偏差占标称步长(1/fps)的比例（掉帧/抖动容忍）
   timestamp:
     step_tolerance_ratio: 0.25
