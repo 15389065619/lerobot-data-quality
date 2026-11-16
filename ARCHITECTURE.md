@@ -27,7 +27,7 @@
 | Review | 规则无法裁决（如 action 跳变可能是真实操作） | 导出复核队列转人工，结论可回灌覆盖系统判定 |
 | Drop | 不可修复的硬损坏 | 剔除，报告中保留证据链 |
 
-在演示数据集（36 条 episode，注入 13 处异常）上，实测分布是保留 24 / 修复 2 / 复核 2 / 剔除 8。如果按「有异常就删」处理，被删的 13 条里有 4 条本可以回到训练集。
+在演示数据集（36 条 episode，注入 13 处异常）上，实测分布是保留 24 / 修复 2 / 复核 3 / 剔除 7。按「有异常就删」处理要删 12 处，其中 5 处经自动修复或转人工复核留在了数据集里。
 
 ### 1.3 复核回路
 
@@ -49,7 +49,7 @@ flowchart TD
     subgraph CORE[质检核心]
         L["① loader<br/>只读加载 · 逐文件容错<br/>损坏文件记账不中断"]
         CTX["② 规则上下文构建<br/>自适应阈值推导<br/>median ± k·1.4826·MAD"]
-        V["② validator 规则引擎<br/>13 条内容规则 + 1 条文件完整性<br/>+ 8 条点云规则<br/>证据结构化产出"]
+        V["② validator 规则引擎<br/>19 条 episode 级规则 + 8 条点云规则<br/>证据结构化产出"]
         P["③ policy 分级处置<br/>severity × 可修复性 → Keep/Repair/Review/Drop"]
     end
 
@@ -189,5 +189,78 @@ BEHAVIOR-1K 这类数据集的 `meta/episodes` 用全局 episode ID（420010, 42
 - 并发结果与串行逐位一致（future 完成顺序不确定，归并后按键排序重建）；
 - 报告含数据集结构指纹（info.json 字节 + episode/帧计数 + 全部分片的相对路径、大小、mtime，不是全量内容哈希）、配置快照、自适应阈值推导依据，历次运行可 diff；
 - 任意单点文件损坏都不中断流水线，只产生带证据的处置结论。
+
+---
+
+## 7. 附录：规则与 Schema 契约全表
+
+### 7.1 episode 级规则（19 条）
+
+| 规则 | 级别 | 处置 | 说明 |
+|---|---|---|---|
+| `nan_state` / `nan_action` | error | drop / trim | NaN/Inf。只出现在首尾时可以裁剪保留，中段则丢弃 |
+| `action_jump` | warning | review | 逐维阈值取自每集最大跳变的稳健包络，不是逐帧 median，步进保持和度制数据不误报。超阈倍数 <1.5 时降为 info：阈值本来就在分布尾部，边缘命中多是快速但连续的正常动作 |
+| `state_jump` | warning | review | state 单帧突跳（追踪丢失、重置、瞬移）。软规则（tier=soft），配置成 error 也不会自动 drop，只交人工复核 |
+| `frame_count_abnormal` | error | drop | 自适应区间，过短无法构成时序窗口 |
+| `timestamp_not_monotonic` | warning | repair | 用 frame_index/fps 重建时间轴 |
+| `timestamp_step_deviation` | info | keep | 掉帧或时钟抖动，仅记录 |
+| `timestamp_drift` | warning | review | `timestamp` 为文件内全局时间时，state 首末与视频窗 from/to 的偏移超过 `alignment.timestamp_drift_frames`。episode 相对时间轴没有绝对位置可比，交给下一条查时长 |
+| `video_span_mismatch` | warning | review | 视频窗跨度与 `frame_count/fps` 偏差超过 5%，帧数相等但取错了时间段 |
+| `frame_index_gap` | warning | review | `frame_index` 不是 0..n-1 连续序列，视频按帧号切窗会错位 |
+| `frame_mismatch` | error | drop | 视频帧数不等于 state 行数（mp4 截断，±1 帧容差）。meta 给不出定位信息时降为 info（不可评估） |
+| `video_missing` | error | drop | 声明的视频文件不存在，或相机目录为空。整路模态丢失，与帧数差几帧分开报 |
+| `meta_index_inconsistent` | warning | repair | meta length 漂移或全局 index 断裂，按真实行数重建 |
+| `missing_task` | warning | review | 任务缺失，可补标 |
+| `static_episode` | error | drop | 空转 episode，无效采集 |
+| `blank_video` | error | drop | 黑屏或纯色遮挡（抽帧亮度方差） |
+| `duplicate_episode` | error | drop | action 序列指纹重复 |
+| `joint_limit_violation` | error | drop | 超出关节限位（配置提供 limits 时启用） |
+| `episode_read_error` | error | drop | parquet 损坏，或 meta 有记录但无数据行 |
+
+### 7.2 数据集级规则（4 条）
+
+| 规则 | 级别 | 处置 | 说明 |
+|---|---|---|---|
+| `meta_episode_mismatch` | warning | repair | meta 与 data 的 episode 编号体系不同（meta 用全局 ID，data 用 0..N-1）。按顺序映射，并用行数和视频窗口双重校验，两项一致率都 ≥99% 才接受；证据不足标为不可评估，不判数据坏、不剔除 |
+| `meta_episode_duplicate` | error | repair | meta/episodes 同一 episode 多行且 length/视频窗互相矛盾（多为重复导出叠加）。静默去重会掩盖拼接错误，需清理为每集一行 |
+| `feature_missing_declaration` | error | repair | info.json 未声明实际存在的相机特征：官方 reader 只遍历 features，会整体忽略该相机，训练少一路视角；需补齐 features 条目 |
+| `stats_stale` | warning | repair | stats.json 与实测偏差过大，重算 |
+
+### 7.3 多模态对齐
+
+| 维度 | 检查 | 规则 |
+|---|---|---|
+| 位置 | 全局 `timestamp` 的首末与视频窗 from/to（容差 `timestamp_drift_frames`）；episode 相对时间轴跳过 | `timestamp_drift` |
+| 长度 | 视频窗跨度与 `frame_count/fps`（相对容差 5%） | `video_span_mismatch` |
+| 连续性 | `frame_index` 必须是 `0..n-1` | `frame_index_gap` |
+| 点云 | 点云帧数与 parquet 行数（`pointcloud_report.frame_alignment`） | 数据集级告警 |
+
+### 7.4 点云规则（8 条）
+
+| 规则 | 级别 | 处置 | 说明 |
+|---|---|---|---|
+| `pc_non_finite` | error | repair | xyz 含 NaN/Inf，过滤坏点后补点 |
+| `pc_empty_or_sparse` | error | drop | 有效点少于 `max(min_points, N×sparse_ratio)`，无法凭空造几何 |
+| `pc_degenerate` | error | drop | 包围盒对角线接近 0（所有点重合），采集或反投影失败 |
+| `pc_duplicate` | warning | repair | 量化后重复点比例超过 `max_duplicate_ratio`，去重后补点 |
+| `pc_outliers` | warning | repair | 半径内邻居数少于 `outlier_min_neighbors` 的点占比超阈值。半径 = `k × 每帧 1-NN 距离中位数`（默认 k=2.5），跟点云密度走 |
+| `pc_out_of_bounds` | error | repair | 超出工作空间包围盒的点占比超过 `max_outside_ratio`。包围盒由样本帧 0.5%/99.5% 分位数加 10% 边距自动推导 |
+| `pc_color_invalid` | warning | repair | RGB 为负或超过量程（自动识别 0~1 / 0~255），裁剪到合法区间 |
+| `pc_temporal_jump` | warning | review | 相邻帧质心跳变超过 `max(abs_jump, median×mad_k)`，可能是坐标系切换或跟踪丢失，必须回放确认，不改数据 |
+
+### 7.5 Schema 契约审计
+
+加载阶段除了逐 episode 质检，还会做一次只读元数据的 Schema 审计。14 GB 数据集约 1.3 秒。它回答的是「这份数据能不能被官方 loader 正确读」，和「样本好不好」是两件事。
+
+| 断言 | 判据 | 违约后果 |
+|---|---|---|
+| 必备列齐全 | `index / episode_index / frame_index / task_index / timestamp` | 缺 `frame_index` 时，episode 内帧号只能反推 |
+| `index` 语义（按版本） | v3.0：全局 0..N-1 各出现一次；v2.x：每集内连续不重复，起点可以是 0，也可以沿用 v3 的全局偏移。两种版本都用「每集唯一值个数 == 行数」兜底 | v3 违约时，官方 `_build_index_mapping` 用 `dict(zip(index, 位置))`，重复键会让映射塌缩；`delta_window` 判越界会把整段时序窗口压成同一帧，两者都不抛异常。v2.x 套用 v3 判据则会把合规数据误判为 error。只判「跨度 == 行数」会漏掉 `[0,1,1,3]` 这类重复与断号互相抵消的损坏 |
+| `total_episodes` = `meta/episodes` 行数 | 计数对账 | 只存在于声明里的 episode 不会被逐条规则发现（实测 info 50 / 实际 5） |
+| `total_frames` = data 实际行数 | 计数对账；`--streaming` 下也取逐文件实读行数，不用 meta 的 `length` 之和自证 | 训练按 `total_frames` 分配全局 index 会在末尾越界；`stats.json` 也多半按声明值算，与实测分布不符 |
+| split 长度 = `total_episodes` | `meta/info.json.splits` | 按 split 加载会以为 episode 数等于区间长度 |
+| meta/data episode 编号交集 | 两侧 `episode_index` 集合 | 交集为 0 时 task 和视频定位全部落空（见 §3.4 编号空间对齐） |
+
+违约项写进报告的 `dataset.schema_contract`。error 级以【阻断】形式排在剔除建议之前，终端报告的「Schema 违约」一行会列出违规列名。
 
 附：本文性能数字来自真实数据集（50 episode / 18374 帧 / 169MB），复现方式见 `tests/` 与 README。
