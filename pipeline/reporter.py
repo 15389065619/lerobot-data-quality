@@ -25,7 +25,13 @@ from .baseline import fingerprint
 from .config import cfg_get, severity_of, snapshot as config_snapshot
 from .loader import ACTION_KEY, STATE_KEY, LeRobotDatasetView
 from .policy import Decision, summarize as summarize_decisions, systemic_decisions
-from .validator import RULE_MAP, RULE_ORDER, SEVERITY_ORDER, ValidationResult
+from .validator import (
+    RULE_MAP,
+    RULE_ORDER,
+    SEVERITY_ORDER,
+    DatasetIssue,
+    ValidationResult,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -57,6 +63,49 @@ def _check_severity(validation: ValidationResult, code: str) -> str:
     return max(levels, key=lambda s: SEVERITY_ORDER.get(s, 0))
 
 
+def _pollution_issue(validation: ValidationResult, dataset: LeRobotDatasetView | None) -> DatasetIssue | None:
+    """聚合逐集的 stats_pollution 证据为数据集级提示。
+
+    rules 层只有单集数组，算的是单集 std；这里按帧数加权池化成数据集口径，
+    并与 stats.json 的记录值对照。只报证据不改 stats.json——是否剔除/unwrap
+    由下游决定。partial=子集运行时证据覆盖不全，不下的结论不硬下。
+    """
+    entries: list[dict[str, Any]] = []
+    for res in validation.results.values():
+        ev = res.details.get("action_jump") or {}
+        entries.extend(ev.get("stats_pollution") or [])
+    if not entries:
+        return None
+    dims = sorted({int(e["dim"]) for e in entries})
+    per_dim = []
+    for d in dims:
+        sub = [e for e in entries if int(e["dim"]) == d]
+        n_total = sum(int(e["n_frames"]) for e in sub)
+        pooled_var = sum(float(e["trimmed_std"]) ** 2 * int(e["n_frames"]) for e in sub) / max(n_total, 1)
+        recorded = None
+        if dataset is not None and dataset.stats:
+            stds = (dataset.stats.get("action") or {}).get("std") or []
+            if d < len(stds):
+                recorded = round(float(stds[d]), 6)
+        per_dim.append({
+            "dim": d,
+            "spike_count": sum(int(e["spike_count"]) for e in sub),
+            "recorded_std": recorded,
+            "trimmed_std": round(float(np.sqrt(max(pooled_var, 0.0))), 6),
+        })
+    return DatasetIssue(
+        code="stats_pollution",
+        label="action 归一化统计被尖峰脉冲污染",
+        detail={
+            "dims": dims,
+            "per_dim": per_dim,
+            "partial": bool(getattr(dataset, "truncated_to", None)),
+            "hint": "成对脉冲（如 ±2π 卷绕的忠实 delta）抬高了该维 std；stats.json 未改动，"
+                    "训练侧按记录值归一化会在脉冲帧上放大离群，是否剔除/unwrap 由下游决定",
+        },
+    )
+
+
 def build_report(
     dataset: LeRobotDatasetView,
     validation: ValidationResult,
@@ -83,6 +132,10 @@ def build_report(
 
     dropped = [ep for ep, d in decisions.items() if d.disposition == "drop"]
     repaired = [ep for ep, d in decisions.items() if d.disposition == "repair"]
+    dataset_issues = list(validation.dataset_issues)
+    pollution = _pollution_issue(validation, dataset)
+    if pollution is not None:
+        dataset_issues.append(pollution)
     drop_frames = int(frames_by_ep[frames_by_ep.index.isin(dropped)].sum()) if dropped else 0
     repair_frames = int(frames_by_ep[frames_by_ep.index.isin(repaired)].sum()) if repaired else 0
     # 修复里的「裁帧」会真实减少帧数，剩余帧数必须扣掉，否则与清洗产物对不上
@@ -155,7 +208,7 @@ def build_report(
         ],
         "reason_frequency": {code: freq.get(code, 0) for code in RULE_ORDER},
         "field_issue_stats": _field_issue_stats(dataset, validation),
-        "dataset_issues": [issue.to_dict() for issue in validation.dataset_issues],
+        "dataset_issues": [issue.to_dict() for issue in dataset_issues],
         "invalid_episode_details": [
             _episode_payload(r, validation, decisions, dataset_name) for r in validation.invalid_episodes
         ],
@@ -507,6 +560,27 @@ def _recommendations(
             "建议在上游转换脚本里统一两侧编号，避免下游每个工具都要各自兜底。"
         )
 
+    wrap_eps = [r.episode_index for r in validation.results.values()
+                if "state_wrap" in r.reasons]
+    if wrap_eps:
+        names = "、ep".join(str(e) for e in wrap_eps[:5])
+        more = f" 等 {len(wrap_eps)} 集" if len(wrap_eps) > 5 else ""
+        recs.append(
+            f"state 存在 ±π 表示卷绕（state_wrap：ep{names}{more}）："
+            "两侧端点贴 ±π 且 |Δ|≈2π，属表示层等价、数据自洽，未修复；"
+            "下游把这些维度当连续量使用时需自行 unwrap。"
+        )
+    pollution = _pollution_issue(validation, dataset)
+    if pollution is not None:
+        pd_dim = pollution.detail["per_dim"]
+        ratio_txt = "、".join(
+            f"dim{p['dim']}: 记录 {p['recorded_std']} vs 剔尖峰 {p['trimmed_std']}"
+            for p in pd_dim if p["recorded_std"] is not None
+        ) or f"dims {pollution.detail['dims']}"
+        recs.append(
+            f"【提示】action 归一化统计疑似被尖峰脉冲污染（{ratio_txt}）："
+            "stats.json 未改动，是否剔除脉冲帧或做 unwrap 由下游决定。"
+        )
     schema = list(getattr(dataset, "schema_contract", []) or []) if dataset is not None else []
     for item in schema:
         if item.get("severity") != "error":

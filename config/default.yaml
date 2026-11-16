@@ -35,6 +35,8 @@ severity:
   nan_state: error                # observation.state 出现 NaN/Inf
   nan_action: error               # action 出现 NaN/Inf
   action_jump: warning            # action 相邻帧跳变超过自适应阈值
+  state_jump: warning             # state 相邻帧突跳（软规则，永不自动剔除）
+  state_wrap: info                # state ±π 表示卷绕（表示等价，留痕不修复）
   frame_count_abnormal: error     # episode 帧数偏离数据集分布
   timestamp_not_monotonic: warning    # 时间戳非单调递增
   timestamp_step_deviation: info      # 时间戳步长抖动（掉帧/采集抖动）
@@ -100,6 +102,13 @@ defaults:
     discrete_max_unique: 3      # 取值种类 ≤ 此数的维视为离散（夹爪 ±1），不判跳变
     downgrade_ratio: 1.5        # 最坏 |Δ| / 阈值 < 此值 → 降为 info（阈值边缘的正常快动作）
     escalate_ratio: null        # ≥ 此倍数时升为 error；null = 不升级，沿用 severity 配置
+  # state 突跳（软规则）：判据同 action_jump，永不自动剔除
+  state_jump:
+    enabled: true
+    abs_floor: 1.0
+    spike_ratio: 3.0
+    spike_window: 3
+    wrap_endpoint_tol: 0.05      # ±π 卷绕豁免的端点容差（rad），两侧端点与 |Δ| 都须在容差内
   # 重复采样检测：action 序列量化小数位后做指纹，完全相同即重复 episode
   duplicate_episode:
     enabled: true

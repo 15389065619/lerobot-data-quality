@@ -291,6 +291,34 @@ def check_action_jump(
         ref_source = "global"
     else:
         ref_source = "local"
+    # 归一化污染证据（G5c）：成对脉冲会把该维的 std 抬高数个量级
+    # （tokyo action dim5：4 个 ±2π 脉冲使 std 0.003 → 0.115），
+    # 训练侧按 recorded stats 归一化会在这些帧上炸出离群值。
+    # 只报证据不改 stats——修复与否由下游决定；reporter 聚合并对照 stats.json。
+    stats_pollution: list[dict[str, Any]] = []
+    if scan.paired_spike > 0:
+        for d in sorted({d for _, d in kept}):
+            hit_diffs = [f for f, dd in kept if dd == d]
+            pulse_frames = sorted({f + 1 for f in hit_diffs})
+            col = arr[:, d]
+            finite = col[np.isfinite(col)]
+            if finite.size < 2:
+                continue
+            mask = np.ones(col.size, dtype=bool)
+            for fr in pulse_frames:
+                if 0 <= fr < mask.size:
+                    mask[fr] = False
+            trimmed = col[mask]
+            trimmed = trimmed[np.isfinite(trimmed)]
+            if trimmed.size < 2:
+                continue
+            stats_pollution.append({
+                "dim": int(d),
+                "spike_count": len(pulse_frames),
+                "observed_std": round(float(np.std(finite)), 6),
+                "trimmed_std": round(float(np.std(trimmed)), 6),
+                "n_frames": int(col.size),
+            })
     res.add(
         "action_jump",
         severity=severity,
@@ -306,6 +334,7 @@ def check_action_jump(
         paired_spike=scan.paired_spike,
         spike_frames=scan.spike_frames[:20],
         ref_source=ref_source,
+        **({"stats_pollution": stats_pollution} if stats_pollution else {}),
         worst_frame=kept[worst_pos][0],
         worst_dim=worst_dim,
         examples=[
@@ -314,6 +343,18 @@ def check_action_jump(
             for f, d in kept[:5]
         ],
     )
+
+
+def _is_pi_wrap(prev: float, nxt: float, delta: float, tol: float) -> bool:
+    """±π 表示卷绕判据：两侧端点分别贴住 −π/+π（容差内），且 |Δ| ≈ 2π。
+
+    刻意不用「整维历史值域 ⊆ [−π,π]」——合法摆动维（tokyo dim3 实测）的值域
+    也在该区间内，会被误豁免；端点判据只认真正跨边界的那个 transition。
+    """
+    two_pi = 2.0 * math.pi
+    up = abs(prev - (-math.pi)) <= tol and abs(nxt - math.pi) <= tol
+    down = abs(prev - math.pi) <= tol and abs(nxt - (-math.pi)) <= tol
+    return (up or down) and abs(delta - two_pi) <= tol
 
 
 def check_state_jump(
@@ -330,6 +371,10 @@ def check_state_jump(
     与 action_jump 的判据一致（超阈值 + 相对邻域尖峰），但只报 warning：
     state 突跳可能来自真实快速运动，也可能只是采集中断，必须人工确认；
     RULE_MAP 中该规则 tier=soft，策略层永远不会据此自动剔除。
+
+    命中里满足 ±π 卷绕判据（端点分别贴 ±π、|Δ|≈2π）的部分是**表示层等价**
+    而非数据缺陷：转入独立的 info 级 `state_wrap` 留痕（数据自洽、不修复，
+    下游按连续量使用需自行 unwrap），避免把合法表示当成突跳送复核。
     """
     if not cfg_get(config, "state_jump.enabled", True):
         return
@@ -337,7 +382,31 @@ def check_state_jump(
                         fps=fps, dim_names=dim_names, diff_ref=diff_ref)
     if scan is None or not scan.kept:
         return
-    kept = scan.kept
+    wrap_tol = float(cfg_get(config, "state_jump.wrap_endpoint_tol", 0.05))
+    wraps: list[dict[str, Any]] = []
+    real_hits: list = []
+    for f, d in scan.kept:
+        prev_v = float(arr[f, d])
+        next_v = float(arr[f + 1, d])
+        if _is_pi_wrap(prev_v, next_v, float(scan.deltas[f, d]), wrap_tol):
+            wraps.append({
+                "frame": int(f + 1),
+                "prev": round(prev_v, 4),
+                "next": round(next_v, 4),
+                "delta": round(float(scan.deltas[f, d]), 4),
+                "dim": int(d),
+            })
+        else:
+            real_hits.append((f, d))
+    if wraps:
+        res.add(
+            "state_wrap",
+            wrap_ignored=len(wraps),
+            examples=wraps[:5],
+        )
+    if not real_hits:
+        return
+    kept = real_hits
     kept_deltas = np.array([scan.deltas[f, d] for f, d in kept], dtype=float)
     worst_pos = int(np.argmax(kept_deltas))
     res.add(
@@ -355,6 +424,7 @@ def check_state_jump(
              "threshold": round(float(scan.thr[d]), 4)}
             for f, d in kept[:5]
         ],
+        **({"wrap_ignored": len(wraps)} if wraps else {}),
     )
 
 

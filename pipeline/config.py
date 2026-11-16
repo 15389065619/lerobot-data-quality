@@ -61,6 +61,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": True, "abs_floor": 1.0, "max_jump_mad_k": 3.0,
             "min_episodes_for_peak": 8, "min_margin_ratio": 0.05,
             "spike_ratio": 3.0, "spike_window": 3, "discrete_max_unique": 3,
+            # ±π 卷绕豁免的端点容差（rad）：两侧端点距 ±π 与 |Δ| 距 2π 都须在容差内
+            "wrap_endpoint_tol": 0.05,
         },
         # 时间戳：允许的单步偏差比例（掉帧/抖动容忍）
         "timestamp": {"step_tolerance_ratio": 0.25},
@@ -115,6 +117,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "nan_action": "error",
         "action_jump": "warning",
         "state_jump": "warning",
+        "state_wrap": "info",
         "frame_count_abnormal": "error",
         "timestamp_not_monotonic": "warning",
         "timestamp_step_deviation": "info",
