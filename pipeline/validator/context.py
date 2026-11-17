@@ -336,8 +336,14 @@ def _thresholds_from_arrays(
     # 全局逐维 median(|Δ|)：spike 核验中「剩余邻居 <2」时的回退参照。
     # 成对尖峰互为对方的邻域，剔除后邻居不足 2 个，只能退到全局口径；
     # 与阈值同源（同一批 Δ），流式模式下同样是采样口径，basis 如实记录。
+    # 必须剔除 0：step-hold 维（大量零位移）直接取 median 会得 0，而 ref<=0 在
+    # 回退路径上等价于「任何超阈都算尖峰」，会把快速运动整片放进来。
     stacked_all = np.vstack(deltas)
-    diff_ref = [round(float(m), 6) for m in np.median(stacked_all, axis=0)]
+    diff_ref = []
+    for d_i in range(stacked_all.shape[1]):
+        col = stacked_all[:, d_i]
+        col = col[col > 0]
+        diff_ref.append(round(float(np.median(col)) if col.size else 0.0, 6))
 
     if len(peaks) >= min_eps:
         stacked = np.vstack(peaks)

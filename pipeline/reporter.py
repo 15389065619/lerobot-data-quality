@@ -82,17 +82,25 @@ def _pollution_issue(validation: ValidationResult, dataset: LeRobotDatasetView |
         sub = [e for e in entries if int(e["dim"]) == d]
         n_total = sum(int(e["n_frames"]) for e in sub)
         pooled_var = sum(float(e["trimmed_std"]) ** 2 * int(e["n_frames"]) for e in sub) / max(n_total, 1)
+        trimmed_std = float(np.sqrt(max(pooled_var, 0.0)))
         recorded = None
         if dataset is not None and dataset.stats:
             stds = (dataset.stats.get("action") or {}).get("std") or []
             if d < len(stds):
                 recorded = round(float(stds[d]), 6)
+        # 只有记录值确实被抬高（≥1.5×）才算污染；否则提示文案会与数字自相矛盾
+        # （chingmu 实测：记录 0.1256 vs 剔尖峰 0.1676）。
+        if recorded is not None and trimmed_std > 0 and recorded < 1.5 * trimmed_std:
+            continue
         per_dim.append({
             "dim": d,
             "spike_count": sum(int(e["spike_count"]) for e in sub),
             "recorded_std": recorded,
-            "trimmed_std": round(float(np.sqrt(max(pooled_var, 0.0))), 6),
+            "trimmed_std": round(trimmed_std, 6),
         })
+    if not per_dim:
+        return None
+    dims = [int(e["dim"]) for e in per_dim]
     return DatasetIssue(
         code="stats_pollution",
         label="action 归一化统计被尖峰脉冲污染",

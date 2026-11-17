@@ -185,6 +185,22 @@ def test_thresholds_tolerate_mixed_action_dims():
     assert meta["dim_mismatch_episodes"] == 1
 
 
+def test_diff_ref_uses_positive_deltas():
+    """全局回退参照必须是「运动量级」：step-hold 维含大量 0，直接取 median 会得 0，
+    使回退退化成「任何超阈都算尖峰」。"""
+    from pipeline.config import load_config
+    from pipeline.validator.context import _thresholds_from_arrays
+
+    cfg = load_config(robot_type="test_robot")
+    arr = np.zeros((100, 2), dtype=np.float32)
+    arr[50:, 0] = 1.0  # dim0：一次阶跃，其余保持 → 99 个 Δ=0
+    arr[:, 1] = np.arange(100) * 0.001
+    _, meta = _thresholds_from_arrays([arr], cfg, fps=30.0)
+
+    assert meta["diff_ref"][0] > 0
+    assert meta["diff_ref"][1] == pytest.approx(0.001, abs=1e-6)
+
+
 def test_frame_count_outlier_detected(tmp_path):
     episodes = {ep: smooth_episode(40, seed=ep) for ep in range(5)}
     episodes[5] = {"state": np.zeros((3, 3), dtype=np.float32),

@@ -173,9 +173,9 @@ G1 需要先在本地数据集上跑一遍统计误报率，再决定严重级�
 | 编号 | 缺口 | 风险 | 修法 | 状态 |
 |---|---|---|---|---|
 | G4 | `frame_count_abnormal` 在 MAD=0 且 ptp>0 时区间塌缩成单点（旧实现刻意塌缩以抓唯一离群集）：tokyo 帧数 237/238/239 三种（1/23/26 集），±1~2 帧抖动把 24/50 集全体判越界送复核，health=severe、valid_ratio=0.52——**已观测的主损失** | 次风险：若中位数落在另一侧，过长集走 error→drop 不可逆路径（M3 的 ep306 是先例）；塌缩区间使录制抖动即可触发批量越界 | 最小宽度 `median ± max(1, ceil(ratio×median))`，`frame_count.mad0_min_width_ratio` 可配（默认 0.01）；评审否决观测 [min,max] 方案（用被检样本定义边界 = 零检测，截断集永久合规）；长侧边际降级（M3）保留为第二道防线，未修 | **已修**（b8e00d7） |
-| G5a | spike_window 低帧率塌缩（fps=5 → 1 帧），**成对超阈 Δ 互为对方唯一邻域、互相抬高中位数**，spike_ratio 判不过 → 整对漏检；与卷绕正交，任何两帧成对异常都中招（tokyo action dim5 的 4 个 ±2π 脉冲全部漏报） | 训练目标里的 ±2π 指令脉冲静默漏检——state 侧只是表示等价，action 是训练输入 | 邻域 ref 剔除其他超阈 Δ；剩余邻居 <2 回退全局逐维 median(\|Δ\|)（`diff_ref` 记录口径）；超阈 Δ 按 run 分组，≥3 为运动包络整体跳过（反向护栏）；成对尖峰不做幅度降级（下限 warning 进复核） | **已修**（194d52e） |
+| G5a | spike_window 低帧率塌缩（fps=5 → 1 帧），**成对超阈 Δ 互为对方唯一邻域、互相抬高中位数**，spike_ratio 判不过 → 整对漏检；与卷绕正交，任何两帧成对异常都中招（tokyo action dim5 的 4 个 ±2π 脉冲全部漏报） | 训练目标里的 ±2π 指令脉冲静默漏检——state 侧只是表示等价，action 是训练输入 | 邻域 ref 剔除其他超阈 Δ；剩余邻居 <2 时，仅**异号往返**（\|Δ1+Δ2\| ≤ 0.2·max\|Δ\|）的 2-diff 脉冲回退全局逐维 median(正 Δ)（`diff_ref` 记录口径；同号 2-diff 是快速斜坡，不兜底）；超阈 Δ 按 run 分组，≥3 为运动包络整体跳过（反向护栏）；脉冲不做幅度降级（下限 warning 进复核） | **已修**（194d52e + 形状门槛补丁） |
 | G5b | state 侧 ±π 卷绕被当 `state_jump` 送复核——表示层等价而非数据缺陷 | 合法表示被当突跳，复核队列混入不需要人处理的条目 | 端点判据（两侧距 ±π 与 \|Δ\| 距 2π 均在 `wrap_endpoint_tol`=0.05 rad 内）转独立 info 规则 `state_wrap` 留痕（不修复，下游按连续量使用需自行 unwrap）；**不用整维值域判据**（tokyo dim3 合法落在 [−π,π] 内会被误豁免） | **已修**（31bb938） |
-| G5c | action 侧 ±2π 脉冲：dim5 与 `next_state − state` 逐帧一致（corr 0.983、卷绕帧逐位相等）→ 单独修 action 会破坏 state-action 自洽，真实物理量不可知；且 4 个脉冲把该维 std 从 0.003 抬到 0.115，**归一化统计已被污染** | 按记录值归一化会在脉冲帧上放大离群；静默改 stats 等于编造数据 | 处置 review 不修复；新增 `stats_pollution` 证据（rules 出单集 observed/trimmed std，reporter 加权池化并对照 stats.json 记录值，输出数据集级提示；stats.json 不动，子集运行标 partial） | **已修**（31bb938） |
+| G5c | action 侧 ±2π 脉冲：dim5 与 `next_state − state` 逐帧一致（corr 0.983、卷绕帧逐位相等）→ 单独修 action 会破坏 state-action 自洽，真实物理量不可知；且 4 个脉冲把该维 std 从 0.003 抬到 0.115，**归一化统计已被污染** | 按记录值归一化会在脉冲帧上放大离群；静默改 stats 等于编造数据 | 处置 review 不修复；新增 `stats_pollution` 证据（rules 出单集 observed/trimmed std，reporter 加权池化并对照 stats.json 记录值，仅当记录值 ≥1.5× 剔尖峰值才发数据集级提示；stats.json 不动，子集运行标 partial） | **已修**（31bb938） |
 
 ### 不补的项
 
