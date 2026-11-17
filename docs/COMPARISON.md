@@ -159,16 +159,23 @@ sed -n '114,118p' src/lerobot_doctor/report.py             # 非 verbose 下 PAS
 | G2 | 无 `total_tasks` / `total_videos` / `total_chunks` 对账，未查 `task_index` 越界 | 与已修的 episodes / frames 两条同构，属同类漏检 | 复用现有对账结构，约 10 行，warning 起步 | 未修 |
 | G1 | 只把实际 dtype 打印出来（`loader.py:260-277`），从不拿 `info.json` 的声明对账 | 声明 `action` 7 维、实际 8 维时，`delta_timestamps` 取帧静默错位；dtype 不一致则依赖下游 cast | 两条检查：声明 dtype vs parquet physical dtype；声明 shape vs 实际列长。`image` / `video` 列必须白名单跳过 | 未修 |
 
-G1 需要先在现有 25 个数据集上跑一遍统计误报率，再决定严重级。`image` / `video` 列的 parquet dtype 与声明天然不同，直接全量比较会制造噪声。
+G1 需要先在本地数据集上跑一遍统计误报率，再决定严重级（口径统一走 `tools/dataset_inventory.py` 实时统计，2026-11-17 实测 30 个根目录 / 6648 episode）。`image` / `video` 列的 parquet dtype 与声明天然不同，直接全量比较会制造噪声。
 
-### 规则层缺口（2026-11-17 复测新增）
+### 规则层缺口（2026-11-17 复测新增，当日修复）
 
-来源：从 hf-mirror.com 新拉取 `lerobot/tokyo_u_lsmo`（24 MB / v3.0 / 50 集 / 11925 帧 / fps=5 / `robot_type` 未声明）全量复测，契约审计、视频对账、清洗自检、增量复用四路全绿，零误删（数据见 [EVAL.md §2.6](EVAL.md)）。以下两条不是 schema 契约缺口，属规则/阈值层，沿用同表格式跟踪：
+来源：从 hf-mirror.com 新拉取 `lerobot/tokyo_u_lsmo`（24 MB / v3.0 / 50 集 / 11925 帧 / fps=5 / `robot_type` 未声明）全量复测，契约检查 0 违反，判定结果 24 review（health=severe）——问题不在契约层而在规则/阈值层；0 剔除、0 修复，全部转人工（数据见 [EVAL.md §2.6](EVAL.md)）。
+
+> 归因修正：初版（8451913）把 G5 归因为「规则不识别 ±π 卷绕」。评审用原始 parquet
+> 逐帧核对后修正：state 侧卷绕属实（端点精确贴 ±π），但 action 侧的 ±2π 脉冲
+> 是成对（连续两帧）超阈 Δ 互为对方唯一邻域、互相抬高中位数导致的**漏报**——
+> 机制与卷绕正交，任何两帧成对异常都会中招。G5 据此拆为 a/b/c 三条。
 
 | 编号 | 缺口 | 风险 | 修法 | 状态 |
 |---|---|---|---|---|
-| G4 | `frame_count_abnormal` 长侧无边际降级（[rules.py:363-384](../pipeline/validator/rules.py)：过短 → warning 交人审、过长 → 默认 error；EVAL §2.5 M3 已立案）。复测补充第 2 个现实案例：tokyo_u_lsmo 50 集帧数仅 237/238/239 三种（1/23/26 集），MAD=0 且 ptp>0 → 区间塌缩成单点 239，24 集（1 集 237 帧、23 集 238 帧）因「过短」1~2 帧进 review——降级兜底生效，零删除 | 对称面：若中位数落在 238 一侧，同样 ±1 帧的「过长」集将走 error→drop 不可逆路径——M3 的 ep306（505 帧超限 1.8% 被剔）是已发生的先例。MAD=0 的塌缩区间放大该风险：录制抖动 ±1 帧即可造成批量越界 | 沿 M3 的两条候选二选一：① 过长侧补 `action_jump` 式边际降级（超出量 ≤1 帧或 ≤ `min_margin_ratio` → review）；② `frame_count` 按 `task_index` 分组推导（需先定语义，小样本任务 MAD 不稳，见 EVAL §2.5 M3 修法行）。塌缩区间（mad=0 且 ptp>0）的越界统一走边际分档而非直接 error | 未修 |
-| G5 | `state_jump` / `action_jump` 不识别关节角 ±π 卷绕：tokyo_u_lsmo 3 条 state_jump 的 `max_delta` = 6.2831 / 6.2820 / 6.2797，均 ≈ 2π 且全在 dim5，高度疑似角度从 −π 跳到 +π 的表示卷绕（全仓无任何 wrap 处理，已核实） | 复核队列混入本可自动豁免的条目（本例 3 条疑似全属卷绕）；更重的是下游若把 −π→+π 当连续量做差分/插值，会学到错位数据 | 仅当该维「历史值域落在 [−π, π] 且 \|Δ\| ≈ 2π（±容差）」时，Δ 按 `((Δ+π) mod 2π) − π` 归一后重判，豁免记 `wrap_ignored` 进证据（沿用 `smooth_peaks_ignored` 的记账风格）。`dim_names` 只有关节名不声明单位，不能单独作为启用依据，按值域启发式保守启用 | 未修 |
+| G4 | `frame_count_abnormal` 在 MAD=0 且 ptp>0 时区间塌缩成单点（旧实现刻意塌缩以抓唯一离群集）：tokyo 帧数 237/238/239 三种（1/23/26 集），±1~2 帧抖动把 24/50 集全体判越界送复核，health=severe、valid_ratio=0.52——**已观测的主损失** | 次风险：若中位数落在另一侧，过长集走 error→drop 不可逆路径（M3 的 ep306 是先例）；塌缩区间使录制抖动即可触发批量越界 | 最小宽度 `median ± max(1, ceil(ratio×median))`，`frame_count.mad0_min_width_ratio` 可配（默认 0.01）；评审否决观测 [min,max] 方案（用被检样本定义边界 = 零检测，截断集永久合规）；长侧边际降级（M3）保留为第二道防线，未修 | **已修**（b8e00d7） |
+| G5a | spike_window 低帧率塌缩（fps=5 → 1 帧），**成对超阈 Δ 互为对方唯一邻域、互相抬高中位数**，spike_ratio 判不过 → 整对漏检；与卷绕正交，任何两帧成对异常都中招（tokyo action dim5 的 4 个 ±2π 脉冲全部漏报） | 训练目标里的 ±2π 指令脉冲静默漏检——state 侧只是表示等价，action 是训练输入 | 邻域 ref 剔除其他超阈 Δ；剩余邻居 <2 回退全局逐维 median(\|Δ\|)（`diff_ref` 记录口径）；超阈 Δ 按 run 分组，≥3 为运动包络整体跳过（反向护栏）；成对尖峰不做幅度降级（下限 warning 进复核） | **已修**（194d52e） |
+| G5b | state 侧 ±π 卷绕被当 `state_jump` 送复核——表示层等价而非数据缺陷 | 合法表示被当突跳，复核队列混入不需要人处理的条目 | 端点判据（两侧距 ±π 与 \|Δ\| 距 2π 均在 `wrap_endpoint_tol`=0.05 rad 内）转独立 info 规则 `state_wrap` 留痕（不修复，下游按连续量使用需自行 unwrap）；**不用整维值域判据**（tokyo dim3 合法落在 [−π,π] 内会被误豁免） | **已修**（31bb938） |
+| G5c | action 侧 ±2π 脉冲：dim5 与 `next_state − state` 逐帧一致（corr 0.983、卷绕帧逐位相等）→ 单独修 action 会破坏 state-action 自洽，真实物理量不可知；且 4 个脉冲把该维 std 从 0.003 抬到 0.115，**归一化统计已被污染** | 按记录值归一化会在脉冲帧上放大离群；静默改 stats 等于编造数据 | 处置 review 不修复；新增 `stats_pollution` 证据（rules 出单集 observed/trimmed std，reporter 加权池化并对照 stats.json 记录值，输出数据集级提示；stats.json 不动，子集运行标 partial） | **已修**（31bb938） |
 
 ### 不补的项
 
@@ -222,10 +229,31 @@ G1 需要先在现有 25 个数据集上跑一遍统计误报率，再决定严�
 推荐的组合：
 
 ```
-rosbag2 录制 → 转换为 LeRobot v3 → [本项目：质检分级 + 修复 + 报告]
-                                   → 干净数据集 → RLDS/训练管线
-                                   ↘ 纯删除场景可交给 lerobot-edit-dataset
+rosbag2 录制 / any4lerobot 转换（AgiBot / OpenX / LIBERO / RoboMIND → LeRobot）
+  → [本项目：schema 契约审计 → 质检分级 + 修复 + 报告]
+  → 干净数据集 → （可选）lerobot-doctor gate → RLDS/训练管线
+  ↘ 纯删除场景可交给 lerobot-edit-dataset
 ```
+
+### 接入实测（2026-11-17）
+
+两个组合件在真实数据上做过接入对照实验（同一数据、同一流水线代码、隔离环境；原始产物与完整复现命令在 `G:\pipeline-lab\EXPERIMENT.md`，实验外置于仓库）：
+
+| 工具 | 实测内容 | 结果 | 结论 |
+|---|---|---|---|
+| any4lerobot `ds_version_convert/v21_to_v30` | `g1_place_grape_error`（43 集 / v2.1）副本转换后过全量流水线，与原 v2.1 直跑对照 | 最难的 index 语义重建做对（0..41277 全局唯一）、帧数声明=实测、视频对账 0 违约、处置判定与直跑逐位一致；源数据自带的 splits 缺陷（train 0:42 vs 43 集）被忠实搬运，由本项目 schema 审计抓出 | **建议接入**：链路最上游的格式归一；转换产物必须过本项目契约审计再进主流程 |
+| lerobot-doctor 0.2.0 | `tokyo_u_lsmo` 上 A/B：入线 check + 出线 score/gate（fix/trim 禁用） | 数据安全零影响（源 19 文件未动、清洗产物逐字节一致、判定可复现）；其 jump 检查（z=|Δ|/按维池化 σ、跨维 mean>8）在本数据上 13 集命中均为「每集末帧微小收尾步」（相对阈值在近常数维上放大噪声）+ 漏报 ±π 卷绕（跨维 mean 稀释，z 5.72<8）；独有价值 = 零 std 维归一化告警 + 4 策略 gate 全 PASS | **不进主链路**：仅在「清洗产物 → 训练」之间可选调 `gate`；jump/fix/trim 不用（修复权归本项目 cleaner） |
+
+接入实测的两条补充结论（2026-11-17 评审后补记）：
+
+1. **score 出线建议与本项目红线直接冲突**：`doctor_score.json` 的 `recommended_drops = [10, 48]`，恰是两个 ±π 卷绕集——卷绕是表示等价、数据自洽，按 doctor 建议执行就是删数据。这比「13 集命中多为噪声」更能说明为什么修复权不能外放。
+2. **「13 集为噪声」依赖故障定义，须与「doctor 报了 13 集」分开表述**。严格的对照实验需先给 50 集打标签（ok / truncated / wrap / action_spike / zero_var），按检查项算 precision/recall；当前材料支撑「能力对照 + 源码级机制复算」，升级为正式 P/R 表是待办。
+
+实测踩到的接入成本：
+
+- any4lerobot 转换器：要求 **Python ≥ 3.12** + 官方 lerobot 包源码安装（torch 系）+ `lerobot[dataset]` extra（README 未写，首跑即 ImportError）；**就地转换**（`rmtree/move` 原目录，必须副本操作）；`--push-to-hub` 默认 `true`，本地转换也必须显式关掉。
+- lerobot-doctor：Windows 下路径必须用正斜杠，反斜杠会被误判成 HF repo_id。
+- doctor 的跨维 mean 稀释与本项目的「证据合并取 min」互为反面教材：同一处 2π 卷绕，本项目 `state_jump` 直接命中，doctor 的 jump 检查以 5.72 < 8 放过。
 
 ## 一处取舍
 

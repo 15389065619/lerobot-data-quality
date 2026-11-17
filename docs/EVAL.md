@@ -217,19 +217,19 @@ python main.py --dataset_path data/dual_lidar_umi_filtered --output_dir outputs_
 
 ### 2.6 复测补充：lerobot/tokyo_u_lsmo（2026-11-17，第 3 份外部集）
 
-数据：`lerobot/tokyo_u_lsmo`，24 MB，v3.0，50 集 / 11925 帧，**fps=5**，`robot_type` 未声明；经 hf-mirror.com 下载至 `data/hf_retest/`。§0 的「19 集 / 5855 ep」口径不变，含本集为 20 集 / 5905 ep。
+数据：`lerobot/tokyo_u_lsmo`，24 MB，v3.0，50 集 / 11925 帧，**fps=5**，`robot_type` 未声明；经 hf-mirror.com 下载至 `data/hf_retest/`。数据集总数口径统一走 `tools/dataset_inventory.py` 实时统计（2026-11-17 实测 30 个根目录 / 6648 episode，含基准与损坏注入副本，计数不符 4 个），文档不再硬编码分母。
 
 | 项 | 结果 |
 |---|---|
 | 预检 / 全量 | 预检通过（24 集有告警）；全量 **5.1 s**；第三次运行 `--incremental` 快路径直接复用（首次从非增量切增量时做过一次全量重建，处置结论逐位一致） |
-| v3.0 契约 | 全绿：index 连续、视频窗换算帧数逐集一致（fps=5 下无翻车）、meta 对账、时间戳单调、0 NaN、0 重复、编号对账 `mode=native`、schema 契约 0 违反 |
-| 处置 | 保留 26 / 修复 0 / **复核 24** / 剔除 0，预计丢弃 0 帧 |
+| v3.0 契约 | 契约检查 0 违反：index 连续、视频窗换算帧数逐集一致（fps=5 下无翻车）、meta 对账、时间戳单调、0 NaN、0 重复、编号对账 `mode=native`、schema 契约 0 违反 |
+| 处置 | 保留 26 / 修复 0 / **复核 24** / 剔除 0，预计丢弃 0 帧（health=severe、valid_ratio=0.52——24/50 集送复核本身就是本次复测发现的主问题，见缺口 G4） |
 | 24 条复核的构成 | 全部命中 `frame_count_abnormal`（过短：1 集 237 帧、23 集 238 帧，对照塌缩下限 239；`severity` 自动降 warning）；其中 3 条同时命中 `state_jump`。视频 / meta / 时间戳 / index 零命中 |
-| `state_jump` 证据 | 3 条 `max_delta` = 6.2831 / 6.2820 / 6.2797，均 ≈ 2π 且全在 dim5——疑似关节角 ±π 卷绕，规则未识别 → 缺口 G5 |
+| `state_jump` 证据 | 3 条 `max_delta` = 6.2831 / 6.2820 / 6.2797，均 ≈ 2π 且全在 dim5——关节角 ±π 卷绕（后经原始 parquet 核对确认：state dim5 值域 [−3.1415, +3.1415]，端点精确贴 ±π；action dim5 同帧存在 ±2π 单帧脉冲且逐位等于 `next_state − state`）→ 缺口 G5 |
 | 阈值口径 | state/action 跳变阈值全部被 floor 托住：自适应项 ≈0.003，`abs_floor_effective = 6.0`（floor 按 fps 折算 1.0×30/5，同 §2.5 dual-lidar 一节的已知代价，低速数据上跳变检测退化为绝对阈值） |
 | 清洗 | `method=noop-copy`，结构完整副本 + `stats.json` 重算，自检通过 |
 
-复测暴露两条规则层缺口（长侧无边际降级的第 2 个现实案例、±π 卷绕盲区），连同修法记入 [COMPARISON.md 规则层缺口表 G4/G5](COMPARISON.md)。
+复测暴露两条规则层缺口（MAD=0 塌缩把 ±1~2 帧抖动批量送复核、±π 卷绕与成对尖峰漏检），连同修法记入 [COMPARISON.md 规则层缺口表 G4/G5](COMPARISON.md)，并于当日修复（`194d52e` / `b8e00d7` / `31bb938`）。修复后同数据复跑：`frame_count_abnormal` 24→0、`state_jump` 3→0（卷绕转 `state_wrap` info 留痕）、`action_jump` 0→3（成对 ±2π 脉冲被救回，warning 进复核）；处置变为保留 47 / 复核 3 / 剔除 0，另有数据集级提示 `stats_pollution`（action dim5 记录 std 0.115 vs 剔尖峰 0.0024，stats.json 未改动）。
 
 复现：
 
