@@ -1,16 +1,22 @@
-"""回归测试：分段重编码的帧数精确性。
+"""回归测试：分段重编码的帧数与 pts 精确性。
 
-历史 bug：`_concat_segments` 用 `-t 时长` 截断，而帧 pts 是精确的 k/fps（无限循环
-小数）。`-t` 的有限小数只要小于精确时长就把最后一帧排除——`43/30` 格化成
+历史 bug 其一：`_concat_segments` 用 `-t 时长` 截断，而帧 pts 是精确的 k/fps（无限
+循环小数）。`-t` 的有限小数只要小于精确时长就把最后一帧排除——`43/30` 格化成
 1.433333 必丢末帧、`50/30` 进位成 1.666667 则不丢，表现为「部分集各丢 1 帧、
 窗口与 parquet 长度错位，集尾样本读到下一集画面」。修复改为 `-ss` 提前半帧 +
 `-frames:v` 按帧数硬截断。
 
+历史 bug 其二：`-ss` 寻址后 ffmpeg 不重置输出起始 pts，from_ts>0 的段首帧 pts
+恰偏 1 帧（33ms@30fps，恒定），超过 LeRobotDataset tolerance_s=0.01 直接
+FrameTimestampError 崩溃（Kaggle 训练 B@4000 实录）。修复加
+`-vf setpts=PTS-STARTPTS` 强制归零。
+
 本测试用真 ffmpeg 编码一个 CFR 源视频（3 集 130 帧，长度 [43, 37, 50]——两集命中
-向下舍位模式），剔除第 3 集触发分段重编码路径，断言：
+向下舍位模式），参数化「剔尾集 / 剔首集」两种剔除触发分段重编码路径，断言：
   1. 产物视频总帧数 == 保留集 parquet 长度之和（旧代码会得 78 ≠ 80）；
   2. 每集视频窗口宽度 == parquet 长度；
-  3. 无「帧数不精确 / 偏差」类警告。
+  3. 无「帧数不精确 / 偏差」类警告；
+  4. 产物 pts：首帧归零、逐帧 |pts[i]−i/fps| < 半帧（剔首集模式专杀 bug 其二）。
 """
 
 from __future__ import annotations
@@ -78,7 +84,9 @@ def _encode_cfr_source(path: Path, n_frames: int) -> None:
     assert _probe_frames(path) == n_frames
 
 
-def test_segment_reencode_frame_exact(tmp_path: Path) -> None:
+@pytest.mark.parametrize("drop", [[2], [0]],
+                         ids=["剔尾集", "剔首集-pts崩溃模式"])
+def test_segment_reencode_frame_exact(tmp_path: Path, drop: list[int]) -> None:
     from conftest import build_dataset
 
     root = build_dataset(tmp_path / "ds", {ep: {"state": np.zeros((n, 3), np.float32),
@@ -110,16 +118,16 @@ def test_segment_reencode_frame_exact(tmp_path: Path) -> None:
     }
     (root / "meta" / "info.json").write_text(json.dumps(info), encoding="utf-8")
 
-    # 剔除第 3 集（file 含被剔集 -> 走分段重编码路径）
+    # 剔除参数化集（file 含被剔集 -> 走分段重编码路径）
     view = load_dataset(root)
     out_root = tmp_path / "cleaned"
-    result = clean_dataset(view, [2], tmp_path, prefer_cli=False, overwrite=True,
+    result = clean_dataset(view, drop, tmp_path, prefer_cli=False, overwrite=True,
                            out_root=out_root)
     assert result.success
 
     # 1) 产物视频总帧数 == 保留集 parquet 长度之和（旧代码 78 != 80）
     out_video = out_root / "videos" / CAMERA / "chunk-000" / "file-000.mp4"
-    kept_sum = sum(LENGTHS[:2])
+    kept_sum = sum(n for ep, n in enumerate(LENGTHS) if ep not in drop)
     assert _probe_frames(out_video) == kept_sum
 
     # 2) 每集窗口宽度 == parquet 长度

@@ -567,7 +567,10 @@ def _concat_segments(
     历史上表现为「部分集各丢 1 帧」）。改用：
       - `-ss` 提前半帧定位：阈值落在 (上一帧 pts, 本帧 pts] 的安全区间中点，
         6 位小数的舍入误差（~3e-7）远小于半帧（1/(2·fps)），首帧不会跳过；
-      - `-frames:v 期望帧数` 按帧数硬截断，完全不依赖浮点时长。
+      - `-frames:v 期望帧数` 按帧数硬截断，完全不依赖浮点时长；
+      - `-vf setpts=PTS-STARTPTS` 强制输出 pts 从 0 起：实测寻址后 ffmpeg 不重置
+        起始时间戳，from_ts>0 的段首帧 pts 恰偏 1 帧（33ms@30fps，恒定不累计），
+        超过 LeRobotDataset tolerance_s=0.01 直接 FrameTimestampError 崩溃。
     对时间戳不规则的损坏源，截断后帧数仍可能与期望不符——由调用方按探测值告警。
     """
     built: list[tuple[int, int]] = []
@@ -581,7 +584,8 @@ def _concat_segments(
             cmd = [
                 str(FFMPEG), "-y", "-v", "error",
                 "-ss", f"{ss:.6f}", "-i", str(src_path), "-frames:v", str(expected),
-                "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-an", "-vf", "setpts=PTS-STARTPTS",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-r", f"{fps:g}", str(seg),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, check=False)
