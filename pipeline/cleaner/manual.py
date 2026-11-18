@@ -558,17 +558,29 @@ def _rebuild_videos(
 def _concat_segments(
     src_path: Path, segments: list[tuple[int, float, float]], out_path: Path, fps: float, warnings: list[str]
 ) -> list[tuple[int, int]]:
-    """把若干 [from, to) 区间抽成独立片段，再无损拼接。返回 [(ep, 实际帧数)]。"""
+    """把若干 [from, to) 区间抽成独立片段，再无损拼接。返回 [(ep, 实际帧数)]。
+
+    帧数必须精确等于 parquet 行数：LeRobotDataset 按窗口时间戳取帧，视频每少一帧，
+    集尾样本就会读到下一集的第一帧（跨集画面污染）。因此这里不用 `-t 时长` 截断——
+    帧 pts 是精确的 k/fps（无限循环小数），`-t` 的任何有限小数只要小于精确时长，
+    就会把最后一帧排除在外（`430/30` 格化成 14.333333 必丢末帧、`485/30` 进位则不丢，
+    历史上表现为「部分集各丢 1 帧」）。改用：
+      - `-ss` 提前半帧定位：阈值落在 (上一帧 pts, 本帧 pts] 的安全区间中点，
+        6 位小数的舍入误差（~3e-7）远小于半帧（1/(2·fps)），首帧不会跳过；
+      - `-frames:v 期望帧数` 按帧数硬截断，完全不依赖浮点时长。
+    对时间戳不规则的损坏源，截断后帧数仍可能与期望不符——由调用方按探测值告警。
+    """
     built: list[tuple[int, int]] = []
     with tempfile.TemporaryDirectory(prefix="lerobot_clean_") as tmp:
         tmp_dir = Path(tmp)
         seg_files: list[Path] = []
         for ep, from_ts, to_ts in segments:
             seg = tmp_dir / f"seg_{ep:06d}.mp4"
-            dur = max(to_ts - from_ts, 1.0 / fps)
+            expected = max(int(round((to_ts - from_ts) * fps)), 1)
+            ss = max(from_ts - 0.5 / fps, 0.0)
             cmd = [
                 str(FFMPEG), "-y", "-v", "error",
-                "-ss", f"{from_ts:.6f}", "-i", str(src_path), "-t", f"{dur:.6f}",
+                "-ss", f"{ss:.6f}", "-i", str(src_path), "-frames:v", str(expected),
                 "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-r", f"{fps:g}", str(seg),
             ]
@@ -576,7 +588,17 @@ def _concat_segments(
             if proc.returncode != 0 or not seg.is_file():
                 warnings.append(f"切片失败 ep {ep} ({src_path.name}): {(proc.stderr or '')[-300:]}")
                 continue
-            frames = probe_video_frames(seg) or int(round(dur * fps))
+            frames = probe_video_frames(seg)
+            if frames is None:
+                warnings.append(
+                    f"切片帧数探测失败 ep {ep} ({src_path.name})，按期望值 {expected} 记账，请人工核验。"
+                )
+                frames = expected
+            elif frames != expected:
+                warnings.append(
+                    f"切片帧数不精确 ep {ep} ({src_path.name}): 期望 {expected} 实得 {frames}，"
+                    "源视频时间戳可能不规则。"
+                )
             built.append((ep, frames))
             seg_files.append(seg)
 
