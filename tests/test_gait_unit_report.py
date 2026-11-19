@@ -77,15 +77,19 @@ def test_report_rules_run_on_motion(tmp_path):
     src = _build_tree(tmp_path)
     report = run_gait_report(src, tmp_path / "r2.json", urdf=REAL_URDF,
                              limits_path=REAL_LIMITS)
+    from lerobot_data_quality.gait_unit.limits import load_g1_limits
+    limits_table = set(load_g1_limits(REAL_LIMITS).keys())  # 通道名（dof_*（rad））
     ep = next(e for e in report["episodes"] if e["file"].endswith("ep_default.csv"))
     # 空间规则跑过（FK 成功）：足端接触占比存在、腾空规则有键
     assert "contact_ratio" in ep
     for rule in ("mad_jump", "nan_runs", "constant_channel", "range_check",
                  "foot_skating", "flight_phase"):
         assert rule in ep["findings"]
-    # 合成数据：所有通道在限位内、无 NaN → 这些规则零 findings
-    assert ep["findings"]["range_check"] == []
+    # 合成数据无 NaN → nan_runs 零 findings；range_check 的每条 finding
+    # 必须真的越界（正弦角度会越过膝限位下限 −0.087，属预期行为）
     assert ep["findings"]["nan_runs"] == []
+    assert all(f["n_violations"] > 0 for f in ep["findings"]["range_check"])
+    assert all(f["channel"] in limits_table for f in ep["findings"]["range_check"])
 
 
 @pytest.mark.skipif(not REAL_SAMPLE_DIR.exists(), reason="真实样本库不在本机")
