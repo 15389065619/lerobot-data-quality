@@ -61,11 +61,23 @@ def test_real_jump_sample_within_g1_limits():
 
 def test_profile_resolution():
     assert resolve_profile(REAL_SAMPLE) == "high_dynamic"
-    assert resolve_profile("data/other/BM_Walk_00001.csv") == "default"
+    # 类别关键词分档（LAFAN1 校准后新增）：路径里的动作类别自动进对应档
+    assert resolve_profile("data/other/BM_Walk_00001.csv") == "walk"
+    assert resolve_profile("data/lafan1/extracted/bvh/walk3_subject3.bvh") == "walk"
+    assert resolve_profile("data/lafan1/extracted/bvh/run2_subject1.bvh") == "run"
+    assert resolve_profile("data/other/unknown_action.csv") == "default"
     # 未知档位名回落 default（宁松勿紧，不抛错）
     params = profile_params("nonexistent_profile")
     assert params["mad_jump_k"] == 6.0
     assert profile_params("high_dynamic")["mad_jump_k"] == 10.0
+
+
+def test_profile_params_carry_calibrated_baseline():
+    """LAFAN1 校准表存在时，类别档位应附带本底报警率（k=6）。"""
+    params = profile_params("walk")
+    assert params.get("baseline_rate_per_1k") == pytest.approx(21.32)
+    # 未校准的类别不带 baseline 字段
+    assert "baseline_rate_per_1k" not in profile_params("high_dynamic")
 
 
 @pytest.mark.skipif(not REAL_SAMPLE.exists(), reason="真实样本不在本机")
