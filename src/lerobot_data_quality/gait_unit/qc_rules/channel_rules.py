@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+
 import numpy as np
 
 from lerobot_data_quality.gait_unit.motion import MotionClip
@@ -34,14 +36,23 @@ def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
     return [(int(s), int(e)) for s, e in zip(starts, ends)]
 
 
-def rule_mad_jump(clip: MotionClip, k: float = 6.0) -> list[dict]:
+def rule_mad_jump(clip: MotionClip, k: float = 6.0,
+                  skip_channel_patterns: list[str] | None = None) -> list[dict]:
     """每通道稳健 Z 跳变：|x−median|/MAD 超过 k 倍判跳变（NaN 不参与统计）。
+
+    skip_channel_patterns：fnmatch 模式，匹配的通道整条跳过（不动统计）。
+    用于动作类别分档——高动态类里 root_pos_* 的"跳变"被动作本身支配
+    （校准：Standing_High_Jump k=6 时 root_pos_z 独占 1055/4740 帧），
+    详见 profiles.py。
 
     MAD=0 的通道（常值/半常值）跳过——由 rule_constant_channel 单独留痕，
     否则稳健 Z 的分母为零会产生假警报。
     """
+    patterns = skip_channel_patterns or []
     findings = []
     for d, name in enumerate(clip.channel_names):
+        if any(fnmatch.fnmatch(name, pat) for pat in patterns):
+            continue
         x = clip.channels[:, d]
         valid = np.isfinite(x)
         n_valid = int(valid.sum())
