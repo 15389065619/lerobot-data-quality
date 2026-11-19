@@ -44,35 +44,49 @@ def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
     return [(int(s), int(e)) for s, e in zip(starts, ends)]
 
 
+def _up_index(clip: GaitClip, up: str | None) -> int:
+    """垂直轴索引：显式 up 参数优先，缺省读 clip.source["up_axis"]（BVH=Y-up，
+    MotionDecode=Z-up），最终回落 Z。"""
+    return "xyz".index(up or clip.source.get("up_axis", "z"))
+
+
 def compute_foot_contact(clip: GaitClip, foot_names: tuple[str, ...] = DEFAULT_FEET,
-                         h_max: float = 0.05) -> dict:
+                         h_max: float = 0.05, up: str | None = None) -> dict:
     """足端接触状态机：接触 = 足端高度 ≤ 地面参考 + h_max。
 
-    地面参考 = 各足观测最小 z（站立帧在真实数据里占多数，最小 z 即
-    "脚放地上"的高度，自动吸收踝原点到鞋底的未知偏移）。
+    地面参考 = 各足沿**垂直轴**的观测最小值（站立帧在真实数据里占多数，
+    最小值即"脚放地上"的高度，自动吸收踝原点到鞋底的未知偏移）。
+    垂直轴：up 参数优先，缺省读 clip.source["up_axis"]（BVH=Y-up，
+    MotionDecode=Z-up），最终回落 Z。
     """
+    up_i = _up_index(clip, up)
     idx = _foot_anchors(clip, foot_names)
     contact: dict[str, np.ndarray] = {}
     ground: dict[str, float] = {}
     for i, name in zip(idx, foot_names):
-        z = clip.positions[:, i, 2]
-        z_ground = float(np.nanmin(z))
-        ground[name] = z_ground
-        contact[name] = (z - z_ground) <= h_max
-    return {"feet": foot_names, "ground_z": ground, "contact": contact}
+        h = clip.positions[:, i, up_i]
+        h_ground = float(np.nanmin(h))
+        ground[name] = h_ground
+        contact[name] = (h - h_ground) <= h_max
+    return {"feet": foot_names, "ground_z": ground, "contact": contact,
+            "up_axis": "xyz"[up_i]}
 
 
 def rule_foot_skating(clip: GaitClip, foot_names: tuple[str, ...] = DEFAULT_FEET,
-                      h_max: float = 0.05, speed_max: float = 0.4) -> list[dict]:
+                      h_max: float = 0.05, speed_max: float = 0.4,
+                      up: str | None = None) -> list[dict]:
     """接触期水平速度超阈：脚"在地上"却横向移动 = 打滑。
 
-    水平速度用 np.gradient（中央差分）；接触判定复用 compute_foot_contact。
+    水平速度 = 垂直轴以外两轴的合速度（np.gradient 中央差分）；
+    接触判定复用 compute_foot_contact。
     """
-    contact = compute_foot_contact(clip, foot_names, h_max)
+    up_i = _up_index(clip, up)
+    contact = compute_foot_contact(clip, foot_names, h_max, up)
     idx = _foot_anchors(clip, foot_names)
+    h_axes = [a for a in range(3) if a != up_i]
     findings = []
     for i, name in zip(idx, foot_names):
-        xy = clip.positions[:, i, :2]
+        xy = clip.positions[:, i, h_axes]
         dt = 1.0 / clip.fps
         speed = np.linalg.norm(np.gradient(xy, dt, axis=0), axis=1)
         skate = contact["contact"][name] & (speed > speed_max)
@@ -87,34 +101,37 @@ def rule_foot_skating(clip: GaitClip, foot_names: tuple[str, ...] = DEFAULT_FEET
 
 
 def rule_ground_penetration(clip: GaitClip, foot_names: tuple[str, ...] = DEFAULT_FEET,
-                            ground_z: float | None = None, eps: float = 0.005) -> list[dict]:
+                            ground_z: float | None = None, eps: float = 0.005,
+                            up: str | None = None) -> list[dict]:
     """足端低于地面参考线 eps 以上。
 
-    ground_z 必须显式给出（世界系地面高度）；不给出时规则退化为 no-op
-    并在 findings 里如实记录——自动地面 = 观测最小 z，数学上不存在
+    ground_z 必须显式给出（**沿垂直轴**的地面高度）；不给出时规则退化为
+    no-op 并在 findings 里如实记录——自动地面 = 观测最小值，数学上不存在
     "低于它"的帧，硬造一个假警报就是自欺。
     """
+    up_i = _up_index(clip, up)
     if ground_z is None:
         return [{"rule": "ground_penetration", "skipped": True,
-                 "reason": "未提供世界系地面高度 ground_z；自动地面=观测最小 z 时穿透不可能发生"}]
+                 "reason": "未提供世界系地面高度 ground_z；自动地面=观测最小值时穿透不可能发生"}]
     idx = _foot_anchors(clip, foot_names)
     findings = []
     for i, name in zip(idx, foot_names):
-        z = clip.positions[:, i, 2]
-        bad = np.isfinite(z) & (z < ground_z - eps)
+        h = clip.positions[:, i, up_i]
+        bad = np.isfinite(h) & (h < ground_z - eps)
         runs = _runs(bad)
         if runs:
             findings.append({"rule": "ground_penetration", "foot": name,
                              "ground_z": ground_z, "eps": eps,
                              "runs": runs, "n_frames": int(bad.sum()),
-                             "min_z": round(float(np.nanmin(z)), 4)})
+                             "min_h": round(float(np.nanmin(h)), 4)})
     return findings
 
 
 def rule_flight_phase(clip: GaitClip, foot_names: tuple[str, ...] = DEFAULT_FEET,
-                      h_max: float = 0.05, min_frames: int = 6) -> list[dict]:
+                      h_max: float = 0.05, min_frames: int = 6,
+                      up: str | None = None) -> list[dict]:
     """双脚同时离地 ≥ min_frames 的腾空段（信息留痕：跳/跑类动作合法）。"""
-    contact = compute_foot_contact(clip, foot_names, h_max)
+    contact = compute_foot_contact(clip, foot_names, h_max, up)
     feet = contact["feet"]
     airborne = np.ones(clip.n_frames, dtype=bool)
     for name in feet:

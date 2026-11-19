@@ -139,6 +139,15 @@ def test_bvh_fk_known_answer(tmp_path):
         assert seq.max() - seq.min() < 1e-9, f"骨 {bone} 旋转后长度应恒定"
 
 
+def test_bvh_scale_and_up_axis(tmp_path):
+    """scale（cm→m）与 up_axis 声明——真实 BVH（LAFAN1）适配的两个关键参数。"""
+    bvh_path = tmp_path / "mini.bvh"
+    bvh_path.write_text(_BVH, encoding="utf-8")
+    clip = parse_bvh(bvh_path, scale=0.01, up_axis="y")
+    assert np.allclose(clip.positions[0, 1], (0.0, 0.10, 0.0), atol=1e-9)
+    assert clip.source["up_axis"] == "y"
+
+
 def test_bvh_missing_motion_raises(tmp_path):
     bad = tmp_path / "no_motion.bvh"
     bad.write_text("HIERARCHY\nROOT Hips\n{\n OFFSET 0 0 0\n CHANNELS 6 "

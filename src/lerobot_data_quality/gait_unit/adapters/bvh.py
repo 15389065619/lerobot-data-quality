@@ -73,11 +73,19 @@ def _parse_joint(lines: list[str], pos: int, name: str,
     raise ValueError(f"关节 {name} 的块没有闭合（文件截断）")
 
 
-def parse_bvh(path: str | Path) -> GaitClip:
+def parse_bvh(path: str | Path, scale: float = 1.0, up_axis: str = "y") -> GaitClip:
     """解析 BVH 文件 → GaitClip。
+
+    scale：位置缩放（源单位 → 米）。BVH 不声明单位（LAFAN1 系为 cm，
+    传 scale=0.01；合成/米制源用默认 1.0）。缩放只作用于位置，不动旋转。
+
+    up_axis：垂直轴声明（BVH 常见 Y-up；MotionDecode 为 Z-up）。只写入
+    source["up_axis"] 供空间规则自动取用，不做坐标变换。
 
     全局位置由前向运动学算出（root 平移 + 父世界旋转作用于 OFFSET），
     rotations 存各关节的**局部**旋转（相对父关节，含 End Site 的单位四元数）。
+    注意：非根关节的 Xposition/Yposition/Zposition 通道若为静态 OFFSET
+    回显（LAFAN1 系如此），本解析按 BVH 标准忽略之（FK 用 OFFSET）。
 
     Raises:
         FileNotFoundError / ValueError：文件缺失、无 MOTION 段、块未闭合、
@@ -149,6 +157,9 @@ def parse_bvh(path: str | Path) -> GaitClip:
                     quat_rotate(world_q[j.parent], j.offset)
             rotations[f, ji] = local_q
 
+    if scale != 1.0:
+        positions = positions * scale
+
     clip = GaitClip(
         fps=round(1.0 / frame_time, 6),
         timestamps=np.arange(T, dtype=np.float64) * frame_time,
@@ -157,7 +168,9 @@ def parse_bvh(path: str | Path) -> GaitClip:
         parents=tuple(-1 if j.parent is None else j.parent for j in joints),
         rotations=rotations,
         source={"source": "bvh", "file": path.name,
-                "unit": "unverified（BVH 按导出者约定，常见 cm）",
+                "unit": f"源单位 × scale={scale}" + (" → 米" if scale == 0.01 else ""),
+                "up_axis": up_axis,
+                "rotation_unit": "度（BVH 标准，解析时转弧度）",
                 "rotation_convention": "CHANNELS 声明顺序内旋左乘"},
     )
     LOG.info("解析 %s：%d 帧 × %d 关节，通道总数 %d", path.name, T, J, ch_total)

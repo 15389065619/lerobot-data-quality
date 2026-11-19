@@ -127,10 +127,10 @@ def test_contact_and_flight_and_skate():
 
 def test_penetration_needs_explicit_ground():
     clip = _contact_fixture()
-    # 不给 ground_z：规则如实退化为 no-op（自动地面=观测最小 z，穿透不可能）
-    assert rule_ground_penetration(clip) == [
-        {"rule": "ground_penetration", "skipped": True,
-         "reason": "未提供世界系地面高度 ground_z；自动地面=观测最小 z 时穿透不可能发生"}]
+    # 不给 ground_z：规则如实退化为 no-op（自动地面=观测最小值，穿透不可能）
+    skipped = rule_ground_penetration(clip)
+    assert len(skipped) == 1 and skipped[0]["skipped"] is True
+    assert "未提供世界系地面高度 ground_z" in skipped[0]["reason"]
     # 显式 ground_z=0：左脚 z=-0.03 的帧必须被抓到
     findings = rule_ground_penetration(clip, ground_z=0.0)
     left = [f for f in findings if f["foot"] == "left_ankle_roll_joint"]
