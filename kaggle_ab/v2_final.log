@@ -1,0 +1,40 @@
+=== rebuild 02:25:54 ===
+
+=== ¹¹½¨ so101_clean: Ô´=outputs_ext_bomb_v2/cleaned_dataset ÌŞ³ı 15 ¼¯ -> G:\Lerobot\exports\kaggle_ab\so101_clean_v2
+  Ô´¼ÓÔØ: 121 ¼¯ / 63185 Ö¡ / 30.0Hz
+  ½á¹û: 106 ¼¯£¨Ô¤ÆÚ 106£©/55632 Ö¡ / Ğ£Ñé=Í¨¹ı / 228s -> OK
+
+=== ¹¹½¨ so101_eval: Ô´=outputs_ext_bomb_v2/cleaned_dataset ÌŞ³ı 106 ¼¯ -> G:\Lerobot\exports\kaggle_ab\so101_eval_v2
+  Ô´¼ÓÔØ: 121 ¼¯ / 63185 Ö¡ / 30.0Hz
+  ½á¹û: 15 ¼¯£¨Ô¤ÆÚ 15£©/7553 Ö¡ / Ğ£Ñé=Í¨¹ı / 31s -> OK
+
+manifest: G:\Lerobot\exports\kaggle_ab\build_manifest_v2.json
+ÏÂÒ»²½: transcode_h264.py
+=== verify2 02:30:14 ===
+[pts so101_clean] 20/20 ä¸ªæ–‡ä»¶é€šè¿‡
+[pts so101_eval] 14/14 ä¸ªæ–‡ä»¶é€šè¿‡
+
+=== so101_clean_v2: 20 ä¸ªè§†é¢‘æ–‡ä»¶
+
+=== so101_eval_v2: 14 ä¸ªè§†é¢‘æ–‡ä»¶
+[è½¬ç  so101_clean_v2] è½¬ç  0 / è·³è¿‡ 20 / å¤±è´¥ 0 / å¸§æ•°å·® 0
+[è½¬ç  so101_eval_v2] è½¬ç  0 / è·³è¿‡ 14 / å¤±è´¥ 0 / å¸§æ•°å·® 0
+[å¸§æ•° so101_clean] å·® 0/20 ä¸ªæ–‡ä»¶ï¼ˆè¦æ±‚ 0ï¼‰
+[å¸§æ•° so101_eval] å·® 0/14 ä¸ªæ–‡ä»¶ï¼ˆè¦æ±‚ 0ï¼‰
+[stats so101_clean] md5=4da81c51 ä¸€è‡´=True ç¼ºå¤±=[] æœ‰é™å€¼=True
+[stats so101_eval] md5=4da81c51 ä¸€è‡´=True ç¼ºå¤±=[] æœ‰é™å€¼=True
+[eval çª—å£] 320 ä¸ªï¼Œéæ³• 0
+
+--- validator: v2/so101_clean
+[validator so101_clean] disposition={'keep': 106, 'repair': 0, 'review': 0, 'drop': 0}
+
+--- validator: v2/so101_eval
+[validator so101_eval] disposition={'keep': 15, 'repair': 0, 'review': 0, 'drop': 0}
+
+=== åˆ¤å®š ===
+  so101_clean: PASS
+  so101_eval: PASS
+  validator_so101_clean: PASSï¼ˆ0 é keepï¼‰
+  validator_so101_eval: PASSï¼ˆ0 é keepï¼‰
+æŠ¥å‘Š: G:\Lerobot\exports\kaggle_ab\verify_report_v2.json
+=== ALL_PASS 02:32:21 ===

@@ -1,0 +1,103 @@
+
+=== so101_minrepair: 24 个视频文件
+
+=== so101_clean: 20 个视频文件
+
+=== so101_eval: 14 个视频文件
+so101_minrepair: 转码 0 / 跳过 24 / 失败 0 / 帧数差文件 0
+so101_clean: 转码 0 / 跳过 20 / 失败 0 / 帧数差文件 0
+so101_eval: 转码 0 / 跳过 14 / 失败 0 / 帧数差文件 0
+manifest: G:\Lerobot\exports\kaggle_ab\transcode_manifest.json
+下一步: apply_stats_fixed.py
+B 组: 106 集 / 55632 帧 / 30.0Hz
+  observation.images.wrist: 11128 帧抽样  mean=[46501697.774, 45419764.575, 44186592.761]  std=[0.0, 0.0, 0.0]
+  observation.images.overhead: 11124 帧抽样  mean=[42822482.717, 42687970.381, 42598318.66]  std=[0.0, 0.0, 0.0]
+已覆盖: G:\Lerobot\exports\kaggle_ab\so101_minrepair\meta\stats.json
+        G:\Lerobot\exports\kaggle_ab\so101_eval\meta\stats.json
+特征覆盖: ['action', 'observation.images.overhead', 'observation.images.wrist', 'observation.state']
+md5: ee4498b028df74bb7232693c269b7026
+下一步: verify_datasets.py
+Exception in thread Thread-117 (_readerthread):
+Traceback (most recent call last):
+  File "E:\python\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "E:\python\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "E:\python\Lib\subprocess.py", line 1597, in _readerthread
+    buffer.append(fh.read())
+                  ^^^^^^^^^
+UnicodeDecodeError: 'gbk' codec can't decode byte 0x97 in position 115: illegal multibyte sequence
+Exception in thread Thread-119 (_readerthread):
+Traceback (most recent call last):
+  File "E:\python\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "E:\python\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "E:\python\Lib\subprocess.py", line 1597, in _readerthread
+    buffer.append(fh.read())
+                  ^^^^^^^^^
+UnicodeDecodeError: 'gbk' codec can't decode byte 0x97 in position 115: illegal multibyte sequence
+Exception in thread Thread-121 (_readerthread):
+Traceback (most recent call last):
+  File "E:\python\Lib\threading.py", line 1045, in _bootstrap_inner
+    self.run()
+  File "E:\python\Lib\threading.py", line 982, in run
+    self._target(*self._args, **self._kwargs)
+  File "E:\python\Lib\subprocess.py", line 1597, in _readerthread
+    buffer.append(fh.read())
+                  ^^^^^^^^^
+UnicodeDecodeError: 'gbk' codec can't decode byte 0x97 in position 115: illegal multibyte sequence
+[so101_minrepair] 结构: 通过 (157 集, meta 157 行)  视频帧数差文件: 20/24
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-000.mp4 期望 12593 实际 14021
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-001.mp4 期望 573 实际 606
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-002.mp4 期望 13732 实际 15619
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-003.mp4 期望 10960 实际 13220
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-004.mp4 期望 5379 实际 5466
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-005.mp4 期望 8870 实际 9118
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-007.mp4 期望 8253 实际 8784
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-009.mp4 期望 1094 实际 2081
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-010.mp4 期望 4019 实际 4541
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-011.mp4 期望 442 实际 937
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-000.mp4 期望 12593 实际 14021
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 573 实际 606
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-002.mp4 期望 13732 实际 15619
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-003.mp4 期望 10960 实际 13220
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-004.mp4 期望 5379 实际 5466
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 8870 实际 9118
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-007.mp4 期望 8253 实际 8784
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-009.mp4 期望 1094 实际 2081
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-010.mp4 期望 4019 实际 4541
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-011.mp4 期望 442 实际 937
+[so101_clean] 结构: 通过 (106 集, meta 106 行)  视频帧数差文件: 7/20
+    [内容] videos/observation.images.wrist/chunk-000/file-005.mp4 期望 7485 实际 7472
+    [内容] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 13283 实际 13277
+    [内容] videos/observation.images.overhead/chunk-000/file-002.mp4 期望 9932 实际 9926
+    [内容] videos/observation.images.overhead/chunk-000/file-004.mp4 期望 3321 实际 3319
+    [内容] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 7485 实际 7471
+    [内容] videos/observation.images.overhead/chunk-000/file-006.mp4 期望 2097 实际 2095
+    [内容] videos/observation.images.overhead/chunk-000/file-008.mp4 期望 4019 实际 4018
+[so101_eval] 结构: 通过 (15 集, meta 15 行)  视频帧数差文件: 2/14
+    [内容] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 1800 实际 1798
+    [内容] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 522 实际 521
+[stats so101_minrepair] md5=ee4498b0 一致=True 缺失=[] 有限值=True
+[stats so101_clean] md5=ee4498b0 一致=True 缺失=[] 有限值=True
+[stats so101_eval] md5=ee4498b0 一致=True 缺失=[] 有限值=True
+[eval 窗口] 320 个，非法 0
+
+--- validator: so101_minrepair
+
+--- validator: so101_clean
+
+--- validator: so101_eval
+
+=== 判定 ===
+  so101_minrepair: PASS（结构层通过；内容级差异属预期并已留痕）
+  so101_clean: FAIL
+  so101_eval: FAIL
+Traceback (most recent call last):
+  File "G:\Lerobot\kaggle_ab\verify_datasets.py", line 272, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "G:\Lerobot\kaggle_ab\verify_datasets.py", line 264, in main
+    print(f"  {k}: {v}")
+UnicodeEncodeError: 'gbk' codec can't encode character '\u2286' in position 57: illegal multibyte sequence

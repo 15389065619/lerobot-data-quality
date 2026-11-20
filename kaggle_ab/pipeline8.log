@@ -1,0 +1,59 @@
+B ��: 106 �� / 55632 ֡ / 30.0Hz
+  observation.images.wrist: 11128 ֡����  mean=[151.373, 147.851, 143.837]  std=[52.249, 56.048, 61.62]
+  observation.images.overhead: 11124 ֡����  mean=[139.396, 138.958, 138.666]  std=[55.539, 56.001, 58.194]
+�Ѹ���: G:\Lerobot\exports\kaggle_ab\so101_minrepair\meta\stats.json
+        G:\Lerobot\exports\kaggle_ab\so101_eval\meta\stats.json
+��������: ['action', 'observation.images.overhead', 'observation.images.wrist', 'observation.state']
+md5: 41cb7c6cb1e6e668d3c1bced0adc1426
+��һ��: verify_datasets.py
+[so101_minrepair] 结构: 通过 (157 集, meta 157 行)  视频帧数差文件: 20/24
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-000.mp4 期望 12593 实际 14021
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-001.mp4 期望 573 实际 606
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-002.mp4 期望 13732 实际 15619
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-003.mp4 期望 10960 实际 13220
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-004.mp4 期望 5379 实际 5466
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-005.mp4 期望 8870 实际 9118
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-007.mp4 期望 8253 实际 8784
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-009.mp4 期望 1094 实际 2081
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-010.mp4 期望 4019 实际 4541
+    [A-内容级差异，留痕] videos/observation.images.wrist/chunk-000/file-011.mp4 期望 442 实际 937
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-000.mp4 期望 12593 实际 14021
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 573 实际 606
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-002.mp4 期望 13732 实际 15619
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-003.mp4 期望 10960 实际 13220
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-004.mp4 期望 5379 实际 5466
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 8870 实际 9118
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-007.mp4 期望 8253 实际 8784
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-009.mp4 期望 1094 实际 2081
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-010.mp4 期望 4019 实际 4541
+    [A-内容级差异，留痕] videos/observation.images.overhead/chunk-000/file-011.mp4 期望 442 实际 937
+[so101_clean] 结构: 通过 (106 集, meta 106 行)  视频帧数差文件: 7/20
+    [内容] videos/observation.images.wrist/chunk-000/file-005.mp4 期望 7485 实际 7472
+    [内容] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 13283 实际 13277
+    [内容] videos/observation.images.overhead/chunk-000/file-002.mp4 期望 9932 实际 9926
+    [内容] videos/observation.images.overhead/chunk-000/file-004.mp4 期望 3321 实际 3319
+    [内容] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 7485 实际 7471
+    [内容] videos/observation.images.overhead/chunk-000/file-006.mp4 期望 2097 实际 2095
+    [内容] videos/observation.images.overhead/chunk-000/file-008.mp4 期望 4019 实际 4018
+[so101_eval] 结构: 通过 (15 集, meta 15 行)  视频帧数差文件: 2/14
+    [内容] videos/observation.images.overhead/chunk-000/file-001.mp4 期望 1800 实际 1798
+    [内容] videos/observation.images.overhead/chunk-000/file-005.mp4 期望 522 实际 521
+[stats so101_minrepair] md5=41cb7c6c 一致=True 缺失=[] 有限值=True
+[stats so101_clean] md5=41cb7c6c 一致=True 缺失=[] 有限值=True
+[stats so101_eval] md5=41cb7c6c 一致=True 缺失=[] 有限值=True
+[eval 窗口] 320 个，非法 0
+
+--- validator: so101_minrepair（复用已有报告）
+
+--- validator: so101_clean（复用已有报告）
+
+--- validator: so101_eval（复用已有报告）
+
+=== 判定 ===
+  so101_minrepair: PASS（结构层通过；内容级差异属预期并已留痕）
+  so101_clean: PASS
+  so101_eval: PASS
+  validator_so101_minrepair: PASS（flagged 9 块 -> 原编号 9 集，全部属于 29 坏集，原因均为内容级）
+  validator_so101_clean: PASS（0 非 keep）
+  validator_so101_eval: PASS（0 非 keep）
+报告: G:\Lerobot\exports\kaggle_ab\verify_report.json
