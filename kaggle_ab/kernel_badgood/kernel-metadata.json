@@ -1,0 +1,17 @@
+{
+  "id": "happyday1223/so101-badgood-learnability-eval",
+  "title": "SO101 badgood learnability eval",
+  "code_file": "../eval_badgood.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "happyday1223/so101-kaggle-ab-v1",
+    "happyday1223/so101-ab-badgood-eval"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

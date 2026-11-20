@@ -1,0 +1,11 @@
+
+=== 构建 so101_clean: 源=outputs_ext_bomb_v2/cleaned_dataset 剔除 15 集 -> G:\Lerobot\exports\kaggle_ab\so101_clean_v2
+  源加载: 121 集 / 63185 帧 / 30.0Hz
+  结果: 106 集（预期 106）/55632 帧 / 校验=通过 / 209s -> OK
+
+=== 构建 so101_eval: 源=outputs_ext_bomb_v2/cleaned_dataset 剔除 106 集 -> G:\Lerobot\exports\kaggle_ab\so101_eval_v2
+  源加载: 121 集 / 63185 帧 / 30.0Hz
+  结果: 15 集（预期 15）/7553 帧 / 校验=通过 / 31s -> OK
+
+manifest: G:\Lerobot\exports\kaggle_ab\build_manifest_v2.json
+下一步: transcode_h264.py

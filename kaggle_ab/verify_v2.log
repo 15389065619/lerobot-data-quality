@@ -1,0 +1,30 @@
+[pts so101_clean] 18/20 个文件通过
+    [pts] videos\observation.images.overhead\chunk-000\file-009.mp4: 首帧 pts=0.0330s 未归零
+    [pts] videos\observation.images.wrist\chunk-000\file-009.mp4: 首帧 pts=0.0330s 未归零
+[pts so101_eval] 12/14 个文件通过
+    [pts] videos\observation.images.overhead\chunk-000\file-005.mp4: 首帧 pts=0.0330s 未归零
+    [pts] videos\observation.images.wrist\chunk-000\file-005.mp4: 首帧 pts=0.0330s 未归零
+
+=== so101_clean_v2: 20 个视频文件
+
+=== so101_eval_v2: 14 个视频文件
+[转码 so101_clean_v2] 转码 0 / 跳过 20 / 失败 0 / 帧数差 0
+[转码 so101_eval_v2] 转码 0 / 跳过 14 / 失败 0 / 帧数差 0
+[帧数 so101_clean] 差 0/20 个文件（要求 0）
+[帧数 so101_eval] 差 0/14 个文件（要求 0）
+[stats so101_clean] md5=4da81c51 一致=True 缺失=[] 有限值=True
+[stats so101_eval] md5=4da81c51 一致=True 缺失=[] 有限值=True
+[eval 窗口] 320 个，非法 0
+
+--- validator: v2/so101_clean
+[validator so101_clean] disposition={'keep': 106, 'repair': 0, 'review': 0, 'drop': 0}
+
+--- validator: v2/so101_eval
+[validator so101_eval] disposition={'keep': 15, 'repair': 0, 'review': 0, 'drop': 0}
+
+=== 判定 ===
+  so101_clean: FAIL
+  so101_eval: FAIL
+  validator_so101_clean: PASS（0 非 keep）
+  validator_so101_eval: PASS（0 非 keep）
+报告: G:\Lerobot\exports\kaggle_ab\verify_report_v2.json

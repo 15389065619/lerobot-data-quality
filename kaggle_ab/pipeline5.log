@@ -1,0 +1,9 @@
+已删除旧输出: G:\Lerobot\exports\kaggle_ab\so101_minrepair
+源 meta/episodes: 172 行
+源数据物理块: 172 块 / 88782 行 / 12 个文件
+块-元数据匹配: {'from_index+length': 103, 'length': 69}（共 172 块）
+保留 157 块（剔除 15 个 eval 块）-> 重编号 0..156
+A 组: 157 集 / 81229 帧 / 视频复制 24 文件
+结构校验: 未通过
+  [校验] 缺少 meta/stats.json
+[错误] A 组结构校验未通过

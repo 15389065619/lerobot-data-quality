@@ -1,0 +1,19 @@
+已删除旧输出: G:\Lerobot\exports\kaggle_ab\so101_minrepair
+源 meta/episodes: 172 行
+源数据物理块: 172 块 / 88782 行 / 12 个文件
+块-元数据匹配: {'from_index+length': 103, 'length': 69}（共 172 块）
+保留 157 块（剔除 15 个 eval 块）-> 重编号 0..156
+Traceback (most recent call last):
+  File "G:\Lerobot\kaggle_ab\rebuild_minrepair_blocks.py", line 338, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "G:\Lerobot\kaggle_ab\rebuild_minrepair_blocks.py", line 313, in main
+    result = build(DS_MINREPAIR, eval_bomb)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lerobot\kaggle_ab\rebuild_minrepair_blocks.py", line 167, in build
+    new_eps = [new_of_run[run_of_local[i]] for i in range(n)]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lerobot\kaggle_ab\rebuild_minrepair_blocks.py", line 167, in <listcomp>
+    new_eps = [new_of_run[run_of_local[i]] for i in range(n)]
+                          ~~~~~~~~~~~~^^^
+KeyError: 8963

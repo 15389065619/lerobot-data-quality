@@ -1,0 +1,48 @@
+已删除旧输出: G:\Lerobot\exports\kaggle_ab\so101_minrepair
+源 meta/episodes: 172 行
+源数据物理块: 172 块 / 88782 行 / 12 个文件
+块-元数据匹配: {'from_index+length': 103, 'length': 69}（共 172 块）
+保留 157 块（剔除 15 个 eval 块）-> 重编号 0..156
+A 组: 157 集 / 81229 帧 / 视频复制 24 文件
+结构校验: 通过
+内容层（预期差异，如实留痕）: 20/24 个文件帧数与元数据不符
+  videos/observation.images.wrist/chunk-000/file-000.mp4: 元数据 12593 vs 实际 14021（差 1428）
+  videos/observation.images.wrist/chunk-000/file-001.mp4: 元数据 573 vs 实际 606（差 33）
+  videos/observation.images.wrist/chunk-000/file-002.mp4: 元数据 13732 vs 实际 15619（差 1887）
+  videos/observation.images.wrist/chunk-000/file-003.mp4: 元数据 10960 vs 实际 13220（差 2260）
+  videos/observation.images.wrist/chunk-000/file-004.mp4: 元数据 5379 vs 实际 5466（差 87）
+  videos/observation.images.wrist/chunk-000/file-005.mp4: 元数据 8870 vs 实际 9118（差 248）
+  videos/observation.images.wrist/chunk-000/file-007.mp4: 元数据 8253 vs 实际 8784（差 531）
+  videos/observation.images.wrist/chunk-000/file-009.mp4: 元数据 1094 vs 实际 2081（差 987）
+  videos/observation.images.wrist/chunk-000/file-010.mp4: 元数据 4019 vs 实际 4541（差 522）
+  videos/observation.images.wrist/chunk-000/file-011.mp4: 元数据 442 vs 实际 937（差 495）
+  videos/observation.images.overhead/chunk-000/file-000.mp4: 元数据 12593 vs 实际 14021（差 1428）
+  videos/observation.images.overhead/chunk-000/file-001.mp4: 元数据 573 vs 实际 606（差 33）
+manifest: G:\Lerobot\exports\kaggle_ab\rebuild_minrepair_manifest.json
+
+=== so101_minrepair: 24 个视频文件
+Traceback (most recent call last):
+  File "G:\Lerobot\kaggle_ab\transcode_h264.py", line 168, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "G:\Lerobot\kaggle_ab\transcode_h264.py", line 153, in main
+    report = {"fps": fps, "datasets": [transcode_dataset(d, fps, args.workers) for d in DATASETS]}
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lerobot\kaggle_ab\transcode_h264.py", line 153, in <listcomp>
+    report = {"fps": fps, "datasets": [transcode_dataset(d, fps, args.workers) for d in DATASETS]}
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lerobot\kaggle_ab\transcode_h264.py", line 115, in transcode_dataset
+    r = fut.result()
+        ^^^^^^^^^^^^
+  File "E:\python\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "E:\python\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "E:\python\Lib\concurrent\futures\thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Lerobot\kaggle_ab\transcode_h264.py", line 99, in process_file
+    "frames_delta": (frames_after - frames_before)
+                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for -: 'str' and 'str'

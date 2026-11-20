@@ -1,0 +1,27 @@
+Schema 违约 [error] index：index 必须是全数据集唯一的绝对帧号（0..total_frames-1，各出现一次）
+Schema 违约 [error] meta/info.json:total_episodes：info.total_episodes 必须等于 meta/episodes 的实际行数
+Schema 违约 [error] meta/info.json:total_frames：info.total_frames 必须等于 data/*.parquet 的实际行数
+Schema 违约 [error] index：index 必须是全数据集唯一的绝对帧号（0..total_frames-1，各出现一次）
+Schema 违约 [error] index：index 必须是全数据集唯一的绝对帧号（0..total_frames-1，各出现一次）
+复检：清洗产物存在 16 个 drop 级 episode（修复可能引入了新问题）
+
+=== 构建 so101_minrepair: 源=G:\Lerobot\data\external\so101_bomb_pick_place_v1 剔除 15 集 -> G:\Lerobot\exports\kaggle_ab\so101_minrepair
+  源加载: 150 集 / 88782 帧 / 30.0Hz
+  结果: 135 集（预期 135）/81229 帧 / 校验=未通过 / 292s -> FAIL
+  [警告] 相机 observation.images.wrist 重建后总帧数 12889 与 state 行数 12593 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 13819 与 state 行数 13732 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 11048 与 state 行数 10960 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 4321 与 state 行数 5750 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 5629 与 state 行数 10324 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 7006 与 state 行数 11392 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.wrist 重建后总帧数 8339 与 state 行数 8253 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.overhead 重建后总帧数 12889 与 state 行数 12593 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.overhead 重建后总帧数 13819 与 state 行数 13732 存在偏差，建议人工抽查该视频。
+  [警告] 相机 observation.images.overhead 重建后总帧数 11048 与 state 行数 10960 存在偏差，建议人工抽查该视频。
+  [校验] episode_index 不连续：期望 0..156，实际 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]...
+  [校验] data 实际 81229 行，与 meta/episodes.length 之和 103539 不符
+  [校验] info.total_episodes=135 与实际 157 不符
+  [校验] info.splits.train=0:135，应为 0:157
+  [校验] episode 71 的 dataset_from/to_index=(43237,43617) 与累计偏移/长度 944 不符
+  [校验] meta 累计帧数 39693 与 data 实际行数 81229 不符
+[错误] so101_minrepair 构建校验未通过

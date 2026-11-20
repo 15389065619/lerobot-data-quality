@@ -1,0 +1,120 @@
+=== step1 rebuild 06:56:36 ===
+ÒÑÉ¾³ı¾ÉÊä³ö: G:\Lerobot\exports\kaggle_ab\so101_minrepair
+Ô´ meta/episodes: 172 ĞĞ
+Ô´Êı¾İÎïÀí¿é: 172 ¿é / 88782 ĞĞ / 12 ¸öÎÄ¼ş
+¿é-ÔªÊı¾İÆ¥Åä: {'from_index+length': 103, 'length': 69}£¨¹² 172 ¿é£©
+±£Áô 157 ¿é£¨ÌŞ³ı 15 ¸ö eval ¿é£©-> ÖØ±àºÅ 0..156
+A ×é: 157 ¼¯ / 81229 Ö¡ / ÊÓÆµ¸´ÖÆ 24 ÎÄ¼ş
+½á¹¹Ğ£Ñé: Í¨¹ı
+ÄÚÈİ²ã£¨Ô¤ÆÚ²îÒì£¬ÈçÊµÁôºÛ£©: 20/24 ¸öÎÄ¼şÖ¡ÊıÓëÔªÊı¾İ²»·û
+  videos/observation.images.wrist/chunk-000/file-000.mp4: ÔªÊı¾İ 12593 vs Êµ¼Ê 14021£¨²î 1428£©
+  videos/observation.images.wrist/chunk-000/file-001.mp4: ÔªÊı¾İ 573 vs Êµ¼Ê 606£¨²î 33£©
+  videos/observation.images.wrist/chunk-000/file-002.mp4: ÔªÊı¾İ 13732 vs Êµ¼Ê 15619£¨²î 1887£©
+  videos/observation.images.wrist/chunk-000/file-003.mp4: ÔªÊı¾İ 10960 vs Êµ¼Ê 13220£¨²î 2260£©
+  videos/observation.images.wrist/chunk-000/file-004.mp4: ÔªÊı¾İ 5379 vs Êµ¼Ê 5466£¨²î 87£©
+  videos/observation.images.wrist/chunk-000/file-005.mp4: ÔªÊı¾İ 8870 vs Êµ¼Ê 9118£¨²î 248£©
+  videos/observation.images.wrist/chunk-000/file-007.mp4: ÔªÊı¾İ 8253 vs Êµ¼Ê 8784£¨²î 531£©
+  videos/observation.images.wrist/chunk-000/file-009.mp4: ÔªÊı¾İ 1094 vs Êµ¼Ê 2081£¨²î 987£©
+  videos/observation.images.wrist/chunk-000/file-010.mp4: ÔªÊı¾İ 4019 vs Êµ¼Ê 4541£¨²î 522£©
+  videos/observation.images.wrist/chunk-000/file-011.mp4: ÔªÊı¾İ 442 vs Êµ¼Ê 937£¨²î 495£©
+  videos/observation.images.overhead/chunk-000/file-000.mp4: ÔªÊı¾İ 12593 vs Êµ¼Ê 14021£¨²î 1428£©
+  videos/observation.images.overhead/chunk-000/file-001.mp4: ÔªÊı¾İ 573 vs Êµ¼Ê 606£¨²î 33£©
+manifest: G:\Lerobot\exports\kaggle_ab\rebuild_minrepair_manifest.json
+=== step2 transcode 06:57:03 ===
+
+=== so101_minrepair: 24 ¸öÊÓÆµÎÄ¼ş
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-001.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-000.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-003.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-002.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-004.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-005.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-008.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-009.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-007.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-006.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-011.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-001.mp4 av1->h264
+  ×ªÂë videos\observation.images.overhead\chunk-000\file-010.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-000.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-002.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-004.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-003.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-005.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-007.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-008.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-009.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-011.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-006.mp4 av1->h264
+  ×ªÂë videos\observation.images.wrist\chunk-000\file-010.mp4 av1->h264
+
+=== so101_clean: 20 ¸öÊÓÆµÎÄ¼ş
+
+=== so101_eval: 14 ¸öÊÓÆµÎÄ¼ş
+so101_minrepair: ×ªÂë 24 / Ìø¹ı 0 / Ê§°Ü 0 / Ö¡Êı²îÎÄ¼ş 0
+so101_clean: ×ªÂë 0 / Ìø¹ı 20 / Ê§°Ü 0 / Ö¡Êı²îÎÄ¼ş 0
+so101_eval: ×ªÂë 0 / Ìø¹ı 14 / Ê§°Ü 0 / Ö¡Êı²îÎÄ¼ş 0
+manifest: G:\Lerobot\exports\kaggle_ab\transcode_manifest.json
+ÏÂÒ»²½: apply_stats_fixed.py
+=== step3 stats 07:02:11 ===
+B ×é: 106 ¼¯ / 55632 Ö¡ / 30.0Hz
+  observation.images.wrist: 11128 Ö¡³éÑù  mean=[46501697.774, 45419764.575, 44186592.761]  std=[0.0, 0.0, 0.0]
+  observation.images.overhead: 11124 Ö¡³éÑù  mean=[42822482.717, 42687970.381, 42598318.66]  std=[0.0, 0.0, 0.0]
+ÒÑ¸²¸Ç: G:\Lerobot\exports\kaggle_ab\so101_minrepair\meta\stats.json
+        G:\Lerobot\exports\kaggle_ab\so101_eval\meta\stats.json
+ÌØÕ÷¸²¸Ç: ['action', 'observation.images.overhead', 'observation.images.wrist', 'observation.state']
+md5: ee4498b028df74bb7232693c269b7026
+ÏÂÒ»²½: verify_datasets.py
+=== step4 verify 07:15:50 ===
+[so101_minrepair] ç»“æ„: é€šè¿‡ (157 é›†, meta 157 è¡Œ)  è§†é¢‘å¸§æ•°å·®æ–‡ä»¶: 20/24
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-000.mp4 æœŸæœ› 12593 å®é™… 14021
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-001.mp4 æœŸæœ› 573 å®é™… 606
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-002.mp4 æœŸæœ› 13732 å®é™… 15619
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-003.mp4 æœŸæœ› 10960 å®é™… 13220
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-004.mp4 æœŸæœ› 5379 å®é™… 5466
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-005.mp4 æœŸæœ› 8870 å®é™… 9118
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-007.mp4 æœŸæœ› 8253 å®é™… 8784
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-009.mp4 æœŸæœ› 1094 å®é™… 2081
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-010.mp4 æœŸæœ› 4019 å®é™… 4541
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.wrist/chunk-000/file-011.mp4 æœŸæœ› 442 å®é™… 937
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-000.mp4 æœŸæœ› 12593 å®é™… 14021
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-001.mp4 æœŸæœ› 573 å®é™… 606
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-002.mp4 æœŸæœ› 13732 å®é™… 15619
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-003.mp4 æœŸæœ› 10960 å®é™… 13220
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-004.mp4 æœŸæœ› 5379 å®é™… 5466
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-005.mp4 æœŸæœ› 8870 å®é™… 9118
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-007.mp4 æœŸæœ› 8253 å®é™… 8784
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-009.mp4 æœŸæœ› 1094 å®é™… 2081
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-010.mp4 æœŸæœ› 4019 å®é™… 4541
+    [A-å†…å®¹çº§å·®å¼‚ï¼Œç•™ç—•] videos/observation.images.overhead/chunk-000/file-011.mp4 æœŸæœ› 442 å®é™… 937
+[so101_clean] ç»“æ„: é€šè¿‡ (106 é›†, meta 106 è¡Œ)  è§†é¢‘å¸§æ•°å·®æ–‡ä»¶: 7/20
+    [å†…å®¹] videos/observation.images.wrist/chunk-000/file-005.mp4 æœŸæœ› 7485 å®é™… 7472
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-001.mp4 æœŸæœ› 13283 å®é™… 13277
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-002.mp4 æœŸæœ› 9932 å®é™… 9926
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-004.mp4 æœŸæœ› 3321 å®é™… 3319
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-005.mp4 æœŸæœ› 7485 å®é™… 7471
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-006.mp4 æœŸæœ› 2097 å®é™… 2095
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-008.mp4 æœŸæœ› 4019 å®é™… 4018
+[so101_eval] ç»“æ„: é€šè¿‡ (15 é›†, meta 15 è¡Œ)  è§†é¢‘å¸§æ•°å·®æ–‡ä»¶: 2/14
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-001.mp4 æœŸæœ› 1800 å®é™… 1798
+    [å†…å®¹] videos/observation.images.overhead/chunk-000/file-005.mp4 æœŸæœ› 522 å®é™… 521
+[stats so101_minrepair] md5=ee4498b0 ä¸€è‡´=True ç¼ºå¤±=[] æœ‰é™å€¼=True
+[stats so101_clean] md5=ee4498b0 ä¸€è‡´=True ç¼ºå¤±=[] æœ‰é™å€¼=True
+[stats so101_eval] md5=ee4498b0 ä¸€è‡´=True ç¼ºå¤±=[] æœ‰é™å€¼=True
+[eval çª—å£] 320 ä¸ªï¼Œéæ³• 0
+
+--- validator: so101_minrepair
+
+--- validator: so101_clean
+
+--- validator: so101_eval
+
+=== åˆ¤å®š ===
+  so101_minrepair: PASSï¼ˆç»“æ„å±‚é€šè¿‡ï¼›å†…å®¹çº§å·®å¼‚å±é¢„æœŸå¹¶å·²ç•™ç—•ï¼‰
+  so101_clean: PASS
+  so101_eval: PASS
+  validator_so101_minrepair: PASSï¼ˆflagged 9 å— -> åŸç¼–å· 9 é›†ï¼Œå…¨éƒ¨å±äº 29 åé›†ï¼ŒåŸå› å‡ä¸ºå†…å®¹çº§ï¼‰
+  validator_so101_clean: PASSï¼ˆ0 é keepï¼‰
+  validator_so101_eval: PASSï¼ˆ0 é keepï¼‰
+æŠ¥å‘Š: G:\Lerobot\exports\kaggle_ab\verify_report.json
+=== ALL_PASS 07:16:49 ===

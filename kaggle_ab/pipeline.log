@@ -1,0 +1,21 @@
+
+=== 构建 so101_clean: 源=G:\Lerobot\outputs_ext_bomb\cleaned_dataset 剔除 15 集 -> G:\Lerobot\exports\kaggle_ab\so101_clean
+  源加载: 121 集 / 63185 帧 / 30.0Hz
+  结果: 106 集（预期 106）/55632 帧 / 校验=通过 / 208s -> OK
+
+=== 构建 so101_eval: 源=G:\Lerobot\outputs_ext_bomb\cleaned_dataset 剔除 106 集 -> G:\Lerobot\exports\kaggle_ab\so101_eval
+  源加载: 121 集 / 63185 帧 / 30.0Hz
+  结果: 15 集（预期 15）/7553 帧 / 校验=通过 / 30s -> OK
+
+manifest: G:\Lerobot\exports\kaggle_ab\build_manifest.json
+下一步: fixup_minrepair.py（A 修复）
+Schema 违约 [error] index：index 必须是全数据集唯一的绝对帧号（0..total_frames-1，各出现一次）
+Schema 违约 [error] meta/info.json:total_episodes：info.total_episodes 必须等于 meta/episodes 的实际行数
+Schema 违约 [error] meta/info.json:total_frames：info.total_frames 必须等于 data/*.parquet 的实际行数
+A 组 data 实际行数: 81229
+meta/episodes 去重：- 22 行 -> 135 行，length 之和 81229 与 data 一致
+视频还原: 引用 24 个源文件 / 复制 24 个（1550 MB）/ 删除孤儿 0 个
+结构校验: 未通过
+  [校验] episode 71 的 dataset_from/to_index=(43237,43617) 与累计偏移/长度 944 不符
+  [校验] meta 累计帧数 39693 与 data 实际行数 81229 不符
+[错误] 修复后结构校验仍未通过
