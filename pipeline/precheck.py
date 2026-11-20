@@ -98,7 +98,7 @@ def precheck(
     config = config or load_config(robot_type=dataset.info.get("robot_type"))
     # 流式质检：两遍扫描 parquet 但不驻留整表，50GB 数据集也不会把训练机内存打爆
     validation = validate_dataset(dataset, config, streaming=True)
-    decisions = decide(validation, on_review=on_review)
+    decisions = decide(validation, on_review=on_review, dataset=dataset)
 
     counts = {"keep": 0, "repair": 0, "review": 0, "drop": 0}
     blocking: list[dict[str, Any]] = []

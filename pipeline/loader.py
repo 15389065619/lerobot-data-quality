@@ -82,6 +82,10 @@ class LeRobotDatasetView:
     #: data episode_index -> meta episode_index。两侧编号空间不一致时由加载器建立，
     #: 为空表示两侧同名（绝大多数数据集）。
     meta_id_map: dict[int, int] = field(default_factory=dict)
+    #: meta/episodes 的原始全部行（未按 episode_index 去重，保持源文件顺序）。
+    #: 同一 episode 多行表示同一集被切成多段 take，清洗时按行拆分为多个 episode。
+    #: episodes 仍是去重后的首行视图，现有调用方不受影响。
+    episodes_raw: pd.DataFrame = field(default_factory=pd.DataFrame)
     #: 编号对齐诊断：mode(native/remapped/ambiguous/unavailable) + 校验证据，
     #: 报告据此说明「能否定位」，规则层据此区分「异常」与「不可评估」。
     id_reconciliation: dict[str, Any] = field(default_factory=dict)
@@ -117,6 +121,19 @@ class LeRobotDatasetView:
             return None
         rows = self.episodes[self.episodes["episode_index"] == self.meta_episode_index(episode_index)]
         return rows.iloc[0] if len(rows) else None
+
+    def episode_segments(self, episode_index: int) -> pd.DataFrame:
+        """取该 episode 在 meta/episodes 中的全部原始行（按源文件顺序）。
+
+        单段 episode 返回 1 行；多段（同一集被切成两段 take）返回多行，
+        每行各自带 length 与视频窗口，清洗阶段据此拆分而不是丢弃后一段。
+        """
+        raw = self.episodes_raw
+        if raw is None or raw.empty or "episode_index" not in raw.columns:
+            row = self.meta_row(episode_index)
+            return pd.DataFrame([row]) if row is not None else pd.DataFrame()
+        target = self.meta_episode_index(episode_index)
+        return raw[raw["episode_index"] == target]
 
     @property
     def num_frames(self) -> int:
@@ -299,6 +316,51 @@ class LeRobotDatasetView:
         if "frame_index" in sub.columns:
             sub = sub.sort_values("frame_index", kind="stable")
         return sub
+
+    def episode_frame_raw(self, episode_index: int) -> pd.DataFrame:
+        """取某个 episode 的所有帧，保持 parquet 存储顺序（不按 frame_index 排序）。
+
+        多段 take 拼接的 episode 里 frame_index 会重复（每段都从 0 开始），
+        按 frame_index 排序会把两段行交错（0,0,1,1,...），拆分/重写必须用原始顺序。
+        因此这里逐文件读取并按文件名顺序拼接，与 cleaner 写回时的行序一致。
+
+        相比 episode_frame 的两处改进：
+          1. episode_index 列可能是字符串类型（行为如 "42"），filter 前先探测列类型
+             并把 filter 值转成对应类型，避免永不命中。
+          2. 带 columns 选择裁剪 IO——读全列（含重型二维特征如点云）在多段集上是重 IO，
+             调用方若需要特定列可以传，但默认读全列保持向后兼容。
+        """
+        parts: list[pd.DataFrame] = []
+        for path in self.data_files:
+            try:
+                # 先探测 episode_index 列类型（只读一列 schema 级）
+                schema = pq.read_schema(path)
+                if "episode_index" not in schema.names:
+                    continue
+                ep_col_type = schema.field("episode_index").type
+                # 决定 filter 值类型：int 列用 int，字符串列用 str
+                filter_val: Any = (
+                    str(episode_index) if pa.types.is_string(ep_col_type) else episode_index
+                )
+                table = pq.read_table(
+                    path,
+                    filters=[("episode_index", "=", filter_val)],
+                )
+            except Exception:  # noqa: BLE001 - 不支持 filter 时退回全量读
+                try:
+                    table = pq.read_table(path)
+                except Exception as exc:  # noqa: BLE001
+                    LOG.warning("读取 %s 失败: %s", path.name, exc)
+                    continue
+            df = table.to_pandas()
+            if "episode_index" in df.columns:
+                # 字符串列也能安全对比
+                df = df[df["episode_index"].astype(str) == str(episode_index)]
+            if len(df):
+                parts.append(df)
+        if not parts:
+            return pd.DataFrame()
+        return pd.concat(parts, ignore_index=True)
 
     def data_file_of(self, episode_index: int) -> Path | None:
         """定位 episode 所在的数据文件；meta 没记录时靠单文件/扫描兜底。"""
@@ -526,7 +588,7 @@ def load_dataset(
     if load_frames and not data_files:
         raise DatasetFormatError(f"未在 {root} 下找到任何 data/*.parquet")
 
-    episodes_meta, meta_duplicates = _read_episodes_meta(root, info)
+    episodes_meta, meta_duplicates, episodes_raw = _read_episodes_meta(root, info)
     video_index = _discover_videos(root)
 
     heavy = heavy_feature_keys(features) if not include_heavy else []
@@ -580,11 +642,15 @@ def load_dataset(
     if keep is not None and episodes_meta is not None and not episodes_meta.empty:
         wanted_meta = {int(meta_id_map.get(k, k)) for k in keep}
         episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(wanted_meta)].reset_index(drop=True)
+        if len(episodes_raw):
+            episodes_raw = episodes_raw[episodes_raw["episode_index"].isin(wanted_meta)].reset_index(drop=True)
         if meta_id_map:
             meta_id_map = {k: v for k, v in meta_id_map.items() if k in keep}
 
     if episodes_meta is None:
         episodes_meta = pd.DataFrame(columns=["episode_index", "length"])
+    if episodes_raw is None:
+        episodes_raw = pd.DataFrame()
 
     view = LeRobotDatasetView(
         root=root,
@@ -593,6 +659,7 @@ def load_dataset(
         features=features,
         tasks=tasks,
         episodes=episodes_meta,
+        episodes_raw=episodes_raw,
         frames=frames,
         video_index=video_index,
         codebase_version=version,
@@ -824,14 +891,17 @@ def _normalize_episodes_meta(df: pd.DataFrame) -> pd.DataFrame:
     df["episode_index"] = numeric[numeric.notna()].astype("int64")
     if "length" in df.columns:
         df["length"] = pd.to_numeric(df["length"], errors="coerce").fillna(0).astype("int64")
-    return df.sort_values("episode_index").reset_index(drop=True)
+    return df.sort_values("episode_index", kind="stable").reset_index(drop=True)
 
 
-def _read_episodes_meta(root: Path, info: dict) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+def _read_episodes_meta(
+    root: Path, info: dict
+) -> tuple[pd.DataFrame | None, dict[str, Any], pd.DataFrame]:
     """episode 级元数据（length / tasks / from_index / 视频区间）。
 
-    返回 (去重后的元数据, 重复行冲突诊断)。多行本身可安全去重，但同一
-    episode 的 length 或视频窗口互相矛盾时说明多次导出叠加，必须报出来。
+    返回 (去重后的元数据, 重复行冲突诊断, 未去重的原始行)。多行本身可安全去重，
+    但同一 episode 的 length 或视频窗口互相矛盾时说明多次导出叠加，必须报出来；
+    另外未去重的原始行要保留下来——同一集的多行也可能是多段 take，需要按段拆分。
     """
     ep_root = root / "meta" / "episodes"
     if ep_root.is_dir():
@@ -847,8 +917,9 @@ def _read_episodes_meta(root: Path, info: dict) -> tuple[pd.DataFrame | None, di
                 df = pd.concat(frames, ignore_index=True)
                 df = _normalize_episodes_meta(df)
                 conflicts = _meta_duplicate_conflicts(df)
+                raw = df.reset_index(drop=True)
                 df = df.drop_duplicates(subset=["episode_index"]).reset_index(drop=True)
-                return df, conflicts
+                return df, conflicts, raw
 
     jsonl = root / "meta" / "episodes.jsonl"
     if jsonl.is_file():
@@ -863,8 +934,9 @@ def _read_episodes_meta(root: Path, info: dict) -> tuple[pd.DataFrame | None, di
                 except json.JSONDecodeError:
                     continue
         if rows:
-            return _normalize_episodes_meta(pd.DataFrame(rows)), {}
-    return None, {}
+            raw = _normalize_episodes_meta(pd.DataFrame(rows))
+            return raw.drop_duplicates(subset=["episode_index"]).reset_index(drop=True), {}, raw
+    return None, {}, pd.DataFrame()
 
 
 def _meta_duplicate_conflicts(df: pd.DataFrame) -> dict[str, Any]:

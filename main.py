@@ -334,7 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     step("处置决策（policy：保留/修复/复核/剔除）", 3, total_steps)
     try:
         overrides = policy_mod.read_overrides(args.overrides) if args.overrides else {}
-        decisions = policy_mod.decide(validation, on_review=args.on_review, overrides=overrides)
+        decisions = policy_mod.decide(validation, on_review=args.on_review, overrides=overrides,
+                                      dataset=dataset)
     except Exception as exc:  # noqa: BLE001
         LOG.error("处置决策失败: %s\n%s", exc, traceback.format_exc())
         _write_failure(output_dir, "policy", exc)

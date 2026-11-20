@@ -41,11 +41,15 @@ def manual_clean(
     trim_plan: dict[int, dict[str, int]],
     rebuild_ts: set[int],
     repairs: dict[str, list[int]],
+    split_plan: dict[int, list[dict[str, Any]]] | None = None,
+    window_plan: dict[int, dict[str, dict[str, float]]] | None = None,
     link_mode: str = "copy",
 ) -> tuple[CleaningResult, int]:
+    split_plan = split_plan or {}
+    window_plan = window_plan or {}
     prepare_dir(out_root, overwrite=overwrite)
     warnings: list[str] = []
-    if FFMPEG is None:
+    if FFMPEG is None and not split_plan and not window_plan:
         warnings.append("未找到 ffmpeg，视频文件将原样复制，可能残留已删除 episode 的画面（需后续重编码）。")
 
     # 0) 判定保留却一行都写不出的 episode 必须提前剔除：写入后再改编号映射会让
@@ -53,42 +57,69 @@ def manual_clean(
     kept, empty_warnings = _surviving_episodes(dataset, kept, trim_plan)
     warnings.extend(empty_warnings)
 
-    # 1) 视频窗口（裁帧的 episode 需要同步收窄窗口）
-    windows = _collect_video_windows(dataset, kept, trim_plan, warnings)
+    # 输出计划：普通 episode 一行；meta 多段的 episode 按段拆成多行（新编号连续）
+    output_plan = _build_output_plan(kept, split_plan)
 
-    # 2) 重写 data parquet（含裁帧、时间轴重建）
-    ep_index_map = {old: i for i, old in enumerate(kept)}
+    # 1) 视频窗口（裁帧同步收窄；拆分取该段 meta 行；收窗按真实帧数重算 to）
+    windows = _collect_video_windows(
+        dataset, output_plan, trim_plan, split_plan, window_plan, warnings
+    )
+
+    # 2) 重写 data parquet（含拆分、裁帧、时间轴重建）
     data_meta, stats_acc, kept_lengths = _rewrite_frames(
-        dataset, kept, ep_index_map, out_root, trim_plan=trim_plan, rebuild_ts=rebuild_ts
+        dataset, output_plan, out_root, trim_plan=trim_plan, rebuild_ts=rebuild_ts,
+        split_plan=split_plan,
     )
 
     # 3) 重建视频
     new_video_meta, video_warnings = _rebuild_videos(
-        dataset, kept, out_root, windows, kept_lengths, link_mode=link_mode
+        dataset, output_plan, out_root, windows, kept_lengths, link_mode=link_mode
     )
     warnings.extend(video_warnings)
 
     # 4) 重建 meta
-    rewrite_episodes_meta(dataset, kept, ep_index_map, data_meta, new_video_meta, out_root)
+    rewrite_episodes_meta(dataset, output_plan, data_meta, new_video_meta, out_root)
     copy_tasks(dataset.root, out_root)
     total_frames = int(sum(m["length"] for m in data_meta.values()))
-    rewrite_info(dataset, kept, total_frames, out_root, force_v3=True)
+    rewrite_info(dataset, list(range(len(output_plan))), total_frames, out_root, force_v3=True)
     warnings.extend(rewrite_stats_streaming(dataset, stats_acc, out_root))
 
+    ep_index_map: dict[int, int] = {}
+    for item in output_plan:
+        ep_index_map.setdefault(int(item["old"]), int(item["new"]))
+    repaired = sorted(set(trim_plan) | set(rebuild_ts) | set(split_plan) | set(window_plan))
     result = CleaningResult(
         success=True,
         method="manual",
         output_root=out_root,
         removed_episodes=sorted(set(dataset.episode_indices) - set(kept)),
-        repaired_episodes=sorted(set(trim_plan) | rebuild_ts),
+        repaired_episodes=repaired,
         repairs=repairs,
-        kept_episodes=len(kept),
+        kept_episodes=len(output_plan),
         episode_index_map=ep_index_map,
         warnings=warnings,
     )
     LOG.info("清洗完成：%d -> %d 个 episode（修复 %d 个），写入 %s",
-             len(dataset.episode_indices), len(kept), len(trim_plan) + len(rebuild_ts), out_root)
+             len(dataset.episode_indices), len(output_plan), len(repaired), out_root)
     return result, total_frames
+
+
+def _build_output_plan(
+    kept: list[int], split_plan: dict[int, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """按 kept 顺序生成输出 episode 计划；多段 episode 每段占一行。"""
+    plan: list[dict[str, Any]] = []
+    for old in kept:
+        segments = split_plan.get(old)
+        if segments:
+            for seg_index, segment in enumerate(segments):
+                plan.append({
+                    "new": len(plan), "old": int(old), "seg": seg_index,
+                    "length": int(segment["length"]),
+                })
+        else:
+            plan.append({"new": len(plan), "old": int(old), "seg": None, "length": None})
+    return plan
 
 
 def copy_untouched(dataset: LeRobotDatasetView, out_root: Path, *, overwrite: bool) -> CleaningResult:
@@ -321,57 +352,175 @@ def _surviving_episodes(
     return survivors, warnings
 
 
+def _video_path(
+    dataset: LeRobotDatasetView, camera: str, chunk_index: int, file_index: int
+) -> Path | None:
+    """按 (chunk, file) 定位源视频；优先用已扫描到的索引，回退到 info 模板。"""
+    indexed = dataset.video_index.get(camera, {}).get((int(chunk_index), int(file_index)))
+    if indexed is not None:
+        return indexed
+    template = dataset.info.get("video_path") or DEFAULT_VIDEO_PATH
+    try:
+        rel = template.format(
+            video_key=camera, camera=camera, chunk_index=int(chunk_index),
+            file_index=int(file_index), episode_index=int(file_index),
+            episode_chunk=int(chunk_index),
+        )
+    except (KeyError, IndexError, ValueError, TypeError):
+        return None
+    return dataset.root / rel
+
+
 def _collect_video_windows(
-    dataset: LeRobotDatasetView, kept: list[int], trim_plan: dict[int, dict[str, int]], warnings: list[str]
+    dataset: LeRobotDatasetView,
+    output_plan: list[dict[str, Any]],
+    trim_plan: dict[int, dict[str, int]],
+    split_plan: dict[int, list[dict[str, Any]]],
+    window_plan: dict[int, dict[str, dict[str, float]]],
+    warnings: list[str],
 ) -> dict[int, dict[str, dict[str, Any]]]:
-    """{ep: {cam: {path, from, to}}}；裁帧时按 fps 收窄时间窗。"""
+    """{新 episode: {cam: {path, from, to}}}。
+
+    普通集沿用 meta 窗口并按裁帧收窄；拆分集取对应分段的 meta 窗口；
+    收窗修复只改 to_timestamp，不动数据行与视频文件。
+    """
     fps = dataset.fps or 30.0
     out: dict[int, dict[str, dict[str, Any]]] = {}
-    for ep in kept:
-        trim = trim_plan.get(ep) or {}
+    for item in output_plan:
+        new = int(item["new"])
+        old = int(item["old"])
+        per_ep: dict[str, dict[str, Any]] = {}
+
+        if item["seg"] is not None:
+            segment = split_plan[old][int(item["seg"])]
+            for cam, window in segment["videos"].items():
+                path = _video_path(dataset, cam, window["chunk_index"], window["file_index"])
+                if path is None or not path.is_file():
+                    warnings.append(f"ep {old} 分段 {item['seg']} 相机 {cam} 视频文件无法定位")
+                    continue
+                per_ep[cam] = {
+                    "path": path, "from": float(window["from"]), "to": float(window["to"]),
+                }
+            if per_ep:
+                out[new] = per_ep
+            continue
+
+        trim = trim_plan.get(old) or {}
         head = int(trim.get("head_frames", 0))
         tail = int(trim.get("tail_frames", 0))
-        per_ep: dict[str, dict[str, Any]] = {}
+        narrowing = window_plan.get(old) or {}
         for cam in dataset.video_features:
-            loc = dataset.video_location(cam, ep)
+            loc = dataset.video_location(cam, old)
             if loc is None:
-                warnings.append(f"ep {ep} 相机 {cam} 无法定位视频文件")
+                warnings.append(f"ep {old} 相机 {cam} 无法定位视频文件")
                 continue
             path, from_ts, to_ts = loc
             if not path.is_file():
-                warnings.append(f"ep {ep} 相机 {cam} 视频文件缺失: {path.name}")
+                warnings.append(f"ep {old} 相机 {cam} 视频文件缺失: {path.name}")
                 continue
-            if (head or tail) and to_ts > from_ts >= 0:
+            if cam in narrowing:
+                from_ts = float(narrowing[cam].get("from", from_ts))
+                to_ts = float(narrowing[cam]["to"])
+            elif (head or tail) and to_ts > from_ts >= 0:
                 from_ts += head / fps
                 to_ts -= tail / fps
             per_ep[cam] = {"path": path, "from": from_ts, "to": to_ts}
         if per_ep:
-            out[ep] = per_ep
+            out[new] = per_ep
     return out
+
+
+def _episode_row_index(
+    source_files: list[Path], kept_set: set[int]
+) -> dict[int, list[tuple[int, np.ndarray]]]:
+    """两遍扫描的第一遍：只读 episode_index 列，建立 {源 episode: [(文件序号, 行号数组)]}。
+
+    内存里只留行号（约 8B/行），不驻留任何观测数据。编号列可能是字符串、
+    含 NULL 或含小数，统一数值化后只接受非负整数——与 loader 的
+    ``pd.to_numeric(errors="coerce")`` 容错口径一致，损坏行直接跳过而不是让
+    ``int(None)`` 把整次清洗打崩。
+    """
+    index: dict[int, list[tuple[int, np.ndarray]]] = {}
+    for file_no, src in enumerate(source_files):
+        try:
+            col = pq.read_table(src, columns=["episode_index"]).column("episode_index")
+        except (pa.ArrowInvalid, KeyError, OSError) as exc:
+            LOG.warning("扫描 %s 的 episode_index 失败，跳过: %s", src.name, exc)
+            continue
+        numeric = pd.to_numeric(
+            pd.Series(col.to_pylist(), dtype=object), errors="coerce"
+        ).to_numpy(dtype=np.float64)
+        valid = np.isfinite(numeric)
+        ids = np.where(valid, numeric, -1.0).astype(np.int64)
+        valid &= (ids >= 0) & (ids == numeric)
+        for raw_old in np.unique(ids[valid]):
+            old = int(raw_old)
+            if old not in kept_set:
+                continue
+            positions = np.where(valid & (ids == old))[0]
+            if positions.size:
+                index.setdefault(old, []).append((file_no, positions))
+    return index
+
+
+def _load_episode_rows(
+    old: int,
+    row_index: dict[int, list[tuple[int, np.ndarray]]],
+    source_files: list[Path],
+    file_cache: dict[int, pa.Table],
+) -> pa.Table | None:
+    """按物理行序取出一个源 episode 的全部行；最多驻留一个源文件的表。
+
+    同一 old 被拆成多段时由调用方复用返回值，避免重复 IO。跨文件 schema
+    有差异（列集合 / 类型不完全一致）时用 permissive 合并，缺失列补 null，
+    否则 ``concat_tables`` 会因 schema 不同直接抛 ArrowInvalid。
+    """
+    entries = row_index.get(old)
+    if not entries:
+        return None
+    parts: list[pa.Table] = []
+    for file_no, positions in entries:
+        table = file_cache.get(file_no)
+        if table is None:
+            try:
+                table = pq.read_table(source_files[file_no])
+            except (pa.ArrowInvalid, OSError) as exc:
+                LOG.warning("读取 %s 失败，跳过: %s", source_files[file_no].name, exc)
+                continue
+            file_cache.clear()
+            file_cache[file_no] = table
+        parts.append(table.take(pa.array(positions, type=pa.int64())))
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return pa.concat_tables(parts, promote_options="permissive")
 
 
 def _rewrite_frames(
     dataset: LeRobotDatasetView,
-    kept: list[int],
-    ep_index_map: dict[int, int],
+    output_plan: list[dict[str, Any]],
     out_root: Path,
     *,
     trim_plan: dict[int, dict[str, int]],
     rebuild_ts: set[int],
+    split_plan: dict[int, list[dict[str, Any]]],
 ) -> tuple[dict[int, dict[str, Any]], StreamingStats, dict[int, int]]:
-    """按来源文件重写 parquet。返回 (episode 元信息, 流式统计, 每个新 episode 的帧数)。"""
+    """按输出 episode 顺序重写 parquet；两遍扫描，内存只驻留一个 episode。
+
+    第一遍只扫 episode_index 建行索引，第二遍按 output_plan 按需取行、逐集
+    重写并及时写盘释放。不能假定源文件顺序等于 output_plan 顺序（episode
+    编号是排序后的值），但也不能把全部源行收进内存——那会让 50GB 数据集
+    在训练机上 OOM，与整条流水线的流式设计冲突。
+    """
     # 清洗产物统一写 v3.0 布局，避免 v2 模板里的 {episode_index} 与 chunk/file 冲突
     template = DEFAULT_DATA_PATH
     fps = dataset.fps or 30.0
-    running_frames: dict[int, int] = {ep_index_map[ep]: 0 for ep in kept}
-    inverse_map = {v: k for k, v in ep_index_map.items()}
-    # 裁帧会改变帧的位置，timestamp 必须一并重建，否则首帧不再从 0 开始、步长也错位。
+    kept_set = {int(item["old"]) for item in output_plan}
     rebuild_new = {
-        ep_index_map[ep] for ep in (set(rebuild_ts) | set(trim_plan)) if ep in ep_index_map
+        int(item["new"]) for item in output_plan
+        if int(item["old"]) in (set(rebuild_ts) | set(trim_plan) | set(split_plan))
     }
-    data_meta: dict[int, dict[str, Any]] = {}
-    global_index = 0
-    file_index = 0
     feature_keys = collect_feature_keys(dataset)
     stats_acc = StreamingStats(feature_shapes={
         key: tuple((dataset.features.get(key) or {}).get("shape") or [])
@@ -379,100 +528,104 @@ def _rewrite_frames(
     })
 
     source_files = _source_files_in_order(dataset)
-    # 裁帧按整集计数：跨多个 parquet 的 episode 不能每个文件从 0 重新数
-    episode_totals: dict[int, int] = {}
-    if trim_plan:
-        for src_file in source_files:
-            try:
-                col = pq.read_table(src_file, columns=["episode_index"]).column("episode_index").to_pylist()
-            except (pa.ArrowInvalid, KeyError):
-                continue
-            for old in col:
-                old = int(old)
-                if old in ep_index_map:
-                    new = ep_index_map[old]
-                    episode_totals[new] = episode_totals.get(new, 0) + 1
-    row_pos_counter: dict[int, int] = {}
+    row_index = _episode_row_index(source_files, kept_set)
 
-    for src_file in source_files:
-        table = pq.read_table(src_file)
-        if "episode_index" not in table.column_names:
-            continue
-        ep_values = np.asarray(table.column("episode_index").to_pylist())
-        mask = np.isin(ep_values, np.asarray(kept, dtype=np.int64))
-        if not mask.any():
-            continue
-        positions = np.where(mask)[0]
-        sub = table.take(pa.array(positions, type=pa.int64()))
-        old_eps = ep_values[positions].astype(np.int64)
-        new_eps = np.asarray([ep_index_map[int(e)] for e in old_eps], dtype=np.int64)
+    data_meta: dict[int, dict[str, Any]] = {}
+    pending: list[pa.Table] = []
+    pending_rows = 0
+    file_index = 0
+    global_index = 0
+    rows_per_file = 20000  # 单个输出 parquet 的行数上限；episode 不跨文件
 
-        # 裁帧：丢掉每个 episode 的首 head 帧 / 尾 tail 帧
-        if trim_plan:
-            row_pos = np.empty(len(new_eps), dtype=np.int64)
-            for i, e in enumerate(new_eps):
-                c = row_pos_counter.get(int(e), 0)
-                row_pos[i] = c
-                row_pos_counter[int(e)] = c + 1
-            keep_row = np.ones(len(new_eps), dtype=bool)
-            for i, e in enumerate(new_eps):
-                trim = trim_plan.get(inverse_map[int(e)]) or {}
-                if not trim:
-                    continue
-                head = int(trim.get("head_frames", 0))
-                tail = int(trim.get("tail_frames", 0))
-                total = episode_totals.get(int(e), int(row_pos_counter.get(int(e), 0)))
-                keep_row[i] = head <= row_pos[i] < total - tail
-            if not keep_row.all():
-                sub = sub.take(pa.array(np.where(keep_row)[0], type=pa.int64()))
-                new_eps = new_eps[keep_row]
-                LOG.debug("%s 裁帧后保留 %d/%d 行", src_file.name, sub.num_rows, len(keep_row))
-
-        # frame_index：按新 episode 跨文件连续编号
-        frame_idx = np.empty(len(new_eps), dtype=np.int64)
-        for i, ep in enumerate(new_eps):
-            frame_idx[i] = running_frames[int(ep)]
-            running_frames[int(ep)] += 1
-
-        idx_values = np.arange(global_index, global_index + len(new_eps), dtype=np.int64)
-        global_index += len(new_eps)
-
-        sub = set_column(sub, "episode_index", new_eps)
-        sub = set_column(sub, "frame_index", frame_idx)
-        sub = set_column(sub, "index", idx_values)
-
-        # 时间轴重建：只改需要修复的 episode，不能把同文件其它 episode 一起重写
-        if rebuild_new:
-            rebuild_mask = np.isin(new_eps, np.fromiter(rebuild_new, dtype=np.int64))
-            if rebuild_mask.any():
-                if "timestamp" in sub.column_names:
-                    ts = np.asarray(sub.column("timestamp").to_pylist(), dtype=np.float64)
-                else:
-                    ts = np.zeros(len(new_eps), dtype=np.float64)
-                ts[rebuild_mask] = frame_idx[rebuild_mask] / fps
-                sub = set_column(sub, "timestamp", ts)
-                LOG.info("%s 重建了 %d 个 episode 的时间轴", src_file.name,
-                         len({int(e) for e in new_eps[rebuild_mask]}))
-
+    def flush() -> None:
+        nonlocal pending, pending_rows, file_index
+        if not pending:
+            return
+        table = (pending[0] if len(pending) == 1
+                 else pa.concat_tables(pending, promote_options="permissive"))
         rel = template.format(chunk_index=0, file_index=file_index)
         out_path = out_root / rel
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(sub, out_path)
-        LOG.debug("写入 %s (%d 行)", out_path, sub.num_rows)
-
-        for ep_new in np.unique(new_eps):
-            ep_pos = np.where(new_eps == ep_new)[0]
-            data_meta[inverse_map[int(ep_new)]] = {
-                "length": int(running_frames[int(ep_new)]),
-                "from_index": int(idx_values[ep_pos].min()),
-                "to_index": int(idx_values[ep_pos].max()) + 1,
-                "file_index": file_index,
-                "chunk_index": 0,
-            }
-
-        stats_acc.update_from_table(sub, feature_keys)
+        pq.write_table(table, out_path)
+        LOG.debug("写入 %s (%d 行)", out_path, table.num_rows)
+        stats_acc.update_from_table(table, feature_keys)
+        pending = []
+        pending_rows = 0
         file_index += 1
 
+    file_cache: dict[int, pa.Table] = {}
+    last_old: int | None = None
+    base_frame: pa.Table | None = None
+
+    for item in output_plan:
+        old = int(item["old"])
+        new = int(item["new"])
+        if old not in row_index:
+            LOG.warning("episode %s 在 data 中不存在，跳过", old)
+            continue
+        # split 的多段是连续的，复用同一份源行，避免每段都重新读一遍文件
+        if old != last_old:
+            base_frame = _load_episode_rows(old, row_index, source_files, file_cache)
+            last_old = old
+        if base_frame is None:
+            LOG.warning("episode %s 的数据行读取失败，跳过", old)
+            continue
+        total = base_frame.num_rows
+        if item["seg"] is not None:
+            start = sum(
+                int(seg["length"]) for seg in split_plan[old][:int(item["seg"])]
+            )
+            length = int(item["length"])
+            if start + length > total:
+                LOG.warning("episode %s 第 %s 段超出实际行数 %d，跳过",
+                            old, item["seg"], total)
+                continue
+            frame = base_frame.slice(start, length)
+        else:
+            trim = trim_plan.get(old) or {}
+            head = int(trim.get("head_frames", 0))
+            tail = int(trim.get("tail_frames", 0))
+            length = total - head - tail
+            if length <= 0:
+                LOG.warning("episode %s 裁帧后没有剩余行，跳过", old)
+                continue
+            frame = base_frame.slice(head, length) if (head or tail) else base_frame
+
+        if frame.num_rows != length:
+            LOG.warning("episode %s 实际取到 %d 行，预期 %d，跳过",
+                        old, frame.num_rows, length)
+            continue
+
+        if pending and pending_rows + length > rows_per_file:
+            flush()
+        target_file = file_index
+        frame_idx = np.arange(length, dtype=np.int64)
+        index_values = np.arange(global_index, global_index + length, dtype=np.int64)
+        frame = set_column(frame, "episode_index", np.full(length, new, dtype=np.int64))
+        frame = set_column(frame, "frame_index", frame_idx)
+        frame = set_column(frame, "index", index_values)
+        if new in rebuild_new:
+            if "timestamp" in frame.column_names:
+                ts = np.asarray(frame.column("timestamp").to_pylist(), dtype=np.float64)
+            else:
+                ts = np.zeros(length, dtype=np.float64)
+            ts[:] = frame_idx / fps
+            frame = set_column(frame, "timestamp", ts)
+            LOG.debug("episode %d 重建了时间轴", new)
+
+        data_meta[new] = {
+            "length": int(length),
+            "from_index": int(global_index),
+            "to_index": int(global_index) + int(length),
+            "file_index": int(target_file),
+            "chunk_index": 0,
+        }
+        pending.append(frame)
+        pending_rows += length
+        global_index += length
+
+    file_cache.clear()
+    flush()
     kept_lengths = {ep: int(m["length"]) for ep, m in data_meta.items()}
     LOG.info("data parquet 重写完成：%d 个文件 / %d 行", file_index, global_index)
     return data_meta, stats_acc, kept_lengths
@@ -480,19 +633,20 @@ def _rewrite_frames(
 
 def _rebuild_videos(
     dataset: LeRobotDatasetView,
-    kept: list[int],
+    output_plan: list[dict[str, Any]],
     out_root: Path,
     windows: dict[int, dict[str, dict[str, Any]]],
     kept_lengths: dict[int, int],
     *,
     link_mode: str = "copy",
 ) -> tuple[dict[int, dict[str, dict[str, Any]]], list[str]]:
-    """按相机重建 mp4：同一源文件内保留需要的区间并重新拼接。"""
+    """按相机重建 mp4：优先整文件物化（窗口已指向真实帧），有删除时才重编码拼接。"""
     warnings: list[str] = []
     result: dict[int, dict[str, dict[str, Any]]] = {}
     # 输出统一 v3.0 布局；v2 的 episode_XXXXXX.mp4 模板无法用 chunk/file 格式化
     template = DEFAULT_VIDEO_PATH
     fps = dataset.fps or 30.0
+    old_of_new = {int(item["new"]): int(item["old"]) for item in output_plan}
 
     for cam in dataset.video_features:
         src_to_eps: dict[Path, list[int]] = {}
@@ -500,10 +654,18 @@ def _rebuild_videos(
             loc = dataset.video_location(cam, ep)
             if loc is not None and loc[0].is_file():
                 src_to_eps.setdefault(loc[0], []).append(ep)
+        src_to_new: dict[Path, list[int]] = {}
+        for new in sorted(windows):
+            info = windows[new].get(cam)
+            if info is not None:
+                src_to_new.setdefault(info["path"], []).append(new)
 
         out_index = 0
-        for src_path, all_eps in sorted(src_to_eps.items(), key=lambda kv: str(kv[0])):
-            keep_here = [e for e in sorted(all_eps) if e in windows and cam in windows[e]]
+        # 以「源文件 -> 输出窗口」为主，同时补齐 meta 定位到的源文件（可能只有分段引用）
+        all_sources = set(src_to_eps) | set(src_to_new)
+        for src_path in sorted(all_sources, key=str):
+            all_eps = src_to_eps.get(src_path, [])
+            keep_here = sorted(src_to_new.get(src_path, []))
             if not keep_here:
                 continue
 
@@ -523,30 +685,36 @@ def _rebuild_videos(
                     }
                     cum += frames
 
-            whole_file_kept = set(keep_here) == set(all_eps)
-            window_covers_file = all(
-                windows[e][cam]["from"] <= 0.001 for e in keep_here
-            )
-            if whole_file_kept and window_covers_file and all(
-                not (windows[e][cam]["to"] > 0 and windows[e][cam]["to"] < kept_lengths.get(e, 0) / fps - 0.001)
-                for e in keep_here
-            ):
+            # 源文件里的每个 episode 都仍有输出窗口（拆分集按段计、收窗集仍存在），
+            # 说明没有任何画面需要删除——整文件物化即可，窗口保持指向真实帧，不重编码。
+            covered_old = {old_of_new[new] for new in keep_here}
+            if set(all_eps) <= covered_old:
                 _materialize(src_path, out_path, link_mode)
-                assign([(e, kept_lengths[e]) for e in keep_here])
+                for new in keep_here:
+                    info = windows[new][cam]
+                    result.setdefault(new, {})[cam] = {
+                        "chunk_index": 0,
+                        "file_index": out_index - 1,
+                        "from": float(info["from"]),
+                        "to": float(info["to"]),
+                    }
                 continue
 
-            segments = [(e, windows[e][cam]["from"], windows[e][cam]["to"]) for e in keep_here]
+            segments = [
+                (new, windows[new][cam]["from"], windows[new][cam]["to"])
+                for new in keep_here
+            ]
             if not FFMPEG or any(f < 0 or t <= f for _, f, t in segments):
                 shutil.copy2(src_path, out_path)
                 warnings.append(
                     f"相机 {cam} 的 {src_path.name} 含已删除 episode 且无法按时间戳切分，已原样复制（画面会残留脏 episode）。"
                 )
-                assign([(e, kept_lengths[e]) for e in keep_here])
+                assign([(new, kept_lengths[new]) for new in keep_here])
                 continue
 
             built = _concat_segments(src_path, segments, out_path, fps, warnings)
             assign(built)
-            expected = sum(kept_lengths.get(e, 0) for e, _ in built)
+            expected = sum(kept_lengths.get(new, 0) for new, _ in built)
             got = sum(f for _, f in built)
             if abs(got - expected) > len(built):
                 warnings.append(
@@ -641,6 +809,14 @@ def _materialize(src: Path, dst: Path, link_mode: str) -> None:
 
 
 def _source_files_in_order(dataset: LeRobotDatasetView) -> list[Path]:
-    if SOURCE_COL not in dataset.frames.columns:
-        return []
-    return [Path(v) for v in dataset.frames[SOURCE_COL].drop_duplicates().tolist()]
+    # 按文件名排序，而不是「首次出现顺序」：frames 会按 (episode, frame_index) 排过序，
+    # 同一集的两段可能让后一个文件先出现，按首次出现顺序拼接会打乱物理行序，
+    # 拆分时就会把两段的行接错。这里与 loader.episode_frame_raw 的文件顺序保持一致。
+    paths = ({Path(v) for v in dataset.frames[SOURCE_COL].dropna().tolist()}
+             if SOURCE_COL in dataset.frames.columns else set())
+    if not paths:
+        # 流式模式（load_frames=False）下 frames 为空，此时必须回退到 data_files，
+        # 否则 _surviving_episodes 会把所有 episode 判为「没有有效行」而产出空数据集。
+        paths = set(dataset.data_files)
+    return sorted(paths, key=lambda p: str(p))
+

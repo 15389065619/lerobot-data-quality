@@ -16,12 +16,14 @@ from __future__ import annotations
 import csv
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
 from .baseline import fingerprint
-from .config import severity_of
 from .loader import LeRobotDatasetView
 from .validator import RULE_MAP, EpisodeResult, ValidationResult
 
@@ -34,6 +36,15 @@ REPAIR_ACTIONS = {
     "timestamp_not_monotonic": "timestamps",
     "meta_index_inconsistent": "index",
 }
+
+#: 硬损坏：只能整集剔除，修不了也不该为几帧冒险
+HARD_DROP_CODES = {
+    "nan_state", "nan_action", "blank_video", "video_missing", "episode_read_error",
+    "static_episode", "duplicate_episode", "joint_limit_violation", "frame_count_abnormal",
+}
+
+#: 软规则只提示复核，永不自动剔除（即使被配置成 error）
+SOFT_NEVER_DROP_CODES = {"state_jump", "state_wrap", "timestamp_step_deviation"}
 
 #: 单条规则命中占比达到该阈值时视为「系统性疑似误判」，禁止批量剔除
 SYSTEMIC_HIT_RATIO = 0.95
@@ -60,6 +71,10 @@ class Decision:
     recommended_action: str
     repair: str | None = None
     trim: dict[str, int] | None = None
+    #: repair="split" 时的分段计划：每段 length + 每相机 (chunk/file/from/to)
+    split_plan: list[dict[str, Any]] | None = None
+    #: repair="window" 时每个相机收窄后的 to_timestamp
+    window_plan: dict[str, dict[str, float]] | None = None
     source: str = "rule"
     note: str = ""
 
@@ -72,6 +87,8 @@ class Decision:
             "recommended_action": self.recommended_action,
             "repair": self.repair,
             "trim": self.trim,
+            "split_plan": self.split_plan,
+            "window_plan": self.window_plan,
             "source": self.source,
             "note": self.note,
         }
@@ -82,13 +99,18 @@ def decide(
     *,
     on_review: str = "keep",
     overrides: dict[int, dict[str, Any]] | None = None,
+    dataset: LeRobotDatasetView | None = None,
 ) -> dict[int, Decision]:
-    """按严重度 + 可修性给出处置建议，再套用人工复核结果。"""
+    """按严重度 + 可修性给出处置建议，再套用人工复核结果。
+
+    dataset 用于读取 meta 原始多行（同集多段 take）与真实帧号分布；
+    不传时退化为逐集判定，无法生成 split/window 修复计划。
+    """
     if on_review not in {"keep", "drop"}:
         raise ValueError(f"on_review 只能是 keep/drop，收到 {on_review}")
     decisions: dict[int, Decision] = {}
     for ep, res in validation.results.items():
-        decisions[ep] = _decide_one(res, validation, on_review)
+        decisions[ep] = _decide_one(res, validation, on_review, dataset)
 
     # 熔断：一条规则命中近乎全部 episode 时，绝大多数情况是元数据/定位问题而非数据
     # 真的全坏（behavior1k 实测：meta 用全局 episode ID，导致视频与任务定位全部落空，
@@ -114,6 +136,8 @@ def decide(
         if disp != "repair":
             d.repair = None
             d.trim = None
+            d.split_plan = None
+            d.window_plan = None
         elif d.repair is None:
             d.repair = "timestamps" if "timestamp_not_monotonic" in d.reasons else "index"
         d.recommended_action = _action_text(d)
@@ -123,7 +147,12 @@ def decide(
     return decisions
 
 
-def _decide_one(res: EpisodeResult, validation: ValidationResult, on_review: str) -> Decision:
+def _decide_one(
+    res: EpisodeResult,
+    validation: ValidationResult,
+    on_review: str,
+    dataset: LeRobotDatasetView | None = None,
+) -> Decision:
     severity = validation.severity_of(res)
     if not res.reasons:
         return Decision(res.episode_index, "keep", severity, [], "保留")
@@ -136,16 +165,56 @@ def _decide_one(res: EpisodeResult, validation: ValidationResult, on_review: str
                      repair="trim", trim=trim)
         return d
 
-    # 2) 纯可修复项
+    # 2) 硬损坏：不可修复，只能剔除。warning 级的（如帧数过短）仍按人工复核处理，
+    #    否则 --frame_count min 这类统计阈值会把合法短任务批量删掉。
+    hard = sorted(set(res.reasons) & HARD_DROP_CODES)
+    if hard and severity == "error":
+        return Decision(
+            res.episode_index, "drop", severity, list(res.reasons),
+            f"剔除（硬损坏：{','.join(hard)}）",
+            note="硬损坏不可修复",
+        )
+
+    # 3) 纯结构损坏：优先按 meta 分段拆分，其次收窄视频窗口，最后重建时间轴/索引。
+    #    这几条都不丢数据，绝不能和硬损坏一样整集剔除。
+    if dataset is not None:
+        split = _split_plan(res, dataset)
+        if split:
+            return Decision(
+                res.episode_index, "repair", severity, list(res.reasons),
+                f"按 meta 拆分为 {len(split)} 段后保留",
+                repair="split", split_plan=split,
+            )
+        window = _window_plan(res, dataset)
+        if window:
+            return Decision(
+                res.episode_index, "repair", severity, list(res.reasons),
+                "按真实帧数收窄视频窗口后保留",
+                repair="window", window_plan=window,
+            )
+
     if all(code in REPAIR_ACTIONS for code in res.reasons):
         repair = REPAIR_ACTIONS[res.reasons[0]]
         action = "用 frame_index/fps 重建时间轴" if repair == "timestamps" else "按真实行数重建 meta 索引"
         return Decision(res.episode_index, "repair", severity, list(res.reasons), action, repair=repair)
 
-    # 3) error 级：不可用。软规则（tier=soft，如 state_jump）只能提示复核，
-    #    即使被配置成 error 也不允许据此自动删除不可逆的数据。
+    # 4) info 级：仅记录，不影响可用性
+    if severity == "info":
+        return Decision(res.episode_index, "keep", severity, list(res.reasons), "保留（仅记录）")
+
+    # 5) 软规则永远只交人工复核，即使被配置成 error 也不自动删
+    soft = [c for c in res.reasons if c in SOFT_NEVER_DROP_CODES
+            or (RULE_MAP.get(c) and RULE_MAP[c].tier == "soft")]
+    if soft and all(c in SOFT_NEVER_DROP_CODES or (RULE_MAP.get(c) and RULE_MAP[c].tier == "soft")
+                    for c in res.reasons):
+        return Decision(
+            res.episode_index, "review", severity, list(res.reasons),
+            "人工复核后决定（软规则不自动剔除）",
+            note=f"软规则 {','.join(soft)} 不参与自动剔除",
+        )
+
+    # 6) error 级：不可用
     if severity == "error":
-        soft = [c for c in res.reasons if (RULE_MAP.get(c) and RULE_MAP[c].tier == "soft")]
         if soft:
             return Decision(
                 res.episode_index, "review", severity, list(res.reasons),
@@ -154,14 +223,147 @@ def _decide_one(res: EpisodeResult, validation: ValidationResult, on_review: str
             )
         return Decision(res.episode_index, "drop", severity, list(res.reasons), "剔除")
 
-    # 4) info 级：仅记录，不影响可用性
-    if severity == "info":
-        return Decision(res.episode_index, "keep", severity, list(res.reasons), "保留（仅记录）")
-
-    # 5) warning 级但没有自动修复方案 → 交人工复核
+    # 7) warning 级但没有自动修复方案 → 交人工复核
     disposition = "drop" if on_review == "drop" else "review"
     action = "剔除（--on-review drop）" if on_review == "drop" else "人工复核后决定"
     return Decision(res.episode_index, disposition, severity, list(res.reasons), action)
+
+
+def _row_window(row: pd.Series, camera: str) -> tuple[float, float] | None:
+    """取 meta 行里某相机的 (from, to)；字段缺失或非法时返回 None。"""
+    from_ts = row.get(f"videos/{camera}/from_timestamp")
+    to_ts = row.get(f"videos/{camera}/to_timestamp")
+    if pd.isna(from_ts) or pd.isna(to_ts):
+        return None
+    try:
+        return float(from_ts), float(to_ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def _split_plan(
+    res: EpisodeResult, dataset: LeRobotDatasetView
+) -> list[dict[str, Any]] | None:
+    """meta 多行且各段 length 之和 == data 行数、帧号回退点吻合时，给出分段计划。
+
+    分段顺序以 data 的行序为准（frame_index 回退点），不能假定与 meta 行序一致：
+    v3 数据集里同一集的两段可能落在不同 parquet 文件，行序由文件名决定，
+    而 meta 行的顺序可能相反。因此这里只按 length 把物理段与 meta 行配对。
+    """
+    try:
+        segments = dataset.episode_segments(res.episode_index)
+    except Exception:  # noqa: BLE001 - 定位失败就不拆，交给其它分支
+        return None
+    if segments is None or len(segments) < 2:
+        return None
+    lengths: list[int] = []
+    for value in segments["length"]:
+        try:
+            length = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        if length <= 0:
+            return None
+        lengths.append(length)
+    if sum(lengths) != res.frame_count:
+        return None
+    physical = _physical_segment_lengths(dataset, res.episode_index)
+    if physical is None or sorted(physical) != sorted(lengths):
+        return None
+
+    # 每个物理段按长度匹配一个尚未使用的 meta 行；同长度多行时按出现顺序消耗。
+    unused = list(range(len(lengths)))
+    fps = float(dataset.fps or 30.0)
+    plan: list[dict[str, Any]] = []
+    for length in physical:
+        match = next((i for i in unused if lengths[i] == length), None)
+        if match is None:
+            return None
+        unused.remove(match)
+        row = segments.iloc[match]
+        videos: dict[str, dict[str, Any]] = {}
+        for cam in dataset.video_features:
+            chunk = row.get(f"videos/{cam}/chunk_index")
+            file_index = row.get(f"videos/{cam}/file_index")
+            window = _row_window(row, cam)
+            if pd.isna(chunk) or pd.isna(file_index) or window is None:
+                return None
+            from_ts, to_ts = window
+            # 该段只有 length 帧；个别段的 meta 窗口比自身长（串到了相邻段），
+            # 直接按 length 收窄，保证窗口跨度与数据严格一致。
+            max_to = from_ts + length / fps
+            if to_ts > max_to:
+                to_ts = max_to
+            videos[cam] = {
+                "chunk_index": int(chunk),
+                "file_index": int(file_index),
+                "from": from_ts,
+                "to": to_ts,
+            }
+        plan.append({"length": length, "videos": videos})
+    return plan
+
+
+def _physical_segment_lengths(
+    dataset: LeRobotDatasetView, episode_index: int
+) -> list[int] | None:
+    """按 data 行序里的 frame_index 回退点切出物理段长度；每段必须是 0..n-1。
+
+    必须用未排序的原始行序：多段 episode 的 frame_index 在每段都从 0 开始，
+    排序会把两段交错，切出来的段就不再连续。
+    """
+    getter = getattr(dataset, "episode_frame_raw", None) or dataset.episode_frame
+    try:
+        ep = getter(episode_index)
+    except Exception:  # noqa: BLE001 - 读不到就不拆
+        return None
+    if ep.empty or "frame_index" not in ep.columns:
+        return None
+    values = pd.to_numeric(ep["frame_index"], errors="coerce").to_numpy(dtype=float)
+    if np.isnan(values).any():
+        return None
+    breaks = np.where(np.diff(values) <= 0)[0]
+    bounds = [0] + [int(b) + 1 for b in breaks] + [len(values)]
+    if len(bounds) < 3:
+        return None
+    lengths: list[int] = []
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        seg = values[start:end].astype(np.int64)
+        if not np.array_equal(seg, np.arange(len(seg))):
+            return None
+        lengths.append(int(len(seg)))
+    return lengths if len(lengths) >= 2 else None
+
+
+def _window_plan(
+    res: EpisodeResult, dataset: LeRobotDatasetView
+) -> dict[str, dict[str, float]] | None:
+    """单段且视频窗口跨度大于数据行数时，把 to_timestamp 收窄到 from + length/fps。"""
+    if not ({"video_span_mismatch", "frame_mismatch"} & set(res.reasons)):
+        return None
+    try:
+        segments = dataset.episode_segments(res.episode_index)
+    except Exception:  # noqa: BLE001
+        return None
+    if segments is None or len(segments) != 1:
+        return None
+    row = segments.iloc[0]
+    fps = float(dataset.fps or 30.0)
+    length = int(res.frame_count)
+    tolerance = 1.0 / fps
+    plan: dict[str, dict[str, float]] = {}
+    for cam in dataset.video_features:
+        window = _row_window(row, cam)
+        if window is None:
+            return None
+        from_ts, to_ts = window
+        if from_ts < 0 or to_ts <= from_ts:
+            return None
+        span = to_ts - from_ts
+        if span <= length / fps + tolerance:
+            continue
+        plan[cam] = {"from": from_ts, "to": from_ts + length / fps}
+    return plan or None
 
 
 def _apply_systemic_guard(decisions: dict[int, Decision]) -> list[str]:
@@ -246,6 +448,10 @@ def _action_text(d: Decision) -> str:
         return "人工复核后决定"
     if d.repair == "trim" and d.trim:
         return f"裁掉首{d.trim.get('head_frames', 0)}帧/尾{d.trim.get('tail_frames', 0)}帧后保留"
+    if d.repair == "split":
+        return f"按 meta 拆分为 {len(d.split_plan or [])} 段后保留"
+    if d.repair == "window":
+        return "按真实帧数收窄视频窗口后保留"
     return "自动修复后保留"
 
 

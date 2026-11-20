@@ -66,41 +66,59 @@ def _load_source_episodes(dataset: LeRobotDatasetView) -> pa.Table | None:
 
 def rewrite_episodes_meta(
     dataset: LeRobotDatasetView,
-    kept: list[int],
-    ep_index_map: dict[int, int],
+    output_plan: list[dict[str, Any]],
     data_meta: dict[int, dict[str, Any]],
     video_meta: dict[int, dict[str, dict[str, Any]]],
     out_root: Path,
 ) -> None:
-    """重建 meta/episodes/chunk-000/file-000.parquet（v3.0 输出）。"""
+    """重建 meta/episodes/chunk-000/file-000.parquet（v3.0 输出）。
+
+    output_plan 每项描述一个输出 episode：``new`` 新编号、``old`` 源编号、
+    ``seg`` 源 meta 的多段序号（None 表示单段）。同一源集的两段各自取一行
+    meta，视频窗口沿用该段自己的记录，因此输出行数可以多于源行。
+    """
     combined = _load_source_episodes(dataset)
     if combined is None:
         # 源里没有任何 episodes 元数据：用已知帧数兜底，至少保证新数据集可读
         combined = pa.table({
-            "episode_index": pa.array([int(e) for e in kept], type=pa.int64()),
-            "length": pa.array([int(data_meta[e]["length"]) for e in kept], type=pa.int64()),
-            "tasks": pa.array([[] for _ in kept], type=pa.list_(pa.string())),
+            "episode_index": pa.array([int(e["old"]) for e in output_plan], type=pa.int64()),
+            "length": pa.array([int(e["length"] or 0) for e in output_plan], type=pa.int64()),
+            "tasks": pa.array([[] for _ in output_plan], type=pa.list_(pa.string())),
         })
 
     ep_all = np.asarray(combined.column("episode_index").to_pylist()).astype(np.int64)
-    positions = np.where(np.isin(ep_all, np.asarray(kept, dtype=np.int64)))[0]
-    sub = combined.take(pa.array(positions, type=pa.int64()))
-    order = np.argsort([ep_index_map[int(e)] for e in ep_all[positions]])
-    sub = sub.take(pa.array(order, type=pa.int64()))
+    by_episode: dict[int, list[int]] = {}
+    for pos, ep in enumerate(ep_all):
+        by_episode.setdefault(int(ep), []).append(pos)
 
-    old_eps = [int(ep_all[positions][i]) for i in order]
-    sub = set_column(sub, "episode_index", np.asarray([ep_index_map[e] for e in old_eps], dtype=np.int64))
-    sub = set_column(sub, "length", np.asarray([data_meta[e]["length"] for e in old_eps], dtype=np.int64))
-    sub = set_column(sub, "dataset_from_index",
-                     np.asarray([data_meta[e]["from_index"] for e in old_eps], dtype=np.int64))
-    sub = set_column(sub, "dataset_to_index",
-                     np.asarray([data_meta[e]["to_index"] for e in old_eps], dtype=np.int64))
-    sub = set_column(sub, "data/chunk_index", np.asarray([data_meta[e]["chunk_index"] for e in old_eps], dtype=np.int64))
-    sub = set_column(sub, "data/file_index", np.asarray([data_meta[e]["file_index"] for e in old_eps], dtype=np.int64))
+    positions: list[int] = []
+    new_ids: list[int] = []
+    for item in output_plan:
+        old = int(item["old"])
+        seg = int(item["seg"] or 0)
+        rows = by_episode.get(old, [])
+        if seg >= len(rows):
+            LOG.warning("episode %s 缺少第 %d 段 meta 行，跳过该段", old, seg)
+            continue
+        positions.append(rows[seg])
+        new_ids.append(int(item["new"]))
+
+    sub = combined.take(pa.array(positions, type=pa.int64()))
+    sub = set_column(sub, "episode_index", np.asarray(new_ids, dtype=np.int64))
+    sub = set_column(sub, "length", np.asarray(
+        [data_meta[e]["length"] for e in new_ids], dtype=np.int64))
+    sub = set_column(sub, "dataset_from_index", np.asarray(
+        [data_meta[e]["from_index"] for e in new_ids], dtype=np.int64))
+    sub = set_column(sub, "dataset_to_index", np.asarray(
+        [data_meta[e]["to_index"] for e in new_ids], dtype=np.int64))
+    sub = set_column(sub, "data/chunk_index", np.asarray(
+        [data_meta[e]["chunk_index"] for e in new_ids], dtype=np.int64))
+    sub = set_column(sub, "data/file_index", np.asarray(
+        [data_meta[e]["file_index"] for e in new_ids], dtype=np.int64))
 
     for cam in dataset.video_features:
         chunk_vals, file_vals, from_vals, to_vals = [], [], [], []
-        for e in old_eps:
+        for e in new_ids:
             info = video_meta.get(e, {}).get(cam)
             if info is None:
                 chunk_vals.append(0)

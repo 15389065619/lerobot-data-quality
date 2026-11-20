@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 
 from ..loader import load_dataset
@@ -67,10 +68,14 @@ def publish_dir(stage: Path, dest: Path) -> None:
 
 
 def set_column(table: pa.Table, name: str, values: np.ndarray | list) -> pa.Table:
-    """保持原 arrow 类型替换列；列不存在时原样返回。"""
+    """保持原 arrow 类型替换列；列不存在时 append 新列（不再静默 noop）。"""
     idx = table.schema.get_field_index(name)
     if idx < 0:
-        return table
+        # 列不存在：append 新列。manual.py 的「重建时间轴」路径曾因 timestamp
+        # 列缺失误入此处并静默跳过，导致 ts 数组白算。这里改为显式 append + warning。
+        LOG.warning("set_column: %s 不在 schema 中，追加新列（原文档承诺「原样返回」已废弃）", name)
+        arr = pa.array(values)
+        return table.append_column(name, arr)
     field = table.schema.field(idx)
     try:
         arr = pa.array(values, type=field.type)
@@ -95,6 +100,18 @@ def verify(out_root: Path, expected_episodes: int, expected_frames: int | None) 
         "frames": view.num_frames,
         "episode_indices_contiguous": contiguous,
     }
+    # 逐集断言修复结果：帧号连续、时间轴步长、视频窗口跨度与文件时长。
+    # 这一步必须能失败，否则错误修复（例如只改了 data 没改 meta 窗口）会静默通过。
+    try:
+        violations = _verify_structure(view)
+        result["structure_violations"] = violations
+        if violations:
+            LOG.warning("校验：产出物有 %d 条结构违规", len(violations))
+            result["ok"] = False
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("校验：结构复验执行失败（%s）", exc)
+        result["structure_violations"] = [f"结构复验执行失败: {exc}"]
+        result["ok"] = False
     # 结构之外再重跑一遍规则引擎：修复本身可能引入新问题（如裁剪后时间窗错位），
     # 只验结构查不出来。strict=False 保证复检是告警性质，不阻断发布流程。
     try:
@@ -118,6 +135,79 @@ def verify(out_root: Path, expected_episodes: int, expected_frames: int | None) 
         LOG.warning("清洗后规则复检执行失败，跳过（%s）", exc)
         result["rule_recheck"] = {"ok": None, "error": str(exc)}
     return result
+
+
+def _verify_structure(view) -> list[str]:
+    """逐集复验帧号 / 时间轴 / meta length / 视频窗口，返回违规描述列表。"""
+    from ..validator.probes import probe_video_frames
+
+    violations: list[str] = []
+    fps = float(view.fps or 30.0)
+    frame_tolerance = 1.5 / fps
+    # 时间轴步长：重建过的集必然精确等于 1/fps；未重建的集保留的是原始采集
+    # 时间戳，有亚帧级抖动是正常的。LeRobot 自己用 tolerance_s=0.01 匹配帧
+    # 时间戳，早期版本用 1ms 绝对阈值会把 ±2ms 抖动的合法数据判成违规，
+    # 而且对 120Hz 数据（1/fps≈8.3ms）相当于 12% 的相对误差。这里改用
+    # 「半帧」容差：既能抓到丢帧 / 重复帧这类真异常，又不会误伤正常抖动。
+    step_tolerance = min(0.01, 0.5 / fps)
+    duration_cache: dict[Path, int | None] = {}
+
+    for ep in view.episode_indices:
+        meta = view.meta_row(ep)
+        if meta is None:
+            violations.append(f"ep {ep}: 缺少 meta 行")
+            continue
+        ep_df = view.episode_frame(ep)
+        rows = len(ep_df)
+        length = int(meta.get("length", -1))
+        if rows != length:
+            violations.append(f"ep {ep}: meta length={length} 与 data 行数 {rows} 不一致")
+        if rows == 0:
+            violations.append(f"ep {ep}: 没有任何数据行")
+            continue
+
+        if "frame_index" in ep_df.columns:
+            frame_index = pd.to_numeric(ep_df["frame_index"], errors="coerce").to_numpy(dtype=float)
+            if np.isnan(frame_index).any() or not np.array_equal(
+                frame_index.astype(np.int64), np.arange(rows)
+            ):
+                violations.append(f"ep {ep}: frame_index 不是严格 0..{rows - 1}")
+
+        if "timestamp" in ep_df.columns and rows > 1:
+            ts = pd.to_numeric(ep_df["timestamp"], errors="coerce").to_numpy(dtype=float)
+            if np.isnan(ts).any():
+                violations.append(f"ep {ep}: timestamp 含 NaN")
+            else:
+                diff = np.diff(ts)
+                if not bool((diff > 0).all()):
+                    violations.append(f"ep {ep}: timestamp 非严格递增")
+                elif float(np.max(np.abs(diff - 1.0 / fps))) > step_tolerance:
+                    violations.append(
+                        f"ep {ep}: timestamp 步长偏离 1/fps 超过 {step_tolerance * 1e3:.1f}ms"
+                        f"（最大 {float(np.max(np.abs(diff - 1.0 / fps))) * 1e3:.2f}ms）"
+                    )
+
+        for cam in view.video_features:
+            loc = view.video_location(cam, ep)
+            if loc is None:
+                violations.append(f"ep {ep}/{cam}: 视频窗口缺失")
+                continue
+            path, from_ts, to_ts = loc
+            span = float(to_ts) - float(from_ts)
+            if abs(span - rows / fps) > frame_tolerance:
+                violations.append(
+                    f"ep {ep}/{cam}: 视频窗口跨度 {span * fps:.1f} 帧 ≠ data {rows} 帧"
+                )
+            if path not in duration_cache:
+                duration_cache[path] = probe_video_frames(path) if path.is_file() else None
+            frames = duration_cache[path]
+            if not frames:
+                violations.append(f"ep {ep}/{cam}: 视频文件无法探测: {path.name}")
+            elif float(to_ts) > frames / fps + frame_tolerance:
+                violations.append(
+                    f"ep {ep}/{cam}: 窗口结束 {float(to_ts):.3f}s 超过文件时长 {frames / fps:.3f}s"
+                )
+    return violations
 
 
 def vec(arr: np.ndarray) -> list[float]:
