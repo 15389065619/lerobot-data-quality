@@ -66,21 +66,35 @@ def run_pool(
     def _submit() -> None:
         while pending and len(in_flight) < window:
             job = pending.popleft()
-            in_flight[pool.submit(worker_fn, job)] = job
+            try:
+                in_flight[pool.submit(worker_fn, job)] = job
+            except BrokenProcessPool:
+                # 池在提交瞬间破裂：任务放回队首，交给串行回退，否则它会静默丢失
+                pending.appendleft(job)
+                raise
 
+    broken_jobs: list[T] = []
     try:
         _submit()
         while in_flight:
             done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            broken_jobs.clear()
             for fut in done:
-                in_flight.pop(fut, None)
-                # worker 抛出的异常在这里原样上抛，由主流程按阶段统一处理
-                yield fut.result()
+                job = in_flight.pop(fut, None)
+                try:
+                    # worker 抛出的异常在这里原样上抛，由主流程按阶段统一处理
+                    result = fut.result()
+                except BrokenProcessPool:
+                    # job 已被 pop、尚未交付：记下来并回串行补跑，否则丢任务
+                    if job is not None:
+                        broken_jobs.append(job)
+                    raise
+                yield result
                 bar.update(1)
                 _submit()
     except BrokenProcessPool as exc:
         # 子进程被 OOM/段错误杀死时，剩余任务回退主进程串行跑完，保住完整结论
-        remaining = list(in_flight.values()) + list(pending)
+        remaining = list(in_flight.values()) + list(pending) + broken_jobs
         LOG.error("进程池异常终止（worker 可能被系统杀死），剩余 %d 个任务回退串行: %s",
                   len(remaining), exc)
         in_flight.clear()
