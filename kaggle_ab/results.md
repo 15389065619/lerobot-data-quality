@@ -217,8 +217,18 @@ eval 总耗时 1332 s（缓存 320×50 复用）。
 → **方向稳健：A（最小修复）在同 epoch 口径下稳定优于 B′（清洗产物）约 0.020，
 跨训练随机性不翻转。** 该结论仍需保留 loss 代理指标的保留意见（见上）。
 
-> 待核：`arm_A_s2` 的 ckpt 步数（训练曾在 9122/10000 处中断，但 `last` 可被评测读到）；
-> 其 A 值 0.23399 与 seed=1 的 0.23328 同量级，暂按满步近似处理，核实后回填。
+> ~~待核：`arm_A_s2` 的 ckpt 步数~~ **核实结论（2026-11-21，本地归档盘点）**：归档仅含最终权重 +
+> processor + train_config（无训练步数元数据），实际到达步数**不可考**；train_config 佐证
+> seed=2 / steps=10000 配置无误（四臂 config 与 results.md 表逐项一致）。若"9122/10000 中断"
+> 属实，则 A_s2 是在**欠训**状态下打出 0.23399（与满步 A_s1 的 0.23328 同量级）——A 的优势
+> 只会被低估，档 1"全负"结论保守成立。维持按满步近似，附不可考注记。
+>
+> **归档盘点（2026-11-21，G:\ab）**：✅ 已归档 = 四臂权重（各含 model.safetensors/config/
+> train_config/tokenizer/processor）、eval_seed_results.json（4 臂 × 40 窗口）、窗口缓存
+> eval_v2_cache_320x50.pt（2.36GB）、make_seed_figures.py + 4 张森林/柱状/散点/直方图、
+> badgood_results.json（2026-11-21 本地 CPU 产出，见文末 badgood 小节）。
+> ❌ 仍缺 = ①v1 的 ab_summary.json / eval_results.json（Kaggle 会话若已关则不可再取，
+> 关键数字已抄录本文件）②v2 的 eval_v2_results.json（320 窗口逐窗口原始值，分布图升级用）。
 
 **口径修正（2026-11-20，下载后核对）**：`eval_seed_results.json` 每臂实际只有 **40** 个逐窗口
 loss，不是预注册写的 320。其均值 / 配对 diff / SE 与评测打印值逐位吻合（seed1 −0.02151 &
@@ -258,3 +268,28 @@ SE 按 √40 计，seed=0 仍是 320 窗口（√320）。跨 seed 的 mean/SD �
 
 数据源为本文件抄录数字；`eval_v2_results.json` 归档后可升级为逐窗口分布图（直方/分位带）与跨 seed 误差带。
 
+
+## badgood DiD（2026-11-21，本地 CPU 产出）
+
+预注册设计见 `make_badgood_windows.py` / `eval_badgood.py` docstring：bad 组 40 窗 = 被 drop 的
+29 个源 episode（minrepair 中存续 51 块），good 组 40 窗 = 其余 106 块；A_s1 / B2_s1 两个 final
+checkpoint 同窗口、同 batch 顺序、同 noise seed（torch.manual_seed(bi)）配对评测 flow-matching loss。
+
+运行条件：本地 CPU（`G:\ab\badgood_local\venv312`：lerobot 0.7.0 源码 + transformers 5.22.2 +
+torch 2.15.0+cpu，与 Kaggle 训练同版本）；数据 = Kaggle 私有 dataset 原件（so101-kaggle-ab-v1
+拉回），windows = 预注册原件（`exports/kaggle_ab/badgood_windows.json`），ckpt = 归档原件
+（G:\ab\arm_*_final）；tolerance_s = 0.01 一次通过。`kernel_badgood` 元数据保留，GPU 复跑无需改脚本。
+
+| 组 | n | A loss | B2 loss | gap (A−B2) | SE |
+|---|---|---|---|---|---|
+| bad | 40 | 0.15649 | 0.21241 | **−0.0559** | 0.0107 |
+| good | 40 | 0.16970 | 0.17948 | −0.0098 | 0.0060 |
+
+**DiD = −0.04614 ± 0.01226（t = −3.76）**，预注册判读「显著负 → 脏 (s,a) 对可学习 → 支持
+repair-not-drop」成立。drop 政策丢掉的窗口携带可学习信号——multi-seed 三臂全负
+（−0.0199 ± 0.0023）的机制解释在窗口级差分上定量坐实。good 组基线差 −0.0098 不显著
+（t ≈ −1.6），可排除臂质量差异解释。参考：A 模型 bad vs good 窗口 loss 差 = −0.01321
+（含任务难度混杂，B2 基线已部分控制）。
+
+产物：`G:\ab\badgood_results.json`（13.8 KB，80 窗逐窗口 loss + summary）；运行日志
+`G:\ab\badgood_local\run.log`。
