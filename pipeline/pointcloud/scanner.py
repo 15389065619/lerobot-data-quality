@@ -188,7 +188,7 @@ def _scan_row_group_worker(job: tuple[str, int]) -> dict[str, Any]:
     """worker：读 parquet 的一个 row group，逐帧跑 8 条规则。
 
     返回 {"file", "results", "corrupted"}：读取失败不再上抛拖垮进程池，
-    而是作为 corrupteded 条目交回主进程记录（毒数据防冲击）。
+    而是作为 corrupted 条目交回主进程记录（毒数据防冲击）。
     纯函数契约：只读输入文件、只经返回值交回结论，不写盘、不写共享状态；
     跨帧规则（pc_temporal_jump）由主进程在结果归并后统一执行。
     """
@@ -241,7 +241,7 @@ def scan_parallel(
         try:
             pf = pq.ParquetFile(path)
         except Exception as exc:  # noqa: BLE001
-            LOG.error("点云数据文件损坏，已跳过：跳过: %s -> %s", path.name, exc)
+            LOG.error("点云数据文件损坏，已跳过: %s -> %s", path.name, exc)
             corrupted.append({"file": str(path), "error": str(exc)})
             continue
         if ctx.feature_key not in pf.schema_arrow.names:

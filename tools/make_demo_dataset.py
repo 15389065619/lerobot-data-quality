@@ -32,7 +32,6 @@ JOINTS = 7
 IMG_W, IMG_H = 128, 96
 CAMERAS = ("observation.images.top", "observation.images.wrist")
 TASKS = ["pick up the red cube", "open the drawer", "stack the blocks"]
-STATS_KEYS = ("mean", "std", "min", "max", "q01", "q10", "q50", "q90", "q99")
 
 #: episode_index -> (异常类型, 说明)。刻意覆盖真实采集里最常见的几类问题。
 ANOMALY_PLAN = {

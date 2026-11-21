@@ -157,14 +157,12 @@ defaults:
   # ===== 视频内容检测 =====
   blank_video:                  # 黑屏/遮挡：抽帧算灰度标准差
     enabled: true
-    sample_points: [0.15, 0.35, 0.55, 0.75, 0.9]   # 按时长比例抽 5 帧
     lum_std_threshold: 4.0      # 灰度标准差低于此值 = 疑似黑屏
     bad_ratio_threshold: 0.6    # 抽帧中黑屏占比超过此值才判 blank
     max_probes: 400             # 每次运行最多探测的视频数（控制耗时）
   probe:                        # 视频探针引擎参数
     precise: false              # true = 逐帧精确计数（慢）
     max_cameras: 3              # 每 episode 最多探测的相机路数
-    small_file_mb_for_precise: 64
     max_workers: 2              # 探针并发：机械盘建议 2，SSD 可到 4-8
 
   # ===== 数据集级一致性 =====

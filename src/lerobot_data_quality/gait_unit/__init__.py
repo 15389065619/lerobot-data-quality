@@ -8,7 +8,7 @@
 
 分层（按 2026-11-20 设计方案，资产门控见 README/设计文档）：
   G0 数据契约层：ir.py + adapters/（Pico/BVH/FZMotion）+ defects.py 注入器
-  G1 骨骼时序质检引擎：qc_rules/（规划中）
+  G1 骨骼时序质检引擎：qc_rules/（通道/骨架/标记点/空间规则，Tier 1-3 已落地）
   G2 修复单元：repair.py（规划中）
   G3 重定向：retarget/（门控——T800 URDF/MJCF + 验证闭环到位才开工，当前只有设计文档）
 """
@@ -17,13 +17,9 @@ from lerobot_data_quality.gait_unit.ir import (
     GaitClip,
     bone_lengths,
     quat_angle,
-    quat_from_axis_angle,
-    quat_mul,
-    quat_rotate,
     validate_clip,
 )
 
 __all__ = [
-    "GaitClip", "validate_clip", "bone_lengths",
-    "quat_from_axis_angle", "quat_mul", "quat_rotate", "quat_angle",
+    "GaitClip", "validate_clip", "bone_lengths", "quat_angle",
 ]

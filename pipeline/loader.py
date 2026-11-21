@@ -36,7 +36,6 @@ LOG = logging.getLogger(__name__)
 # v3.0 路径模板（info.json 里没写时使用）
 DEFAULT_DATA_PATH = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 DEFAULT_VIDEO_PATH = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
-DEFAULT_EPISODES_PATH = "meta/episodes/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 
 # 逐帧表里预期的核心列
 CORE_FRAME_COLUMNS = ("episode_index", "frame_index", "timestamp", "index")
@@ -97,12 +96,10 @@ class LeRobotDatasetView:
     #: 空 dict 表示无重复或重复行内容一致（可安全去重）。
     meta_duplicate_conflicts: dict[str, Any] = field(default_factory=dict)
 
-    # 概览
     @property
     def num_episodes(self) -> int:
         return int(len(self.episodes))
 
-    # 编号空间与 meta 定位
     @property
     def locator_available(self) -> bool:
         """能否可靠地把 episode 映射到 meta 行（决定视频/任务能否定位）。
@@ -218,17 +215,6 @@ class LeRobotDatasetView:
         return 0
 
     @property
-    def data_features(self) -> list[str]:
-        """数值型（存在于 parquet 中的）特征名，按 info.json 顺序。"""
-        out: list[str] = []
-        for key, spec in self.features.items():
-            dtype = str(spec.get("dtype", ""))
-            if dtype.startswith(("float", "int", "uint", "bool")):
-                if self.has_column(key):
-                    out.append(key)
-        return out
-
-    @property
     def video_features(self) -> list[str]:
         """真正的视频特征（mp4）。图像特征逐帧嵌在 parquet 里，不能按视频文件定位。"""
         return [
@@ -301,7 +287,6 @@ class LeRobotDatasetView:
                 out[key] = f"video {shape}"
         return out
 
-    # episode 级
     def episode_frame(self, episode_index: int) -> pd.DataFrame:
         """取某个 episode 的所有帧，按 frame_index 升序。
 
@@ -511,7 +496,6 @@ class LeRobotDatasetView:
         path = self.root / rel
         return path if path.is_file() or not require_exists else None
 
-    # 摘要
     def summary(self) -> dict[str, Any]:
         per_ep = self.frames_by_episode()
         columns = self.column_names
@@ -543,11 +527,10 @@ class LeRobotDatasetView:
             },
             "episode_meta_columns": [c for c in self.episodes.columns],
             "has_stats": bool(self.stats),
-            "pointcloud_features": list(self.heavy_features),
-        }
+        "pointcloud_features": list(self.heavy_features),
+    }
 
 
-# 加载
 def load_dataset(
     dataset_path: str | Path,
     max_episodes: int | None = None,
@@ -708,7 +691,6 @@ def load_dataset(
     return view
 
 
-# 读取细节
 def _read_json(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -1055,7 +1037,6 @@ def _episode_order(episodes_meta: pd.DataFrame | None, data_files: list[Path]) -
     return sorted(seen)
 
 
-# episode 编号对齐
 def _data_episode_summary(
     frames: pd.DataFrame | None, data_files: list[Path]
 ) -> pd.DataFrame:
@@ -1347,14 +1328,6 @@ def _feature_dim(spec: dict[str, Any]) -> int:
     if isinstance(names, (list, tuple)):
         return len(names)
     return 0
-
-
-def iter_episode_slices(frames: pd.DataFrame) -> Iterator[tuple[int, pd.DataFrame]]:
-    """按 episode_index 迭代，避免在 validator/visualizer 里重复写 groupby。"""
-    if frames.empty or "episode_index" not in frames.columns:
-        return
-    for ep, sub in frames.groupby("episode_index", sort=True):
-        yield int(ep), sub.sort_values("frame_index", kind="stable") if "frame_index" in sub.columns else sub
 
 
 def iter_frame_chunks(

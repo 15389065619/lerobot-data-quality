@@ -73,7 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 空转检测：整条 episode 的 state/action 标准差低于阈值即视为无效采集
         "static_episode": {"enabled": True, "state_std_threshold": 1e-3, "min_frames_checked": 5},
         # 黑屏/遮挡：抽帧算灰度标准差
-        "blank_video": {"enabled": True, "sample_points": [0.15, 0.35, 0.55, 0.75, 0.9],
+        "blank_video": {"enabled": True,
                         "lum_std_threshold": 4.0, "bad_ratio_threshold": 0.6, "max_probes": 400},
         # 重复采样：action 序列量化后做指纹
         "duplicate_episode": {"enabled": True, "quantize_decimals": 3},
@@ -82,7 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 边界裁剪：NaN 只出现在首尾时优先修而不删
         "boundary_trim": {"enabled": True, "max_ratio": 0.25},
         # 视频探针；max_workers 是并发上限：机械盘建议 2，SSD 可到 4-8
-        "probe": {"precise": False, "max_cameras": 3, "small_file_mb_for_precise": 64, "max_workers": 2},
+        "probe": {"precise": False, "max_cameras": 3, "max_workers": 2},
         # 流式模式：推导 action 阈值时采样的 episode 数（大数据集不必全量扫两遍配阈值）
         "streaming": {"action_sample_episodes": 200},
         # 关节限位（可选，未配置则跳过；数组顺序与 observation.state 维度一致）

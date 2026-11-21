@@ -1,6 +1,6 @@
 """Pico 穿戴动捕导出 CSV → GaitClip 适配器。
 
-字段契约（假设版 v0，真实导出样本到位后只改 FIELD_MAP，不动解析逻辑）：
+字段契约（假设版 v0，真实导出样本到位后核对 REQUIRED_COLUMNS，不动解析逻辑）：
 
     timestamp, joint, pos_x, pos_y, pos_z, quat_w, quat_x, quat_y, quat_z
 
@@ -12,8 +12,8 @@
 
 已知与真实 Pico 导出的差异（open questions，拿到样本后核对）：
   - 导出是否长表/宽表未知——若宽表，加一个转置入口即可；
-  - 四元数顺序（wxyz vs xyzw）与坐标系（Y-up / Z-up）未知——
-    集中在 FIELD_MAP / AXIS_UP 两个常量处理；
+  - 四元数顺序按列名固定为 wxyz（QUAT_COLUMNS）；up 轴未做转换——
+    真实导出若为 Z-up 或顺序不同，在适配层补一次性转换；
   - 关节层级 CSV 里不带 → clip.parents = None，G1.3（骨长一致性）标记不适用。
     Pico 官方骨骼层级确认后在此补 PARENT_TABLE。
 """

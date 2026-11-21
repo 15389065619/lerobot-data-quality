@@ -22,7 +22,6 @@ class CleaningResult:
     episode_index_map: dict[int, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     cli_command: str | None = None
-    cli_error: str | None = None
     verification: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,7 +37,6 @@ class CleaningResult:
             "kept_episodes": self.kept_episodes,
             "episode_index_map": {str(k): v for k, v in sorted(self.episode_index_map.items())},
             "cli_command": self.cli_command,
-            "cli_error": self.cli_error,
             "warnings": self.warnings,
             "verification": self.verification,
         }

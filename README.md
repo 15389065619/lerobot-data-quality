@@ -244,6 +244,7 @@ outputs/
 | 文档 | 内容 |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构设计说明书：设计决策与权衡、编号对齐案例、扩展性；§7 附全部规则与 Schema 契约表 |
+| [SOURCE_WALKTHROUGH.md](SOURCE_WALKTHROUGH.md) | 逐模块源码走读：按 main.py 执行顺序讲解每个文件的职责与关键实现 |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | 对照同生态质检工具与上下游工具链，含选型建议 |
 | [docs/EVAL.md](docs/EVAL.md) | 全量实测记录、故障注入表、已知边界 |
 | [docs/POSTMORTEM.md](docs/POSTMORTEM.md) | 四次判定错误复盘：现象 → 怀疑 → 证据证伪 → 修复 → 防回归用例 |
