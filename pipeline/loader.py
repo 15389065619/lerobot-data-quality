@@ -482,6 +482,39 @@ class LeRobotDatasetView:
             return next(iter(files.values())), 0.0, -1.0
         return None
 
+    def video_locations(
+        self, camera: str, episode_index: int, *, require_exists: bool = True
+    ) -> list[tuple[Path, float, float]]:
+        """该 episode 全部 meta 段的 (视频文件, from_timestamp, to_timestamp) 列表。
+
+        单段 episode 返回 1 项，与 video_location 同源；多段（双 take）每段一项——
+        各段有各自的窗口，甚至各自的视频文件。质检按段计量（"按 take 量"）用这个，
+        video_location 仍取首段，清洗器行为不变。
+        """
+        out: list[tuple[Path, float, float]] = []
+        ck, fk = f"videos/{camera}/chunk_index", f"videos/{camera}/file_index"
+        ft, tt = f"videos/{camera}/from_timestamp", f"videos/{camera}/to_timestamp"
+        segments = self.episode_segments(episode_index)
+        if len(segments) and ck in segments.columns and fk in segments.columns:
+            for _, row in segments.iterrows():
+                chunk = _as_int(row.get(ck))
+                file_idx = _as_int(row.get(fk))
+                if chunk is None or file_idx is None:
+                    continue
+                path = self._video_path_from_template(
+                    camera, chunk, file_idx, require_exists=require_exists
+                )
+                if path is None:
+                    continue
+                from_ts = _as_float(row.get(ft)) if ft in segments.columns else None
+                to_ts = _as_float(row.get(tt)) if tt in segments.columns else None
+                out.append((path, from_ts if from_ts is not None else -1.0,
+                            to_ts if to_ts is not None else -1.0))
+        if out:
+            return out
+        loc = self.video_location(camera, episode_index, require_exists=require_exists)
+        return [loc] if loc is not None else []
+
     def _video_path_from_template(
         self, camera: str, chunk: int, file: int, *, require_exists: bool = True
     ) -> Path | None:

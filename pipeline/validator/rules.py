@@ -652,27 +652,37 @@ def _meta_table(dataset: LeRobotDatasetView) -> pd.DataFrame | None:
 
 
 def _video_windows(dataset: LeRobotDatasetView, episode_index: int) -> list[dict[str, Any]]:
-    """从 meta 中取出该 episode 每个相机的时间窗 [from, to]。没有视频元数据时返回空列表。"""
-    meta = _meta_table(dataset)
-    if meta is None or "episode_index" not in meta.columns:
-        return []
-    rows = meta[meta["episode_index"] == episode_index]
-    if not len(rows):
+    """该 episode 全部 meta 段的相机时间窗 [from, to]（按源文件顺序）。
+
+    多段/双 take 数据集（同一 episode_index 多行 meta，每行自带 length 与窗口）
+    必须按段取窗：旧口径只取第一行窗口、拿全集行数去比，会把正常双 take
+    系统性误报成 video_span_mismatch / frame_mismatch（29 个 drop 集假阳性
+    的根因，见 G:\ab 判定单）。没有视频元数据时返回空列表。
+    """
+    if hasattr(dataset, "episode_segments"):
+        segments = dataset.episode_segments(episode_index)
+    else:  # 极简替身（测试里的 SimpleNamespace 等只带 episodes 表）
+        meta = _meta_table(dataset)
+        if meta is None or "episode_index" not in meta.columns:
+            return []
+        segments = meta[meta["episode_index"] == episode_index]
+    if segments.empty or "episode_index" not in segments.columns:
         return []
     windows = []
-    for column in meta.columns:
+    for column in segments.columns:
         name = str(column)
         if not (name.startswith("videos/") and name.endswith("/to_timestamp")):
             continue
         camera = name[len("videos/"):-len("/to_timestamp")]
         from_col = f"videos/{camera}/from_timestamp"
-        if from_col not in meta.columns:
+        if from_col not in segments.columns:
             continue
-        to_ts = rows.iloc[0].get(column)
-        from_ts = rows.iloc[0].get(from_col)
-        if pd.isna(to_ts) or pd.isna(from_ts):
-            continue
-        windows.append({"camera": camera, "from": float(from_ts), "to": float(to_ts)})
+        for _, row in segments.iterrows():
+            to_ts = row.get(column)
+            from_ts = row.get(from_col)
+            if pd.isna(to_ts) or pd.isna(from_ts):
+                continue
+            windows.append({"camera": camera, "from": float(from_ts), "to": float(to_ts)})
     return windows
 
 
@@ -700,18 +710,26 @@ def _check_timestamp_drift(
     if abs(first) <= tol:
         return  # episode 相对时间轴：绝对位置不可比
     problems = []
+    by_camera: dict[str, list[dict[str, Any]]] = {}
     for win in windows:
-        start_off = first - win["from"]
-        end_off = last - win["to"]
+        by_camera.setdefault(win["camera"], []).append(win)
+    for camera, wins in sorted(by_camera.items()):
+        wins = sorted(wins, key=lambda w: (w["from"], w["to"]))
+        # 多段/双 take：state 的首/末时间戳应分别落在首段起点与末段终点附近；
+        # 段与段交界处的对齐由 span/帧数规则按段计量，这里只查两端。
+        first_win, last_win = wins[0], wins[-1]
+        start_off = first - first_win["from"]
+        end_off = last - last_win["to"]
         if abs(start_off) > tol or abs(end_off) > tol:
             problems.append({
-                "camera": win["camera"],
-                "video_from": round(win["from"], 4),
-                "video_to": round(win["to"], 4),
+                "camera": camera,
+                "video_from": round(first_win["from"], 4),
+                "video_to": round(last_win["to"], 4),
                 "state_first": round(first, 4),
                 "state_last": round(last, 4),
                 "start_offset_frames": round(start_off * fps, 3),
                 "end_offset_frames": round(end_off * fps, 3),
+                "segments": len(wins),
             })
     if problems:
         res.add(
@@ -727,28 +745,53 @@ def _check_video_span(
 ) -> None:
     """视频时间窗跨度应与 episode 时长（frame_count/fps）一致。
 
-    帧数相等 ≠ 时间对齐：多 episode 拼接的 mp4 只要 from/to 写错，帧数校验照样通过，
-    但取出来的是另一段时间的画面。
+    多段/双 take episode 按段计量：Σ 各段窗口跨度 ≈ frame_count/fps。旧口径拿
+    单段窗口比全集时长，把正常双 take 系统性误报成 mismatch（29 个 drop 集
+    假阳性的根因之一）。段内的对不齐仍会被本规则按段抓出（每段跨度都进证据）。
     """
     if fps <= 0 or res.frame_count <= 0:
         return
     ratio_tol = float(cfg_get(config, "alignment.video_span_tolerance_ratio", 0.05))
     expected = res.frame_count / float(fps)
-    problems = []
+    by_camera: dict[str, list[dict[str, Any]]] = {}
     for win in _video_windows(dataset, res.episode_index):
-        span = win["to"] - win["from"]
-        if span <= 0:
-            problems.append({"camera": win["camera"], "from": round(win["from"], 4),
-                             "to": round(win["to"], 4), "span": round(span, 4)})
+        by_camera.setdefault(win["camera"], []).append(win)
+    problems = []
+    for camera, wins in sorted(by_camera.items()):
+        wins = sorted(wins, key=lambda w: (w["from"], w["to"]))
+        if len(wins) == 1:
+            win = wins[0]
+            span = win["to"] - win["from"]
+            if span <= 0:
+                problems.append({"camera": camera, "from": round(win["from"], 4),
+                                 "to": round(win["to"], 4), "span": round(span, 4)})
+                continue
+            if abs(span - expected) > ratio_tol * expected:
+                problems.append({
+                    "camera": camera,
+                    "from": round(win["from"], 4),
+                    "to": round(win["to"], 4),
+                    "span": round(span, 4),
+                    "expected_span": round(expected, 4),
+                    "deviation": round(span - expected, 4),
+                })
             continue
-        if abs(span - expected) > ratio_tol * expected:
+        # 多段：Σ 各段跨度 vs 全集时长（按 take 量计量）
+        spans = [w["to"] - w["from"] for w in wins]
+        total = sum(spans)
+        if total <= 0:
+            problems.append({"camera": camera, "segments": len(wins),
+                             "span_total": round(total, 4)})
+            continue
+        if abs(total - expected) > ratio_tol * expected:
             problems.append({
-                "camera": win["camera"],
-                "from": round(win["from"], 4),
-                "to": round(win["to"], 4),
-                "span": round(span, 4),
+                "camera": camera,
+                "segments": len(wins),
+                "span_total": round(total, 4),
                 "expected_span": round(expected, 4),
-                "deviation": round(span - expected, 4),
+                "deviation": round(total - expected, 4),
+                "per_segment": [{"from": round(w["from"], 4), "to": round(w["to"], 4),
+                                 "span": round(s, 4)} for w, s in zip(wins, spans)],
             })
     if problems:
         res.add("video_span_mismatch", expected_span=round(expected, 4),
@@ -823,39 +866,68 @@ def check_frame_mismatch(
 
     for cam in cameras:
         # require_exists=False：先拿到候选路径，才能把「文件不存在」（数据缺陷）
-        # 与「meta 无定位信息」（不可评估）分开报。
-        loc = dataset.video_location(cam, ep_index, require_exists=False)
-        if loc is None:
+        # 与「meta 无定位信息」（不可评估）分开报。多段/双 take 每段一项。
+        if hasattr(dataset, "video_locations"):
+            locs = dataset.video_locations(cam, ep_index, require_exists=False)
+        else:  # 极简替身（测试桩）只带单段 video_location
+            loc = dataset.video_location(cam, ep_index, require_exists=False)
+            locs = [loc] if loc is not None else []
+        if not locs:
             problems.append({"type": "video_unlocatable", "camera": cam})
             continue
-        path, from_ts, to_ts = loc
-        if not path.is_file():
-            missing.append({"camera": cam, "path": str(path)})
-            continue
-        total = probe_video_frames(path, precise=precise)
-        if total is None:
-            problems.append({"type": "video_unprobeable", "camera": cam, "path": str(path)})
+
+        # 探测按文件去重：双 take 的各段可能落在同一文件里
+        totals: dict[Path, int | None] = {}
+        segs: list[dict[str, Any]] = []
+        for path, from_ts, to_ts in locs:
+            if not path.is_file():
+                missing.append({"camera": cam, "path": str(path)})
+                continue
+            if path not in totals:
+                totals[path] = probe_video_frames(path, precise=precise)
+            total = totals[path]
+            if total is None:
+                problems.append({"type": "video_unprobeable", "camera": cam, "path": str(path)})
+                continue
+            # 脏元数据可能给出 NaN/Inf 时间戳：先判有限性，避免 int(round(inf)) 抛
+            # OverflowError；这类窗口无法用于帧对齐，退化为按整段视频比对总帧数。
+            segs.append({
+                "path": path, "total": total,
+                "window_valid": (
+                    math.isfinite(from_ts) and math.isfinite(to_ts)
+                    and from_ts >= 0 and to_ts > from_ts
+                ),
+                "from_ts": from_ts, "to_ts": to_ts,
+            })
+        if not segs:
             continue
 
-        # 脏元数据可能给出 NaN/Inf 时间戳：先判有限性，避免 int(round(inf)) 抛
-        # OverflowError；这类窗口无法用于帧对齐，退化为按整段视频比对总帧数。
-        window_valid = (
-            math.isfinite(from_ts) and math.isfinite(to_ts)
-            and from_ts >= 0 and to_ts > from_ts
-        )
-        if window_valid:
-            start = int(round(from_ts * dataset.fps))
-            end = int(round(to_ts * dataset.fps))
-            seg = end - start
-            if end > total + tol:
-                problems.append({"type": "video_truncated", "camera": cam,
-                                 "expected_end_frame": end, "actual_total_frames": total})
-            elif abs(seg - res.frame_count) > tol:
-                problems.append({"type": "count_mismatch", "camera": cam, "video_frames": seg,
-                                 "rows": res.frame_count, "diff": seg - res.frame_count})
-        elif abs(total - res.frame_count) > tol:
-            problems.append({"type": "count_mismatch", "camera": cam, "video_frames": total,
-                             "rows": res.frame_count, "diff": total - res.frame_count})
+        if all(s["window_valid"] for s in segs):
+            # 按 take 量计量：Σ 各段窗口帧数 vs 全集行数。单段 locs 长度 1，
+            # 行为与旧口径一致；多段时旧口径拿单段窗口比全集行数，是双 take
+            # 假阳性 frame_mismatch 的根因。
+            seg_total = 0
+            truncated = False
+            for s in segs:
+                start = int(round(s["from_ts"] * dataset.fps))
+                end = int(round(s["to_ts"] * dataset.fps))
+                seg_total += end - start
+                if end > s["total"] + tol:
+                    problems.append({"type": "video_truncated", "camera": cam,
+                                     "expected_end_frame": end,
+                                     "actual_total_frames": s["total"]})
+                    truncated = True
+            if not truncated and abs(seg_total - res.frame_count) > tol:
+                problems.append({"type": "count_mismatch", "camera": cam,
+                                 "video_frames": seg_total, "rows": res.frame_count,
+                                 "diff": seg_total - res.frame_count,
+                                 "segments": len(segs)})
+        else:
+            file_total = sum({s["path"]: s["total"] for s in segs}.values())
+            if abs(file_total - res.frame_count) > tol:
+                problems.append({"type": "count_mismatch", "camera": cam,
+                                 "video_frames": file_total, "rows": res.frame_count,
+                                 "diff": file_total - res.frame_count})
 
     if missing:
         # 文件整缺 = 模态丢失，和「帧数差几帧」是两件事，必须单独成规则，

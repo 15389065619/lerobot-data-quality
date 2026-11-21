@@ -50,9 +50,11 @@ class EpisodeDatasetStub:
         has_tasks_meta: bool,
         fps: float,
         locator_available: bool = True,
+        episodes_raw: pd.DataFrame | None = None,
     ) -> None:
         self.joint_names = joint_names
         self._episodes_meta = episodes_meta
+        self._episodes_raw = episodes_raw
         self._task_labels = task_labels
         self._has_task_index_col = has_task_index_col
         self._has_tasks_meta = has_tasks_meta
@@ -60,6 +62,21 @@ class EpisodeDatasetStub:
         # 编号空间能否对齐：对不上时定位类规则在 worker 里也要跳过，否则并行与
         # 串行结论会不一致（串行跳过、worker 报 error）
         self.locator_available = locator_available
+
+    def episode_segments(self, episode_index: int) -> pd.DataFrame:
+        """该 episode 的全部 meta 段行（多段/双 take 每段一行；无 raw 时退单行）。
+
+        与 loader 的 episode_segments 同语义：对齐规则按段计量（"按 take 量"）
+        需要未去重的原始行，去重后的 episodes_meta 会把双 take 的后几段吞掉。
+        raw 行的 episode_index 在主进程已统一映射到数据侧编号。
+        """
+        raw = self._episodes_raw
+        if raw is not None and len(raw) and "episode_index" in raw.columns:
+            return raw[raw["episode_index"] == episode_index]
+        eps = self._episodes_meta
+        if len(eps) and "episode_index" in eps.columns:
+            return eps[eps["episode_index"] == episode_index]
+        return pd.DataFrame()
 
     @property
     def episodes(self) -> pd.DataFrame:
@@ -105,6 +122,24 @@ def build_episode_shared(
         episodes_meta = episodes_meta[episodes_meta["episode_index"].isin(inv)].copy()
         episodes_meta["episode_index"] = episodes_meta["episode_index"].map(inv).astype("int64")
         episodes_meta = episodes_meta.sort_values("episode_index").reset_index(drop=True)
+
+    # 多段/双 take 的原始行（未去重）：对齐规则按段计量需要它们。列裁剪到
+    # 对齐规则实际读取的字段，编号与 episodes_meta 一样映射到数据侧。
+    episodes_raw = None
+    raw = getattr(dataset, "episodes_raw", None)
+    if raw is not None and len(raw):
+        keep = ["episode_index", "length"] + [
+            c for c in raw.columns
+            if str(c).startswith("videos/")
+            and str(c).endswith(("/from_timestamp", "/to_timestamp"))
+        ]
+        episodes_raw = raw[[c for c in keep if c in raw.columns]].copy()
+        if getattr(dataset, "meta_id_map", None):
+            inv = {int(m): int(d) for d, m in dataset.meta_id_map.items()}
+            episodes_raw = episodes_raw[episodes_raw["episode_index"].isin(inv)].copy()
+            episodes_raw["episode_index"] = episodes_raw["episode_index"].map(inv).astype("int64")
+            episodes_raw = episodes_raw.sort_values("episode_index").reset_index(drop=True)
+
     return {
         "config": config,
         "frame_bounds": ctx.frame_bounds,
@@ -116,6 +151,7 @@ def build_episode_shared(
         "stub": {
             "joint_names": list(dataset.joint_names),
             "episodes_meta": episodes_meta,
+            "episodes_raw": episodes_raw,
             "task_labels": {int(ep): dataset.task_of(int(ep)) for ep in dataset.episode_indices},
             "has_task_index_col": "task_index" in dataset.frames.columns,
             "has_tasks_meta": bool(dataset.tasks),
