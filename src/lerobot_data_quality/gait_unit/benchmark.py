@@ -179,31 +179,45 @@ def _match(truth: list[dict], norm_findings: list[dict]) -> tuple[set[int], set[
 
 def benchmark_on_clip(base: GaitClip, rng: np.random.Generator,
                       mad_k: float = 6.0) -> dict:
-    """单个底片 × 一次随机注入 → 全规则 → 与真值匹配。返回 episode dict。"""
+    """单个底片 × 一次随机注入 → 全规则 → 与真值匹配（单 k 版本）。"""
+    return _benchmark_on_clip_multi(base, rng, (mad_k,))[mad_k]
+
+
+def _benchmark_on_clip_multi(base: GaitClip, rng: np.random.Generator,
+                             mad_ks: tuple[float, ...]) -> dict[float, dict]:
+    """一次注入、按多个 k 各评一轮 mad_jump（其余规则与 k 无关，只算一次）。
+
+    返回 {k: episode dict}，各 k 的 findings_detail 相互独立
+    （骨架部分相同，mad_jump 部分随 k 变化）。
+    """
     injected, truth = inject_random(base, rng)
     issues = validate_clip(injected)
-
-    norm = _normalize(injected, [
+    skeleton_norm = _normalize(injected, [
         rule_timestamp_gaps(injected),
         rule_timestamp_duplicates(injected),
         rule_joint_rotation_limit(injected),
         rule_bone_length_drift(injected),
     ])
     angle_clip = _angle_motion_clip(injected)
-    if angle_clip is not None:
-        norm += _normalize(injected, [rule_mad_jump(angle_clip, k=mad_k)])
 
-    hit_truth, hit_findings = _match(truth, norm)
-    return {
-        "injected": [{"type": t["type"], "target": t["target"],
-                      "frames": list(t["frames"])} for t in truth],
-        "detected": sorted(hit_truth),
-        "n_findings": len(norm),
-        "n_findings_tp": len(hit_findings),
-        "tp_findings_indices": sorted(hit_findings),
-        "structural_issues": issues,
-        "findings_detail": norm,
-    }
+    per_k: dict[float, dict] = {}
+    injected_json = [{"type": t["type"], "target": t["target"],
+                      "frames": list(t["frames"])} for t in truth]
+    for k in mad_ks:
+        norm = list(skeleton_norm)
+        if angle_clip is not None:
+            norm += _normalize(injected, [rule_mad_jump(angle_clip, k=k)])
+        hit_truth, hit_findings = _match(truth, norm)
+        per_k[k] = {
+            "injected": injected_json,
+            "detected": sorted(hit_truth),
+            "n_findings": len(norm),
+            "n_findings_tp": len(hit_findings),
+            "tp_findings_indices": sorted(hit_findings),
+            "structural_issues": issues,
+            "findings_detail": norm,
+        }
+    return per_k
 
 
 def _matches_baseline(f: dict, baseline: list[dict], tol: int = 10) -> bool:
@@ -225,66 +239,101 @@ def _matches_baseline(f: dict, baseline: list[dict], tol: int = 10) -> bool:
 
 def run_benchmark(files: list[Path], trials_per_file: int = 5, seed: int = 0,
                   scale: float = 0.01, up_axis: str = "y",
-                  mad_k: float = 6.0) -> dict:
+                  mad_ks: tuple[float, ...] = (6.0,)) -> dict:
     """对一批真实底片跑基准。返回汇总 dict（含 JSON 可序列化全部内容）。
+
+    mad_ks 传多个 k 时一次注入、mad_jump 按 k 各评一轮——四类注入缺陷中
+    只有 drift 的查全依赖 k（mad_jump 是它的检出规则），其余三类的 recall
+    在各 k 下相同，仍按 k 重复记录以保持矩阵形状。
 
     误报定义：未命中任何注入真值 **且** 无法被底片基线 findings 解释的
     finding（底片自身动态的标记不算误报——真实数据永远有基线 findings）。
     """
     rng = np.random.default_rng(seed)
-    per_type: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"truth": 0, "detected": 0})
-    n_findings_total = 0
-    n_findings_tp = 0
-    n_fp = 0
+    mad_ks = tuple(float(k) for k in mad_ks)
+    per_type = {k: defaultdict(lambda: {"truth": 0, "detected": 0}) for k in mad_ks}
+    n_tp = {k: 0 for k in mad_ks}
+    n_fp = {k: 0 for k in mad_ks}
+    # 按类别聚合：类别 = 文件名前导字母段（与 calibrate_bvh_categories 同口径）
+    per_cat = {k: defaultdict(lambda: defaultdict(lambda: {"truth": 0, "detected": 0}))
+               for k in mad_ks}
+    cat_fp = {k: defaultdict(int) for k in mad_ks}
     episodes = []
 
-    for path in files:
+    for fi, path in enumerate(files):
+        category = re.match(r"[A-Za-z]+", path.stem).group(0)
         base = parse_bvh(path, scale=scale, up_axis=up_axis)
-        base_issues = validate_clip(base)
-        # 底片基线：干净底片上全规则的 findings（真实数据的自有动态）
-        baseline_norm = _normalize(base, [
+        # 底片基线：干净底片上全规则的 findings（真实数据的自有动态）。
+        # 骨架规则与 k 无关只算一次；mad_jump 基线按 k 各一份。
+        skeleton_base = _normalize(base, [
             rule_timestamp_gaps(base),
             rule_timestamp_duplicates(base),
             rule_joint_rotation_limit(base),
             rule_bone_length_drift(base),
         ])
         angle_base = _angle_motion_clip(base)
+        baseline_norm = {k: list(skeleton_base) for k in mad_ks}
         if angle_base is not None:
-            baseline_norm += _normalize(base, [rule_mad_jump(angle_base, k=mad_k)])
+            for k in mad_ks:
+                baseline_norm[k] += _normalize(base, [rule_mad_jump(angle_base, k=k)])
 
         for trial in range(trials_per_file):
-            ep = benchmark_on_clip(base, rng, mad_k=mad_k)
-            for ti, inj in enumerate(ep["injected"]):
-                per_type[inj["type"]]["truth"] += 1
-                per_type[inj["type"]]["detected"] += int(ti in ep["detected"])
-            n_findings_total += ep["n_findings"]
-            n_findings_tp += ep["n_findings_tp"]
-            tp_idx = set(ep["tp_findings_indices"])
-            fp = [f for fi, f in enumerate(ep["findings_detail"])
-                  if fi not in tp_idx
-                  and not _matches_baseline(f, baseline_norm)]
-            n_fp += len(fp)
-            episodes.append({"file": str(path), "trial": trial,
-                             "n_fp": len(fp), **ep})
+            epk = _benchmark_on_clip_multi(base, rng, mad_ks)
+            entry = {"file": str(path), "category": category, "trial": trial,
+                     "injected": epk[mad_ks[0]]["injected"],
+                     "structural_issues": epk[mad_ks[0]]["structural_issues"],
+                     "per_k": {}}
+            for k in mad_ks:
+                ep = epk[k]
+                tp_idx = set(ep["tp_findings_indices"])
+                fp = [f for fbi, f in enumerate(ep["findings_detail"])
+                      if fbi not in tp_idx
+                      and not _matches_baseline(f, baseline_norm[k])]
+                for ti, inj in enumerate(ep["injected"]):
+                    per_type[k][inj["type"]]["truth"] += 1
+                    per_type[k][inj["type"]]["detected"] += int(ti in ep["detected"])
+                    per_cat[k][category][inj["type"]]["truth"] += 1
+                    per_cat[k][category][inj["type"]]["detected"] += int(ti in ep["detected"])
+                n_tp[k] += ep["n_findings_tp"]
+                n_fp[k] += len(fp)
+                cat_fp[k][category] += len(fp)
+                seg = {"detected": ep["detected"], "n_findings": ep["n_findings"],
+                       "n_findings_tp": ep["n_findings_tp"], "n_fp": len(fp),
+                       "tp_findings_indices": ep["tp_findings_indices"]}
+                if fp:  # 真误报罕见：只保留有内容的 FP 明细，控制 JSON 体积
+                    seg["fp_detail"] = fp
+                entry["per_k"][str(k)] = seg
+            episodes.append(entry)
+        LOG.info("基准 %d/%d: %s (%s)", fi + 1, len(files), path.name, category)
 
-    detail: dict[str, dict] = {}
-    for dtype, d in per_type.items():
-        recall = d["detected"] / d["truth"] if d["truth"] else None
-        detail[dtype] = {"truth": d["truth"], "detected": d["detected"],
-                         "recall": round(recall, 4) if recall is not None else None}
+    def _recall_table(table: dict) -> dict:
+        out = {}
+        for dtype, d in table.items():
+            recall = d["detected"] / d["truth"] if d["truth"] else None
+            out[dtype] = {"truth": d["truth"], "detected": d["detected"],
+                          "recall": round(recall, 4) if recall is not None else None}
+        return out
+
     # precision 口径 = TP / (TP + FP)：分母**不含**底片基线 findings——
     # 它们既非 TP 也非 FP（基线机制已解释），混进分母会把 precision 误压低
-    precision = n_findings_tp / (n_findings_tp + n_fp) \
-        if (n_findings_tp + n_fp) else None
+    recall_by_type = {str(k): _recall_table(per_type[k]) for k in mad_ks}
+    precision = {str(k): (round(n_tp[k] / (n_tp[k] + n_fp[k]), 4)
+                          if (n_tp[k] + n_fp[k]) else None) for k in mad_ks}
+    per_category = {
+        str(k): {cat: _recall_table(per_cat[k][cat]) for cat in sorted(per_cat[k])}
+        for k in mad_ks
+    }
+    fp_by_category = {str(k): dict(sorted(cat_fp[k].items())) for k in mad_ks}
 
     return {
         "n_files": len(files), "trials_per_file": trials_per_file, "seed": seed,
-        "mad_k": mad_k, "scale": scale, "up_axis": up_axis,
+        "mad_ks": list(mad_ks), "scale": scale, "up_axis": up_axis,
         "n_trials": len(episodes),
-        "precision": round(precision, 4) if precision is not None else None,
-        "n_false_positives": n_fp,
-        "recall_by_type": detail,
+        "precision": precision,
+        "n_false_positives": {str(k): n_fp[k] for k in mad_ks},
+        "recall_by_type": recall_by_type,
+        "recall_by_category": per_category,
+        "fp_by_category": fp_by_category,
         "episodes": episodes,
     }
 
