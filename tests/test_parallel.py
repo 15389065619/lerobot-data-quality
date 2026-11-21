@@ -18,7 +18,7 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from conftest import build_dataset, smooth_episode
-from test_pointcloud import _grid_cloud, _mixed_frames, _write_pc_dataset
+from test_pointcloud import _mixed_frames, _write_pc_dataset
 
 from pipeline.config import load_config
 from pipeline.loader import load_dataset
