@@ -73,7 +73,7 @@ def _read_duckdb(files: list[Path]) -> int:
     try:
         import duckdb
     except ImportError as exc:
-        raise SystemExit("未安装 duckdb：E:\\python\\python.exe -m pip install duckdb") from exc
+        raise SystemExit("未安装 duckdb：python -m pip install duckdb") from exc
 
     relation = duckdb.read_parquet([str(p) for p in files])
     table = relation.fetch_arrow_table()

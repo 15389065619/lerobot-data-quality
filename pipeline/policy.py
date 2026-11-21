@@ -119,9 +119,6 @@ def decide(
     _apply_mass_drop_guard(decisions)
 
     for ep, override in (overrides or {}).items():
-        target = overrides.get(ep)
-        if target is None:
-            continue
         if ep not in decisions:
             LOG.warning("overrides 中的 ep %s 不在本次处理范围内，已忽略", ep)
             continue
@@ -571,8 +568,3 @@ def _window_ref(dataset: LeRobotDatasetView, ep: int) -> str:
         return ""
     _, start, end = loc
     return f"{start:.2f}-{end:.2f}s" if end > start else ""
-
-
-def rule_label(code: str) -> str:
-    rule = RULE_MAP.get(code)
-    return rule.label if rule else code

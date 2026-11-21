@@ -6,7 +6,7 @@
   位置，也没有关节局部四元数——塞进 GaitClip 需要伪造字段。
   通道级 IR 承认"我只有 T×D 数值通道 + 通道名"这一事实，让 QC 分层：
     Tier 1 通道级规则（MAD 跳变/NaN 段/常值通道）——只依赖本 IR，立即可用
-    Tier 2 关节级规则（限位/角速度）——需要各通道的限位表（G1 URDF 公开可得）
+    Tier 2 关节级规则（限位）——需要各通道的限位表（G1 URDF 公开可得）
     Tier 3 空间级规则（骨长/接触/质心）——需要 URDF 运动学做 FK，之后升级为
            GaitClip，规则与 vision/gait 共用
 
@@ -42,14 +42,6 @@ class MotionClip:
     @property
     def n_channels(self) -> int:
         return self.channels.shape[1]
-
-    def copy(self) -> "MotionClip":
-        return MotionClip(
-            fps=self.fps,
-            channel_names=self.channel_names,
-            channels=self.channels.copy(),
-            source=dict(self.source),
-        )
 
 
 def validate_motion(clip: MotionClip) -> list[str]:

@@ -112,18 +112,6 @@ class QualityManifest:
                 out[ep] = EpisodeResult.from_dict(data)
         return out
 
-    def cached_decisions(self) -> dict[int, dict[str, Any]]:
-        out: dict[int, dict[str, Any]] = {}
-        for raw_ep, entry in (self.payload.get("episodes") or {}).items():
-            try:
-                ep = int(raw_ep)
-            except (TypeError, ValueError):
-                continue
-            decision = (entry or {}).get("decision")
-            if isinstance(decision, dict):
-                out[ep] = decision
-        return out
-
     # 指纹
     def episode_signatures(self, dataset: LeRobotDatasetView) -> dict[int, str]:
         """每个 episode 的廉价指纹；只依赖 meta 与文件 stat，不读帧数据。"""

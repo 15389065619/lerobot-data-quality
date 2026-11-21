@@ -47,7 +47,6 @@ from lerobot_data_quality.gait_unit.qc_rules.spatial_rules import (
     compute_foot_contact,
     rule_flight_phase,
     rule_foot_skating,
-    rule_ground_penetration,
 )
 
 LOG = logging.getLogger(__name__)

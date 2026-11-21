@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .baseline import fingerprint
-from .config import cfg_get, severity_of, snapshot as config_snapshot
+from .config import severity_of, snapshot as config_snapshot
 from .loader import ACTION_KEY, STATE_KEY, LeRobotDatasetView
 from .policy import Decision, summarize as summarize_decisions, systemic_decisions
 from .validator import (
@@ -515,7 +515,6 @@ def _field_issue_stats_from_frames(dataset: LeRobotDatasetView) -> dict[str, Any
             "mean": round(float(finite.mean()), 6) if finite.size else None,
         }
     return stats
-
 
 
 def _schema_repair_hint(column: str) -> str:

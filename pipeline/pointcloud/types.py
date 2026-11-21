@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
 from ..config import severity_of
 
 FramesKey = tuple[int, int]
@@ -42,7 +40,6 @@ RULES: tuple[Rule, ...] = (
 RULE_MAP = {r.code: r for r in RULES}
 RULE_ORDER = [r.code for r in RULES]
 REPAIRABLE = {r.code for r in RULES if r.repair}
-REPAIR_ACTIONS = {"filter", "dedupe", "bounds", "color", "resample"}
 
 
 # 结果结构

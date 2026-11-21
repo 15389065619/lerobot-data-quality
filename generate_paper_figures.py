@@ -16,9 +16,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ---------------------------------------------------------------------------
 # 全局样式
-# ---------------------------------------------------------------------------
 plt.rcParams.update({
     "font.family": ["Microsoft YaHei", "SimHei", "DejaVu Sans"],
     "axes.unicode_minus": False,
@@ -44,9 +42,7 @@ C_B = "#DD8452"      # B' 臂（清洗产物）- 橙
 C_DIFF = "#55A868"   # 差值 - 绿
 C_SEED = ["#4C72B0", "#DD8452", "#55A868"]
 
-# ---------------------------------------------------------------------------
 # 载入多 seed 原始数据
-# ---------------------------------------------------------------------------
 SEED_RESULTS = json.load(open("kaggle_ab/eval_seed_results.json", encoding="utf-8"))
 
 arm_A_s1 = np.asarray(SEED_RESULTS["arm_A_s1"])
@@ -72,9 +68,7 @@ print(f"cross-seed SD   = {cross_sd:.5f}")
 print(f"全部同号 = {all(s['diff'] < 0 for s in seeds)}")
 
 
-# ===========================================================================
 # 图 1：多 seed 森林图（Forest Plot）
-# ===========================================================================
 def fig1_forest():
     fig, ax = plt.subplots(figsize=(8, 4))
 
@@ -113,12 +107,10 @@ def fig1_forest():
     fig.tight_layout()
     fig.savefig(OUT / "fig1_forest_multi_seed.png")
     plt.close(fig)
-    print("  ✓ fig1_forest_multi_seed.png")
+    print("  fig1_forest_multi_seed.png")
 
 
-# ===========================================================================
 # 图 2：各 seed 两臂最终 loss 柱状对比
-# ===========================================================================
 def fig2_bar_comparison():
     fig, ax = plt.subplots(figsize=(7, 5))
 
@@ -150,12 +142,10 @@ def fig2_bar_comparison():
     fig.tight_layout()
     fig.savefig(OUT / "fig2_bar_comparison.png")
     plt.close(fig)
-    print("  ✓ fig2_bar_comparison.png")
+    print("  fig2_bar_comparison.png")
 
 
-# ===========================================================================
 # 图 3：逐窗口配对散点图（Seed 1 + Seed 2）
-# ===========================================================================
 def fig3_paired_scatter():
     fig, axes = plt.subplots(1, 2, figsize=(11, 5))
 
@@ -194,12 +184,10 @@ def fig3_paired_scatter():
     fig.tight_layout()
     fig.savefig(OUT / "fig3_paired_scatter.png")
     plt.close(fig)
-    print("  ✓ fig3_paired_scatter.png")
+    print("  fig3_paired_scatter.png")
 
 
-# ===========================================================================
 # 图 4：逐窗口差值直方图（Seed 1 + Seed 2 合并）
-# ===========================================================================
 def fig4_diff_histogram():
     fig, axes = plt.subplots(1, 2, figsize=(11, 5))
 
@@ -239,12 +227,10 @@ def fig4_diff_histogram():
     fig.tight_layout()
     fig.savefig(OUT / "fig4_diff_histogram.png")
     plt.close(fig)
-    print("  ✓ fig4_diff_histogram.png")
+    print("  fig4_diff_histogram.png")
 
 
-# ===========================================================================
 # 图 5：训练曲线（同 epoch 对齐）
-# ===========================================================================
 def fig5_training_curves():
     """根据 results.md 的训练曲线数据绘制。"""
 
@@ -309,12 +295,10 @@ def fig5_training_curves():
     fig.tight_layout()
     fig.savefig(OUT / "fig5_training_curves.png")
     plt.close(fig)
-    print("  ✓ fig5_training_curves.png")
+    print("  fig5_training_curves.png")
 
 
-# ===========================================================================
 # 图 6：数据量与帧对比
-# ===========================================================================
 def fig6_data_volume():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
 
@@ -351,16 +335,14 @@ def fig6_data_volume():
     fig.tight_layout()
     fig.savefig(OUT / "fig6_data_volume.png")
     plt.close(fig)
-    print("  ✓ fig6_data_volume.png")
+    print("  fig6_data_volume.png")
 
 
-# ===========================================================================
 # 图 7：光捕模块 Tier 分层架构示意图
-# ===========================================================================
 def fig7_gait_unit_architecture():
     fig, ax = plt.subplots(figsize=(12, 7))
     ax.set_xlim(0, 12)
-    ax.set_ylim(0, 8)
+    ax.set_ylim(-0.45, 8)
     ax.axis("off")
 
     # 标题
@@ -375,7 +357,7 @@ def fig7_gait_unit_architecture():
     ax.text(1.0, tier1_y + 0.25, "Tier 1：通道级规则（MotionClip IR）",
             fontsize=12, fontweight="bold", color="#1976D2")
     ax.text(1.0, tier1_y - 0.15,
-            "· MAD 跳变检测（阈值自适应 fps）    · NaN 段定位    · 常值通道识别    · 四元数整体翻转剔除",
+            "· MAD 跳变检测（按动作类别分档校准）    · NaN 段定位    · 常值通道识别    · 值域检查    · 四元数整体翻转豁免",
             fontsize=9, color="#333")
     ax.text(1.0, tier1_y - 0.4,
             "输入：T × D 通道数组 + 通道名（如 dof_left_knee_joint(rad)）",
@@ -387,13 +369,13 @@ def fig7_gait_unit_architecture():
                            facecolor="#FFF3E0", edgecolor="#F57C00", linewidth=2,
                            transform=ax.transData)
     ax.add_patch(rect2)
-    ax.text(1.0, tier2_y + 0.25, "Tier 2：关节级规则（需要 G1 限位表）",
+    ax.text(1.0, tier2_y + 0.25, "Tier 2：骨架/标记点级规则（GaitClip）",
             fontsize=12, fontweight="bold", color="#F57C00")
     ax.text(1.0, tier2_y - 0.15,
-            "· 关节限位超限检测（URDF 声明）    · 角速度尖峰（fps 折算）    · 按动作类别分档（跳跃/行走/舞蹈）",
+            "· 时间戳间隙/重复盖章    · 关节旋转角超限    · 骨长漂移    · 标记点缺失/跳变",
             fontsize=9, color="#333")
     ax.text(1.0, tier2_y - 0.4,
-            "依赖：Unitree G1 URDF 的 29 DOF 关节限位表",
+            "依赖：骨架层级（parents）+ Unitree G1 URDF 限位表",
             fontsize=9, style="italic", color="#666")
 
     # ---- Tier 3 ----
@@ -405,7 +387,7 @@ def fig7_gait_unit_architecture():
     ax.text(1.0, tier3_y + 0.25, "Tier 3：空间级规则（需要 URDF FK → 升级为 GaitClip IR）",
             fontsize=12, fontweight="bold", color="#388E3C")
     ax.text(1.0, tier3_y - 0.15,
-            "· 骨长一致性（刚体恒长）    · 标记点离群检测    · 接触点合理性    · 质心高度波动",
+            "· 足部滑移    · 触地穿透    · 腾空相位",
             fontsize=9, color="#333")
     ax.text(1.0, tier3_y - 0.4,
             "升级：MotionClip → GaitClip（位置 + 四元数 + 骨架层级）",
@@ -440,19 +422,17 @@ def fig7_gait_unit_architecture():
         ax.annotate("", xy=(6, y_to), xytext=(6, y_from), arrowprops=arrow_props)
 
     # ---- 实测标注 ----
-    ax.text(11.5, tier1_y, "✓ 已落地", fontsize=9, color="#388E3C", ha="right")
-    ax.text(11.5, tier2_y, "✓ 已落地", fontsize=9, color="#388E3C", ha="right")
-    ax.text(11.5, tier3_y, "✓ 已落地", fontsize=9, color="#388E3C", ha="right")
+    ax.text(11.5, tier1_y, "已落地", fontsize=9, color="#388E3C", ha="right")
+    ax.text(11.5, tier2_y, "已落地", fontsize=9, color="#388E3C", ha="right")
+    ax.text(11.5, tier3_y, "已落地", fontsize=9, color="#388E3C", ha="right")
 
     fig.tight_layout(rect=[0, 0.12, 1, 0.95])
     fig.savefig(OUT / "fig7_gait_unit_architecture.png")
     plt.close(fig)
-    print("  ✓ fig7_gait_unit_architecture.png")
+    print("  fig7_gait_unit_architecture.png")
 
 
-# ===========================================================================
 # 图 8：清洗流水线四档处置 + 光捕校准结果
-# ===========================================================================
 def fig8_disposition_and_calibration():
     """左：demo_dataset 四档处置饼图；右：LAFAN1 77 段校准本底报警率。"""
 
@@ -460,7 +440,7 @@ def fig8_disposition_and_calibration():
 
     # (a) 处置档位
     dispositions = ["保留", "修复", "复核", "剔除"]
-    counts = [24, 2, 3, 7]  # demo_dataset
+    counts = [24, 2, 2, 8]  # demo_dataset 实测（examples/quality_report.json summary.disposition）
     colors_disp = ["#4CAF50", "#2196F3", "#FF9800", "#F44336"]
     explode = (0, 0, 0.05, 0.1)
 
@@ -471,23 +451,24 @@ def fig8_disposition_and_calibration():
     )
     ax1.set_title("(a) 质检四档处置（demo_dataset 实测）", fontsize=12)
 
-    # (b) LAFAN1 校准 - 本底报警率
-    categories = ["正常步态", "跳跃动作", "复杂舞步"]
-    baseline_rates = [0.04, 0.08, 0.12]  # 假设本底报警率（正常数据不应全绿）
-    measured_rates = [0.06, 0.25, 0.18]  # 清洗流水线的检出率
+    # (b) LAFAN1 校准 - 本底报警率（数据源：reports/gait/lafan1_calibration.json，77 段 BVH 实测；
+    #     口径 = 每千帧×关节被规则标记数（‰）。k=6 查全优先 / k=12 保守，两档对照）
+    categories = ["push\n（低动态）", "walk\n（常速行走）", "dance\n（舞蹈）", "jumps\n（高动态跳跃）"]
+    rate_k6 = [8.62, 21.32, 33.52, 45.29]
+    rate_k12 = [5.01, 10.94, 24.22, 38.59]
 
     x = np.arange(len(categories))
     width = 0.35
 
-    ax2.bar(x - width / 2, baseline_rates, width, label="本底报警率（正常数据应有）",
+    ax2.bar(x - width / 2, rate_k6, width, label="k=6（查全优先）",
             color="#90CAF9", edgecolor="white")
-    ax2.bar(x + width / 2, measured_rates, width, label="流水线实测检出率",
+    ax2.bar(x + width / 2, rate_k12, width, label="k=12（保守）",
             color="#E57373", edgecolor="white")
 
     ax2.set_xticks(x)
-    ax2.set_xticklabels(categories)
-    ax2.set_ylabel("报警率")
-    ax2.set_title("(b) LAFAN1 校准——检出率 vs 本底", fontsize=12)
+    ax2.set_xticklabels(categories, fontsize=10)
+    ax2.set_ylabel("本底报警率（‰ / 千帧×关节）")
+    ax2.set_title("(b) LAFAN1 校准——正常数据本底报警率（77 段实测）", fontsize=12)
     ax2.legend(fontsize=9)
     ax2.grid(axis="y", alpha=0.3)
 
@@ -495,12 +476,10 @@ def fig8_disposition_and_calibration():
     fig.tight_layout()
     fig.savefig(OUT / "fig8_disposition_and_calibration.png")
     plt.close(fig)
-    print("  ✓ fig8_disposition_and_calibration.png")
+    print("  fig8_disposition_and_calibration.png")
 
 
-# ===========================================================================
 # main
-# ===========================================================================
 if __name__ == "__main__":
     print(f"\n生成目录: {OUT.resolve()}\n")
     fig1_forest()

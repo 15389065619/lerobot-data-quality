@@ -6,7 +6,6 @@ import csv
 import json
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 

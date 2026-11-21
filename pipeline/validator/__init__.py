@@ -6,7 +6,7 @@
 （时间戳错乱、首尾 NaN 等）在 details 里带修复参数交 cleaner 执行。视频探针
 优先读容器元数据，必要时才解码。
 
-规则清单见 RULES；类型在 types，探针在 probes，数据集级上下文在 context，
+规则清单见 validator.types.RULES；类型在 types，探针在 probes，数据集级上下文在 context，
 逐条规则在 rules。
 """
 
@@ -24,7 +24,7 @@ import pandas as pd
 from ..config import cfg_get, load_config
 from ..loader import ACTION_KEY, DEFAULT_DATA_PATH, STATE_KEY, LeRobotDatasetView
 from .context import DatasetContext
-from .probes import FFMPEG, FFPROBE, probe_frame_brightness, probe_video_frames
+from .probes import FFMPEG, FFPROBE, probe_video_frames
 from .rules import (
     as_matrix,
     check_action_jump,
@@ -45,11 +45,9 @@ from .rules import (
 from .types import (
     RULE_MAP,
     RULE_ORDER,
-    RULES,
     SEVERITY_ORDER,
     DatasetIssue,
     EpisodeResult,
-    Rule,
     ValidationResult,
 )
 
@@ -60,11 +58,8 @@ __all__ = [
     "EpisodeResult",
     "RULE_MAP",
     "RULE_ORDER",
-    "RULES",
-    "Rule",
     "SEVERITY_ORDER",
     "ValidationResult",
-    "probe_frame_brightness",
     "probe_video_frames",
     "validate_dataset",
 ]
