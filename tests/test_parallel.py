@@ -11,6 +11,7 @@ worker 函数的可 pickle 性与 initializer 注入机制。
 from __future__ import annotations
 
 import json
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -73,6 +74,67 @@ def test_broken_pool_falls_back_to_serial(monkeypatch) -> None:
     monkeypatch.setattr(parallel, "wait", _boom)
     results = list(parallel.run_pool([1, 2, 3, 4], _double, None, 2, desc="test", unit="job"))
     assert sorted(results) == [2, 4, 6, 8]
+
+
+class _FakeFuture:
+    def __init__(self, job: int, broken: bool):
+        self.job = job
+        self._broken = broken
+
+    def result(self) -> int:
+        if self._broken:
+            raise BrokenProcessPool("worker killed")
+        return self.job * 2
+
+
+class _FakePool:
+    """假进程池：真实的中途 worker 死亡难以跨平台伪造，而漏洞在簿记不在池本身，
+    用假 executor 精确命中 run_pool 的登记/回退路径（部分 future 已完成再破裂）。"""
+
+    def __init__(self, broken_result_job: int | None, broken_submit_job: int | None):
+        self._broken_result_job = broken_result_job
+        self._broken_submit_job = broken_submit_job
+
+    def submit(self, fn, job: int) -> _FakeFuture:
+        if job == self._broken_submit_job:
+            raise BrokenProcessPool("submit on dead pool")
+        return _FakeFuture(job, broken=(job == self._broken_result_job))
+
+    def shutdown(self, wait=True, cancel_futures=False) -> None:
+        pass
+
+
+def _run_fake_pool(monkeypatch, jobs, *, broken_result_job, broken_submit_job) -> list[int]:
+    """让假池里的 future 在每次 wait 时全部就绪，驱动 run_pool 走完破裂路径。"""
+    from pipeline import parallel
+
+    pool = _FakePool(broken_result_job, broken_submit_job)
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", lambda **kw: pool)
+
+    def _fake_wait(fs, return_when=None):
+        return list(fs), []
+
+    monkeypatch.setattr(parallel, "wait", _fake_wait)
+    return list(parallel.run_pool(jobs, _double, None, 2, desc="test", unit="job"))
+
+
+def test_broken_pool_midrun_requeues_broken_future_job(monkeypatch) -> None:
+    """部分 future 已完成弹出后池才破裂：已 pop 的 job 也要并回串行补跑。
+
+    回归背景：run_pool 曾先 pop 再 result()，破裂时该 job 既不在 in_flight
+    也不在 pending，串行回退的 remaining 把它静默丢弃（全量套件偶发点云
+    workers=4 测试断言失败的根因，见 2026-11-21 审查记录）。
+    """
+    results = _run_fake_pool(monkeypatch, [1, 2, 3, 4, 5, 6],
+                             broken_result_job=3, broken_submit_job=None)
+    assert sorted(results) == [2, 4, 6, 8, 10, 12]
+
+
+def test_broken_pool_midrun_requeues_submit_failed_job(monkeypatch) -> None:
+    """破裂发生在 submit 瞬间：刚 popleft 的 job 放回队首，不静默丢失。"""
+    results = _run_fake_pool(monkeypatch, [1, 2, 3, 4, 5, 6],
+                             broken_result_job=None, broken_submit_job=5)
+    assert sorted(results) == [2, 4, 6, 8, 10, 12]
 
 
 def _double(value: int) -> int:
