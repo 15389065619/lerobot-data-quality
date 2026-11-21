@@ -622,3 +622,38 @@ python tools/benchmark_reader.py --dataset data/stress --n-files 5 --repeat 2
 所以「剔除 N 个跳变 episode，整体方差降低 X%，消除模型震荡风险」这句话不能通用：它在 demo 上成立（−10.0%）是因为 demo 里注入的尖峰是阈值的 34 倍、且集中在 8 个集里；在真实规模上，方差这个统计量对 5 个边缘命中的集几乎不敏感，能被稳定观测到的是**跳变指标**（超阈帧数、归一化跳变峰值），而不是方差。
 
 要验证「清洗是否值得」，得看的是那 5 条 review 在规则里的原始定位：它们的 `exceed_ratio` 只有 1.02–1.35，本来就落在「快速但连续」与「真实尖峰」之间——这正是需要人裁决的区间，也是复查回灌这一步的价值所在：**工具负责把它们挑出来，人负责决定删不删，删完的收益要用对指标去量。**
+
+## 12. 光捕模块泛化验证：chingmu/古典舞 vs LAFAN1 校准表
+
+2026-11-21。目的：把论文 §3.4 的「chingmu 20 集 + 零重叠古典舞 18 集交叉验证，规则没有对特定分布过拟合」从一句话声明落成可复现数字，并回答一个悬置问题——**mad_jump 的 k 在 120Hz 厂商重定向数据上要不要折算**。
+
+### 12.1 口径
+
+- 数据：`chingmu_subset`（20 集 / 119,805 帧 / 120Hz）与 `chingmu_classical_dance`（18 集 / 16,975 帧），均为 MotionDecode 重定向后的 G1 29-DOF 关节角 LeRobot 容器
+- 规则：`rule_mad_jump` 在 k = 6/8/10/12 各跑一遍全集；报警率 = flagged/(T×J)×1000，与 `lafan1_calibration.json` 完全同口径
+- 通道组：dof-only 29 通道为主口径（与 LAFAN1 骨骼角同质），全 36 通道（含 root pos/quat）仅作参考
+- episode ↔ 源 CSV 的类别映射：复现 `convert_chingmu_subset.pick_csvs` 的确定性采样（Standing_High_Jump 优先 + seed0 洗牌），按源路径的两级分类段映射到 LAFAN1 类别（Dance→dance、High_Dynamic→jumps、Gait/Weight_Carrying→walk、Crawling→ground、Action_Sequences→multipleActions；Daily_Life / Special_Population / Special_Occupation 等无 LAFAN1 对应类别的只报实测值不判读）
+- 判读（预注册）：实测落在对应类别 k 值 ±50% 带内 = in_band；高于 = out_above（逐集归因）；低于 = out_below（校准表适用边界）
+
+### 12.2 结果
+
+| 数据集 / 类别 | k=6 | k=8 | k=10 | k=12 | LAFAN1 同类（k=6→12） | 判读 |
+|---|---|---|---|---|---|---|
+| subset / jumps（10 集 Standing_High_Jump） | 3.28 | 0.92 | 0.32 | 0.05 | 45.29 → 38.59 | **out_below（全部 k）** |
+| subset / dance（2 集 Dance 源） | 33.63 | 24.37 | 23.10 | 22.14 | 33.52 → 24.22 | in_band（全部 k） |
+| classical_dance / dance（18 集） | 36.75 | 26.71 | 21.39 | 18.35 | 33.52 → 24.22 | in_band（全部 k） |
+
+无 LAFAN1 对应类别的实测值（k=6，dof 口径）：Special_Population 65.5、Daily_Life 44.7、Action_Sequences 135.4、Weight_Carrying 4.2、Crawling 1.9、Special_Occupation 0.6——记录备查，不判读。
+
+### 12.3 三个发现
+
+**发现 1：泛化按类别分化，不是全有全无。** dance 类别两个域的报警率几乎重合（33.5 vs 33.6/36.8），平滑类动作的本底报警率对表征域不敏感；jumps 类别呈现 14 倍系统性偏差（3.28 vs 45.29），且随 k 增大差距拉大（k=12 时 770 倍）。含义：**LAFAN1 校准表的低动态类别带可以跨域复用，高动态类别的带被原始动捕噪声/冲击动态主导，不能直接套在厂商平滑后的重定向数据上——校准需要分域**。这也回答了悬置问题：k 本身不用折算（120Hz 下 dance 落带内），要折算的是高动态类别的本底参考值。
+
+**发现 2：out_below 的方向是好消息不是坏消息。** chingmu 跳类集报警率远低于 LAFAN1 jumps 本底，说明厂商重定向管线把原始动捕的冲击抖动平滑掉了——这些集按现行规则几乎零告警，不存在「厂商数据被误杀」的风险。代价是：LAFAN1 校准表对这类数据的 jump 级缺陷检出灵敏度待实验一的全量注入基准回答。
+
+**发现 3：报警率的逐集方差由「双峰通道」驱动——mad_jump 的语义盲区。** 实测最高集（ep17，135.4‰，Action_Sequences 仓储搬运）归因：该集大部分时间静止，dof 通道 MAD 被压到 5e-4（≈0.03°），搬运段 70° 的正常运动在全集口径下 z 高达 1700、43% 帧被标为「跳变」。原始通道最大帧差仅 0.063 rad（3.6°/帧），不是数据缺陷。mad_jump 的守卫只挡 MAD=0 精确零，「静态为主 + 局部运动」的双峰分布会让正常运动段被整段标为跳变——改进候选（与 joint_limit 170° 边界并列入规则改进清单）：滑动窗口 MAD 或对长 run 降级为「持续运动」标注。
+
+### 12.4 产物与复现
+
+- 原始逐集数据：`reports/gait/cross_dataset_generalization.json`（episode ↔ 源 CSV 映射、逐 k 报警率、判读清单）
+- 方法：映射重建公式与判读规则见本节 §12.1；全部本地 CPU，运行 <5 min
