@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-334%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-429%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
 
 本地 LeRobot 数据集的质检、分级处置、报告、清洗与可视化工具。支持 v3.0 和 v2.1 布局，输入 parquet + mp4（可选点云），输出可训练的数据集、逐 episode 的报告和可复核的队列。仓库里没有训练代码。
@@ -13,7 +13,7 @@
 
 机器人模仿学习对数据质量很敏感。一段 112 帧里混着 11 帧 NaN 的 episode 会让训练直接崩溃；遥操作接管产生的 action 跳变会污染归一化统计；视频和 state 差几帧时训练管线不会报错，只是安静地学到错位数据。采集中断、控制环丢包、镜头遮挡、合并时重复入库，这些在真实数据里都会出现。LeRobot 官方工具链负责加载和编辑，本身没有质检层。
 
-社区里的 `lerobot-doctor` 和 DataDoctor 做的是巡检，检查项比本项目全（本项目也没有 URDF）。差别在判定之后：它们给出 PASS / WARN / FAIL，本项目把规则判不了的样本放进复核队列，人工裁决通过 `--overrides` 回灌，清洗产物写到独立目录，不碰源数据。逐项对照见 [docs/COMPARISON.md](docs/COMPARISON.md)。
+社区里的 `lerobot-doctor` 和 DataDoctor 做的是巡检，检查项比本项目主线全（主线未接 URDF 限位；光捕产线 gait_unit 已接 G1 URDF，见下文）。差别在判定之后：它们给出 PASS / WARN / FAIL，本项目把规则判不了的样本放进复核队列，人工裁决通过 `--overrides` 回灌，清洗产物写到独立目录，不碰源数据。逐项对照见 [docs/COMPARISON.md](docs/COMPARISON.md)。
 
 ## 快速开始
 
@@ -73,12 +73,12 @@ docker run --rm \
   - duplicate_episode          1 个 episode
 数据集级问题 [stats_stale] meta/stats.json 与实测数据偏差过大（归一化统计已过期）
 
-保留 24   修复 2   复核 3   剔除 7
+保留 24   修复 2   复核 2   剔除 8
   ep    5  error    repair  裁掉首3帧/尾0帧后保留
   ep    7  warning  review  人工复核后决定
   ep   15  warning  repair  用 frame_index/fps 重建时间轴
 
-预计保留    : 29 个 episode, 2393 帧（丢弃 612 帧，裁帧 3 帧）
+预计保留    : 28 个 episode, 2388 帧（丢弃 617 帧，裁帧 3 帧）
 ```
 
 ## 规则
@@ -90,7 +90,7 @@ docker run --rm \
 | `nan_state` / `nan_action` | error | drop / trim | NaN/Inf。只出现在首尾时可以裁剪保留，中段则丢弃 |
 | `action_jump` | warning | review | 逐维阈值取自每集最大跳变的稳健包络，步进保持和度制数据不误报；超阈 <1.5 倍降为 info（边缘命中多是快速但连续的正常动作） |
 | `timestamp_not_monotonic` | warning | repair | 用 frame_index/fps 重建时间轴 |
-| `frame_mismatch` | error | drop | 视频帧数不等于 state 行数（±1 帧容差）；meta 给不出定位信息时降为 info（不可评估） |
+| `frame_mismatch` | error | repair / review | 视频帧数不等于 state 行数（±1 帧容差，多段/双 take 数据按段计量）；窗口比行数长时收窄窗口保留，meta 给不出定位信息时降为 info（不可评估） |
 | `static_episode` | error | drop | 空转 episode，无效采集 |
 | `meta_episode_mismatch`（数据集级） | warning | repair | meta 用全局 ID、data 用 0..N-1 时按顺序映射，行数与视频窗口双重校验 ≥99% 才接受；证据不足标为不可评估，不剔除 |
 
@@ -120,6 +120,12 @@ df = RosbagAdapter("examples/rosbag_sim/episode_000.bag").to_dataframe()
 ```
 
 其余用法见各适配器 docstring 与 `examples/`。
+
+## 步态/光捕质检（gait_unit 第二产线）
+
+`src/lerobot_data_quality/gait_unit/` 是与主线零依赖的第二产线，处理光学动作捕捉数据——没有视频，是关节角随时间的数值轨迹（厂商重定向 CSV、BVH 等）。两级 IR（通道级 MotionClip / 骨骼级 GaitClip）、四个数据源适配器、三层 Tier 规则（通道 → 关节限位 → 空间/接触）。
+
+验证链：LAFAN1 全库 77 段建立本底报警率校准表（按动作类别，push 8.6‰ → jumps 45.3‰）；385 次缺陷注入基准（precision 全类别 1.0）；chingmu/古典舞真实数据泛化验证（dance 跨域复用 ✓，jumps 14 倍偏差 → 校准需分域）。已知边界：joint_limit 粗探针查全按类别 0.0–0.667；mad_jump 在双峰通道上有语义盲区（滑动窗口 MAD 入改进清单）。数字与判读见 [docs/EVAL.md §12–§13](docs/EVAL.md)。
 
 ## 其他能力
 
@@ -168,7 +174,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 334 个单测
+python -m pytest tests                                  # 429 个单测
 ```
 
 未上传 PyPI，用 `pip install -e .` 从源码安装（提供 `lerobot-data-quality` 等 console 命令）。
@@ -229,13 +235,16 @@ outputs/
 
 | 场景 | 数据 | 结论 |
 |---|---|---|
-| demo_dataset | 36 ep / 3008 帧 | 13 处注入异常全命中（覆盖 12 类规则），0 误报；默认策略保留 24 / 修复 2 / 复核 3 / 剔除 7，清洗产物 29 ep / 2393 帧；归因定位到采集人（bob 44.4% vs alice 27.8%） |
+| demo_dataset | 36 ep / 3008 帧 | 13 处注入异常全命中（覆盖 12 类规则），0 误报；默认策略保留 24 / 修复 2 / 复核 2 / 剔除 8，清洗产物 29 ep / 2393 帧；归因定位到采集人（bob 44.4% vs alice 27.8%） |
 | 真实点云数据集 | 50 ep / 18374 帧 | 8 步全跑通；点云 18374 帧全正常；故障注入 8 类规则全命中，修复后行数、点数、schema 全不变 |
 | 并发 | 同上 | `--workers 8`：190.1 s → 64.7 s（2.9×），产物与串行逐字节一致 |
 | 容错与续传 | 人为损坏 1 个分片 | 不中断（23 episode 标 `episode_read_error`）；二跑 1.6 s；修复后自动重扫恢复 |
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 ep / 128 万帧 | meta 全局 ID 对 data 0..N-1，修复前 200/200 error、建议删光；自动对齐后保留 195 / 复核 5 / 剔除 0，实测视频与 state 逐条对齐 |
 | 19 个数据集审计 | v3.0 / v2.1 混合，5855 ep | 17 个仓库原有 + 2 份 HF 公开集。本地轮查出 3 处工具缺陷和 3 处数据真实缺陷；外部集又推翻 4 条结论（流式/预检/复检三路径 `missing_task` 假阳性、`stats_stale` 采样偏差等），详见 [docs/EVAL.md §2.3 与 §2.5](docs/EVAL.md) |
 | 清洗收益（代理指标） | demo + behavior1k | demo：动作方差 −10.0%，归一化跳变 51.1 → 0.34；真实规模：方差只降 1.2%（全部来自删样本），跳变 −25.7%。方差对边缘命中不敏感，能稳定观测的是跳变指标。未训练模型，不声称精度提升，见 [docs/EVAL.md §9–§11](docs/EVAL.md) |
+| **Kaggle A/B 训练实测** | so101_bomb：A 最小修复 157 块 vs B′ 清洗 106 集，训 SmolVLA | 同 epoch 裁决 A 显著更优（−0.021，t=−5.45）；multi-seed 三臂全负（−0.0199 ± 0.0023）；badgood DiD = −0.046 ± 0.012（t=−3.76）坐实被 drop 的窗口携带可学习信号 → 政策改为 repair-not-drop，详见 [kaggle_ab/results.md](kaggle_ab/results.md) 与 [论文.md](论文.md) |
+| 光捕泛化验证 | chingmu 20 集 + 零重叠古典舞 18 集 vs LAFAN1 校准表 | 按类别分化：dance 全 k 落带内（两域报警率 33.5 vs 33.6/36.8‰ 几乎重合），jumps 14 倍偏差（厂商平滑掉原始噪声）→ 校准需分域，详见 [docs/EVAL.md §12](docs/EVAL.md) |
+| 光捕注入基准全量 | LAFAN1 77 段 × 385 注入 × k 扫描 | precision 全 15 类 1.0、误报 0；joint_limit 查全按类别 0.0–0.667（170° 探针边界）；查全与 k 无关（k 管复核产量），详见 [docs/EVAL.md §13](docs/EVAL.md) |
 
 详细数字、注入表和边界说明见 [docs/EVAL.md](docs/EVAL.md)。下游行数字由 `tools/analyze_action_distribution.py` 复算生成，`--update-eval` 幂等写回文档；大数据集可用 `--proxy-from-kept` 省掉数小时视频重编码。
 
@@ -251,7 +260,7 @@ outputs/
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（334 个单测，分支覆盖率实测 74%，CI 强制 64% 门槛）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。不强依赖 lerobot 包；安装了 lerobot 时，纯删除场景优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（官方 CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（429 个单测，分支覆盖率实测 78%，CI 强制 64% 门槛）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。不强依赖 lerobot 包；安装了 lerobot 时，纯删除场景优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（官方 CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 
