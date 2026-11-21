@@ -702,3 +702,11 @@ python tools/benchmark_reader.py --dataset data/stress --n-files 5 --repeat 2
 - 全量结果：`reports/gait/lafan1_benchmark_full.json`（385 trials，逐 trial 逐 k 的检出/FP/按段证据；FP 明细仅保留非零项）
 - harness 改造：`benchmark_on_clip` 拆出 `_benchmark_on_clip_multi`（一次注入多 k 评测，单 k 行为不变）；`run_benchmark(mad_ks=...)` + 按类别聚合
 - 复现：`run_benchmark(files, trials_per_file=5, seed=0, mad_ks=(6, 8, 10, 12))`，全量本地 CPU 32 min
+
+### 12.5 补充：全库 69 集验证与两条分析错误订正（2026-11-21 同日）
+
+§12.2 的 dance 判读基于随集发布的 18 episode。同日补做了**全库 69 集**（`1.14.Dance_and_Performance` 全部源 CSV）的验证：池化报警率 k=6/8/10/12 = **35.77 / 25.23 / 20.47 / 17.31——全部 k 落带内**（LAFAN1 dance 33.52→24.22）。逐集 k=6 分布 0-132.6‰（中位 30.66）：Stationary/Sadness 类近零，Curtain_Call/Medium_Jump 类超百。dance 的泛化结论从「随集 18 集样本」升级为「全库验证」。
+
+**provenance 核验**：18 个容器 episode 与源 CSV 做了逐行值匹配（18/18 唯一子序列、零删行、float32 逐位一致）——**容器是原始透传，未经清洗**；18/69 的筛选标准未知（与 seed0 随机重建不符），不影响值级结论。jumps 对照组（subset）同样为 converter 直转原始数据。
+
+**两条被抓住的分析错误**（记下防止复发）：①第一版全库统计把逐集「报警率」累加进了 flagged 桶（量纲错误），得出假象 1.34‰——池化必须 Σflagged/Σ(T×J)×1000；②归因时按自造通道名查错了列（dof9 = 索引 16 而非 9），差点把「双峰 MAD 放大」误判成「数据巨刺」。两条都是脱离 main.py 的临时脚本犯错——**实验脚本与主代码同等需要口径审查**。
