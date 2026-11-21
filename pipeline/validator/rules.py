@@ -657,7 +657,7 @@ def _video_windows(dataset: LeRobotDatasetView, episode_index: int) -> list[dict
     多段/双 take 数据集（同一 episode_index 多行 meta，每行自带 length 与窗口）
     必须按段取窗：旧口径只取第一行窗口、拿全集行数去比，会把正常双 take
     系统性误报成 video_span_mismatch / frame_mismatch（29 个 drop 集假阳性
-    的根因，见 G:\ab 判定单）。没有视频元数据时返回空列表。
+    的根因，复盘见 kaggle_ab/results.md）。没有视频元数据时返回空列表。
     """
     if hasattr(dataset, "episode_segments"):
         segments = dataset.episode_segments(episode_index)
@@ -745,9 +745,9 @@ def _check_video_span(
 ) -> None:
     """视频时间窗跨度应与 episode 时长（frame_count/fps）一致。
 
-    多段/双 take episode 按段计量：Σ 各段窗口跨度 ≈ frame_count/fps。旧口径拿
-    单段窗口比全集时长，把正常双 take 系统性误报成 mismatch（29 个 drop 集
-    假阳性的根因之一）。段内的对不齐仍会被本规则按段抓出（每段跨度都进证据）。
+    多段/双 take episode 按段计量：Σ 各段窗口跨度 ≈ frame_count/fps（旧口径
+    拿单段窗口比全集时长，见 _video_windows 的误判复盘）。段内的对不齐仍会被
+    本规则按段抓出（每段跨度都进证据）。
     """
     if fps <= 0 or res.frame_count <= 0:
         return
@@ -904,8 +904,7 @@ def check_frame_mismatch(
 
         if all(s["window_valid"] for s in segs):
             # 按 take 量计量：Σ 各段窗口帧数 vs 全集行数。单段 locs 长度 1，
-            # 行为与旧口径一致；多段时旧口径拿单段窗口比全集行数，是双 take
-            # 假阳性 frame_mismatch 的根因。
+            # 行为与旧口径一致。
             seg_total = 0
             truncated = False
             for s in segs:

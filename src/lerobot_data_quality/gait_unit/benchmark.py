@@ -1,13 +1,15 @@
 """步态质检基准 harness：真实底片 + 随机注入缺陷（地面真值）→ 规则查全/误报可测量。
 
-三个部件：
-  inject_random     随机注入四类缺陷之一（frame_drop/duplicate_stamp/
-                    joint_limit/drift），返回 (clip, truth)——truth 是
-                    逐条地面真值（类型/目标关节/帧区间/参数）
-  _normalize        规则 findings 归一化为 (rule, target, runs)，
-                    骨长规则的 target 取子关节名
-  run_benchmark     对一批真实底片 × trials 注入 → 全规则 → 与真值匹配 →
-                    每类缺陷的查全率(recall) + 规则精度(precision) + 漏检清单
+公开入口：
+  inject_random       随机注入四类缺陷之一（frame_drop/duplicate_stamp/
+                      joint_limit/drift），返回 (clip, truth)——truth 是
+                      逐条地面真值（类型/目标关节/帧区间/参数）
+  benchmark_on_clip   单底片 × 一次注入 → 全规则 → 与真值匹配（单 k 版本）
+  run_benchmark       一批真实底片 × trials 注入 → recall_by_type / precision /
+                      按类别聚合；mad_ks 传多个 k 时一次注入、mad_jump 按 k
+                      各评一轮（四类缺陷中只有 drift 的检出依赖 k）
+  calibrate_bvh_categories  LAFAN1 全库逐类别的 mad_jump 本底报警率表
+                      （纯解析无 FK，供 profiles 分档与跨域对照）
 
 匹配定义（v1，刻意宽松并文档化）：
   - 真值条目 target = 受影响关节名（drift = 子树根关节，joints 列出全子树）；
@@ -16,6 +18,7 @@
     且帧区间有交叠
   - precision = 命中的 finding 数 / 总 finding 数；recall = 被命中的真值数 / 真值数
   - 单条 finding 同时命中多个真值时只计一次 TP
+  - 误报 = 未命中真值且底片基线解释不了的 finding（run_benchmark 内实现）
 
 不做的事（v1 边界）：
   - 空间规则（接触/腾空）不进基准——四类注入缺陷不触碰接触语义；
