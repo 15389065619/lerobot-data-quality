@@ -117,3 +117,36 @@ def test_index_page_and_unknown_camera(dashboard) -> None:
     with pytest.raises(urllib.error.HTTPError) as exc:
         _get(f"{base}/video/0/nonexistent.cam")
     assert exc.value.code == 404
+
+
+def test_episode_series_tolerates_null_cells(tmp_path: Path) -> None:
+    """action 列含整格 null（list 单元缺失）时曲线接口要降级为 null，
+    不能让 map(float, None) 抛 TypeError 使该 episode 的 API 请求无响应。"""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = build_dataset(tmp_path / "ds", {0: smooth_episode(N), 1: smooth_episode(N, offset=1)})
+    attach_video(root, {0: (0.0, N / FPS), 1: (N / FPS, 2 * N / FPS)})
+    path = root / "data" / "chunk-000" / "file-000.parquet"
+    table = pq.read_table(path)
+    action = table.column("action").to_pylist()
+    action[6] = None  # 偶数行：max_points=16 的均匀采样必然命中
+    idx = table.schema.get_field_index("action")
+    table = table.set_column(idx, table.schema.field(idx), pa.array(action, type=table.schema.field(idx).type))
+    pq.write_table(table, path)
+
+    state = DashboardState(root, None, max_points=16)
+    server = make_server(state, "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with _get(f"{base}/api/episode/0") as res:
+            data = json.load(res)  # 修复前这里抛 URLError（连接被重置）
+        null_rows = [i for i, v in enumerate(data["action"]) if v is None]
+        assert null_rows, "null 单元格应输出 null 而不是让请求失败"
+        assert any(v is not None for v in data["action"]), "其余采样点应正常输出"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

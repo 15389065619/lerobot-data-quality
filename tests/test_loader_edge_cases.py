@@ -298,3 +298,24 @@ def test_dirty_tasks_index_is_ignored(tmp_path):
 
     dataset = load_dataset(root)
     assert dataset.tasks == {0: "pick cube"}
+
+
+def test_discover_data_files_survives_file_gap(tmp_path):
+    """编号空洞（如 000、002 存在，001 丢失）只允许跳过一个文件，不能截断整个 chunk。
+
+    曾经的 bug：_has_next 被传入当前 fi 而不是 fi+1，not _has_next 恒真——
+    遇到第一个缺失编号就 break，002 及之后的文件全部静默丢失，glob 兜底又因
+    found 非空不触发。
+    """
+    from pipeline.loader import _discover_data_files
+
+    root = tmp_path / "ds"
+    (root / "data" / "chunk-000").mkdir(parents=True)
+    info = {
+        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+        "chunks_size": 1,
+    }
+    for fi in (0, 2):
+        (root / "data" / "chunk-000" / f"file-{fi:03d}.parquet").write_bytes(b"stub")
+    found = _discover_data_files(root, info)
+    assert [p.name for p in found] == ["file-000.parquet", "file-002.parquet"]

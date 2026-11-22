@@ -259,7 +259,12 @@ def main() -> int:
     if win["invalid"]:
         verdict["eval_windows"] = "FAIL"
     for gname, g in report["gates"].items():
-        if not gname.startswith("validator_") or not g.get("ok"):
+        if not gname.startswith("validator_"):
+            continue
+        if not g.get("ok"):
+            # validator 没跑成（子进程崩溃/超时/无报告）也是失败：判定层缺席
+            # 绝不能静默放过——docstring 约定「任何一层失败都以非零码退出」
+            verdict[gname] = f"FAIL（validator 未产出报告: {(g.get('error') or '')[-200:]}）"
             continue
         arm = gname[len("validator_"):]
         summary = g.get("summary") or {}

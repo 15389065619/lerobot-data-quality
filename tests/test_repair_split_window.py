@@ -433,3 +433,35 @@ def test_rewrite_tolerates_schema_difference_across_files(tmp_path):
     assert result.verification.get("episodes") == 2
     assert result.verification.get("frames") == 45
 
+
+
+def test_manual_clean_skips_unwritable_plan_items(tmp_path):
+    """读取失败 / meta 谎报长度的 plan 项要降级为「剔除 + 告警」并重编号，
+    不能让 _rebuild_videos / rewrite_episodes_meta 对缺失的 data_meta[new]
+    KeyError 使整次清洗 abort（OCR P1-7）。
+
+    场景：caller 直接给了 kept（清洗器也接受外部传入的保留清单），
+    ep0 的 split 段声明长度 999 远超实际 10 行。
+    """
+    from pipeline.cleaner.manual import manual_clean
+
+    root = build_dataset(tmp_path / "ds", {
+        0: smooth_episode(10, seed=1), 1: smooth_episode(10, offset=1.0, seed=2),
+    })
+    dataset = load_dataset(root)
+    split_plan = {0: [{"length": 999, "videos": {}}, {"length": 5, "videos": {}}]}
+
+    result, total_frames = manual_clean(
+        dataset, kept=[0, 1], out_root=tmp_path / "out", overwrite=True,
+        trim_plan={}, rebuild_ts=set(), repairs={}, split_plan=split_plan,
+    )
+    assert result.success
+    assert any("未能写入产物" in w for w in result.warnings)
+
+    # 段起点是累计声明长度，seg0 谎报 999 时两段都写不出 → ep0 整体剔除，
+    # ep1 重编号为 0；产物可读且编号连续（rewrite_info 依赖该假设）
+    out = load_dataset(tmp_path / "out")
+    assert [int(e) for e in out.episode_indices] == [0]
+    assert [int(n) for n in out.episodes["length"]] == [10]
+    assert total_frames == 10
+    assert result.episode_index_map == {1: 0}

@@ -285,3 +285,52 @@ def test_standalone_copies_parquet_without_pointcloud_column(dirty_dataset: Path
     assert pq.ParquetFile(copied).metadata.num_rows == extra_rows
     assert result.verification.get("ok"), result.verification
 
+
+
+def test_repair_all_points_filtered_falls_back_to_hold(tmp_path: Path):
+    """整帧点全被过滤（如 100% 越界）时不能写出 0 点空 cell：
+    修复必须保持 N 点不变的定长契约，修不出点就退回 hold-last-good/原值。"""
+    from pipeline.pointcloud.types import PointCloudDecision
+
+    frames = [_grid_cloud(seed=i) for i in range(8)]
+    oob = _grid_cloud(seed=30)
+    oob[:, 2] += 1000.0  # z 整体抬出固定工作空间：bounds 过滤后一无所剩
+    frames.append(oob)
+    root = _write_pc_dataset(tmp_path / "pc_oob", frames)
+    # 固定工作空间，避免自动包围盒被离群帧带偏（0.5/99.5 分位数不抗 1/9 的整帧偏移）
+    cfg = load_config(overrides={"pointcloud": {"workspace": {
+        "mode": "fixed", "lower": [-0.1, -0.1, -0.1], "upper": [0.5, 0.5, 0.1]}}})
+    validation = validate_pointcloud_dataset(root, cfg)
+    # 直接构造 repair 决策，聚焦 cleaner 的 0 点回退路径
+    decisions = {(0, 8): PointCloudDecision(
+        (0, 8), "repair", "error", ["pc_out_of_bounds"], repair_actions=["bounds"])}
+    result = clean_pointclouds(root, validation, decisions, tmp_path / "out", target_root=root)
+    assert result.success
+    assert any("修复后 0 点" in w for w in result.warnings)
+    cells = pq.read_table(root / "data" / "chunk-000" / "file-000.parquet",
+                          columns=[FEATURE]).column(FEATURE).to_pylist()
+    assert all(len(cell) == POINTS for cell in cells)
+
+
+def test_empty_cell_does_not_poison_hold_last_good(tmp_path: Path):
+    """空 cell（缺测/解析失败）落在无决策帧上时，不能被 np.isfinite 的空真
+    当成「最近好帧」——否则同 episode 后面的 drop 帧会占位成 0 点空 cell。"""
+    frames = [_grid_cloud(seed=i) for i in range(3)]
+    empty = np.zeros((0, DIM), dtype=np.float32)
+    sparse = _grid_cloud(seed=40)[:8]  # 8 < min_points(16) → drop
+    frames += [empty, _grid_cloud(seed=41), sparse]
+    root = _write_pc_dataset(tmp_path / "pc_empty", frames)
+    validation = validate_pointcloud_dataset(root, load_config())
+    decisions = decide(validation)
+    # 模拟 scan 与 clean 的文件集不一致 / 人工 override keep：空帧不在决策里
+    assert (0, 3) in decisions
+    decisions.pop((0, 3))
+    assert decisions[(0, 5)].disposition == "drop"
+
+    result = clean_pointclouds(root, validation, decisions, tmp_path / "out", target_root=root)
+    assert result.success
+    cells = pq.read_table(root / "data" / "chunk-000" / "file-000.parquet",
+                          columns=[FEATURE]).column(FEATURE).to_pylist()
+    # drop 帧（#5）必须拿到真实好帧占位，而不是被空 cell 污染成 0 点
+    assert len(cells[5]) == POINTS
+    assert any("使用同 episode 最近好帧占位" in w and "帧 5" in w for w in result.warnings)

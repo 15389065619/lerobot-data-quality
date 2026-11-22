@@ -478,3 +478,40 @@ def test_streaming_stats_matches_numpy():
     assert np.allclose(out["std"], data.std(axis=0), atol=1e-5)
     for q, name in ((0.01, "q01"), (0.5, "q50"), (0.99, "q99")):
         assert np.allclose(out[name], np.quantile(data, q, axis=0), atol=1e-5)
+
+
+def _decision_for(res):
+    from pipeline.validator.types import ValidationResult
+
+    validation = ValidationResult(
+        total_episodes=1, results={res.episode_index: res},
+        config=load_config(robot_type="test_robot"),
+        fps=30.0, dataset_root="",
+    )
+    return policy_mod.decide(validation)[res.episode_index]
+
+
+def test_trim_branch_requires_all_nan_trimmable():
+    """边界 + 中段 NaN 混合时不能走 trim：中段裁不掉，trim_plan 只累计
+    trimmable 项，放行会让中段 NaN 帧原样进入清洗产物（loss 直接 NaN）。"""
+    from pipeline.validator.types import EpisodeResult, ValidationResult
+
+    mixed = EpisodeResult(episode_index=0, frame_count=40)
+    mixed.add("nan_state", trimmable=True, head_frames=3, tail_frames=0)
+    mixed.add("nan_action", trimmable=False)
+    d = _decision_for(mixed)
+    assert d.disposition == "drop"
+    assert d.repair is None
+
+
+def test_trim_branch_when_all_nan_trimmable():
+    """两个 nan 码的坏帧都在边界时仍走 trim（head/tail 取各码并集）。"""
+    from pipeline.validator.types import EpisodeResult
+
+    both = EpisodeResult(episode_index=0, frame_count=40)
+    both.add("nan_state", trimmable=True, head_frames=2, tail_frames=0)
+    both.add("nan_action", trimmable=True, tail_frames=1)
+    d = _decision_for(both)
+    assert d.disposition == "repair"
+    assert d.repair == "trim"
+    assert d.trim == {"head_frames": 2, "tail_frames": 1}

@@ -66,10 +66,29 @@ def manual_clean(
     )
 
     # 2) 重写 data parquet（含拆分、裁帧、时间轴重建）
-    data_meta, stats_acc, kept_lengths = _rewrite_frames(
+    data_meta, stats_acc, kept_lengths, renumber = _rewrite_frames(
         dataset, output_plan, out_root, trim_plan=trim_plan, rebuild_ts=rebuild_ts,
         split_plan=split_plan,
     )
+
+    # 2.5) 收缩输出计划：读取失败 / 段超行数 / 裁到空的 plan 项不会出现在产物里。
+    # 不收缩的话 _rebuild_videos 与 rewrite_episodes_meta 会对缺失的
+    # kept_lengths[new] / data_meta[new] 直接 KeyError，让整次清洗 abort——
+    # 该集本可降级为「跳过 + 告警」。重编号保持 new 连续（rewrite_info 的假设）。
+    if len(renumber) != len(output_plan):
+        for it in output_plan:
+            if int(it["new"]) not in renumber:
+                warnings.append(
+                    f"episode old={it['old']}（计划输出编号 {it['new']}）未能写入产物"
+                    "（数据行缺失或 meta 谎报长度），已剔除"
+                )
+        output_plan = [
+            dict(it, new=renumber[int(it["new"])])
+            for it in output_plan if int(it["new"]) in renumber
+        ]
+        # windows 以计划编号为键：重映射到实际编号，避免对已剔除集重建窗口
+        windows = {renumber[int(k)]: v for k, v in windows.items() if int(k) in renumber}
+        LOG.warning("输出计划收缩，剩余 %d 个待写 episode", len(output_plan))
 
     # 3) 重建视频
     new_video_meta, video_warnings = _rebuild_videos(
@@ -517,10 +536,7 @@ def _rewrite_frames(
     template = DEFAULT_DATA_PATH
     fps = dataset.fps or 30.0
     kept_set = {int(item["old"]) for item in output_plan}
-    rebuild_new = {
-        int(item["new"]) for item in output_plan
-        if int(item["old"]) in (set(rebuild_ts) | set(trim_plan) | set(split_plan))
-    }
+    rebuild_causes = set(rebuild_ts) | set(trim_plan) | set(split_plan)
     feature_keys = collect_feature_keys(dataset)
     stats_acc = StreamingStats(feature_shapes={
         key: tuple((dataset.features.get(key) or {}).get("shape") or [])
@@ -531,6 +547,11 @@ def _rewrite_frames(
     row_index = _episode_row_index(source_files, kept_set)
 
     data_meta: dict[int, dict[str, Any]] = {}
+    # 计划编号 -> 实际写入编号：读取失败/段超行数/裁到空的 plan 项会被跳过，
+    # 跳过项不占号，保证产物编号连续 0..M-1（rewrite_info 依赖该假设）；
+    # 调用方按 renumber 收缩 output_plan 并重映射视频窗口
+    renumber: dict[int, int] = {}
+    next_new = 0
     pending: list[pa.Table] = []
     pending_rows = 0
     file_index = 0
@@ -559,7 +580,7 @@ def _rewrite_frames(
 
     for item in output_plan:
         old = int(item["old"])
-        new = int(item["new"])
+        plan_new = int(item["new"])
         if old not in row_index:
             LOG.warning("episode %s 在 data 中不存在，跳过", old)
             continue
@@ -596,6 +617,11 @@ def _rewrite_frames(
                         old, frame.num_rows, length)
             continue
 
+        # 通过全部校验后才占号：实际写入编号连续，且与产物 data parquet 一致
+        new = next_new
+        next_new += 1
+        renumber[plan_new] = new
+
         if pending and pending_rows + length > rows_per_file:
             flush()
         target_file = file_index
@@ -604,7 +630,7 @@ def _rewrite_frames(
         frame = set_column(frame, "episode_index", np.full(length, new, dtype=np.int64))
         frame = set_column(frame, "frame_index", frame_idx)
         frame = set_column(frame, "index", index_values)
-        if new in rebuild_new:
+        if old in rebuild_causes:
             if "timestamp" in frame.column_names:
                 ts = np.asarray(frame.column("timestamp").to_pylist(), dtype=np.float64)
             else:
@@ -628,7 +654,7 @@ def _rewrite_frames(
     flush()
     kept_lengths = {ep: int(m["length"]) for ep, m in data_meta.items()}
     LOG.info("data parquet 重写完成：%d 个文件 / %d 行", file_index, global_index)
-    return data_meta, stats_acc, kept_lengths
+    return data_meta, stats_acc, kept_lengths, renumber
 
 
 def _rebuild_videos(

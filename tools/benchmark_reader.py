@@ -46,6 +46,16 @@ class _PeakRSS(threading.Thread):
         self._stop_event = threading.Event()
         self._process = None
 
+    def start(self) -> None:
+        # 线程内 import 失败只会静默死亡：peak 停在 0，表格照常打印
+        # peak 0 / delta 0，基准工具输出伪造读数。启动前显式探测，
+        # 缺依赖时立刻报错（与 _read_duckdb 对 duckdb 的处理一致）
+        try:
+            import psutil  # noqa: F401
+        except ImportError as exc:
+            raise SystemExit("未安装 psutil（RSS 采样依赖）：python -m pip install psutil") from exc
+        super().start()
+
     def run(self) -> None:
         import psutil
 

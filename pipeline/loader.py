@@ -847,7 +847,11 @@ def _discover_data_files(root: Path, info: dict) -> list[Path]:
             path = root / rel
             if path.is_file():
                 found.append(path)
-            elif fi > 0 and not _has_next(root, tmpl, ci, fi):
+            elif not _has_next(root, tmpl, ci, fi + 1):
+                # 当前编号缺失，且下一个编号也不存在，才认为本 chunk 到底。
+                # 之前误传 fi（当前文件本身，刚确认不存在），not _has_next 恒真——
+                # 遇到第一个编号空洞（如 000、001、003 丢了 002）就 break，
+                # 003 之后的文件全部静默丢失，glob 兜底又因 found 非空不触发。
                 break
     if not found:
         found = sorted((root / "data").rglob("*.parquet")) if (root / "data").is_dir() else []
@@ -1367,11 +1371,17 @@ def iter_frame_chunks(
     dataset: LeRobotDatasetView,
     columns: list[str] | None = None,
     episodes: Iterator[int] | list[int] | set[int] | None = None,
+    corrupted: list[dict[str, str]] | None = None,
 ) -> Iterator[pd.DataFrame]:
     """按 data/*.parquet 分片顺序逐块产出帧数据（流式模式使用）。
 
     只读当前文件需要的列，内存峰值约等于单个 parquet 文件；episodes 非空时
     借助 pyarrow 的 row-group filter 只取这些 episode 的行。
+
+    毒数据防冲击（与内存路径 _read_frames 同口径）：传入 corrupted 列表时，
+    单个文件损坏不再抛 DatasetFormatError 中断整次扫描，而是记录
+    {"file", "error"} 后跳过——其中的 episode 由调用方按
+    「meta 有记录但没读到行」兜底标记 episode_read_error。
     """
     wanted: list[str] | None = None
     if columns is not None:
@@ -1388,8 +1398,11 @@ def iter_frame_chunks(
                 file_wanted = [c for c in wanted if c in names]
             except Exception:  # noqa: BLE001 - schema 读不出来时让 read_table 报错
                 pass
+        # 下推过滤只对整数 episode_index 列安全：字符串/浮点列与整数白名单
+        # 比较永不命中（数据集看起来变空），与内存路径 _read_frames 口径一致
+        pushdown = keep is not None and _episode_index_is_integer(path)
         try:
-            if keep is not None:
+            if pushdown:
                 try:
                     table = pq.read_table(path, columns=file_wanted, filters=[("episode_index", "in", sorted(keep))])
                 except Exception:  # noqa: BLE001 - 老版本 pyarrow 不支持 filter
@@ -1397,12 +1410,19 @@ def iter_frame_chunks(
             else:
                 table = pq.read_table(path, columns=file_wanted)
         except Exception as exc:  # noqa: BLE001
-            raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
+            if corrupted is None:
+                raise DatasetFormatError(f"读取 parquet 失败: {path} -> {exc}") from exc
+            LOG.error("数据分片损坏，已跳过（其中 episode 将标记 episode_read_error）: %s -> %s",
+                      path.name, exc)
+            corrupted.append({"file": str(path), "error": str(exc)})
+            continue
         df = table.to_pandas()
         if df.empty:
             continue
         if keep is not None and "episode_index" in df.columns:
-            df = df[df["episode_index"].isin(keep)]
+            # 类型归一必须在白名单过滤之前：字符串列与整数 keep 比较永不命中，
+            # 先过滤会把所有帧静默丢光（--max_episodes 下数据集看起来是空的）
+            df = df[pd.to_numeric(df["episode_index"], errors="coerce").isin(keep)]
             if df.empty:
                 continue
         df[SOURCE_COL] = str(path)

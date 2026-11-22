@@ -144,6 +144,19 @@ def decide(
     return decisions
 
 
+def _nan_all_trimmable(res: EpisodeResult) -> bool:
+    """trim 分支的前置校验：所有 nan 坏帧都必须落在边界（可裁剪）。
+
+    trim_plan() 只累计 trimmable=True 项的 head/tail，不检查其余项——若中段
+    还混着裁不掉的 NaN 帧而放行 trim，cleaner 按首尾切片后中段 NaN 帧会原样
+    进入清洗产物（训练 loss 直接 NaN）。这种情况按硬损坏处理，宁可不救。
+    """
+    for code in ("nan_state", "nan_action"):
+        if code in res.reasons and not (res.details.get(code) or {}).get("trimmable"):
+            return False
+    return True
+
+
 def _decide_one(
     res: EpisodeResult,
     validation: ValidationResult,
@@ -156,7 +169,7 @@ def _decide_one(
 
     # 1) 边界坏帧优先裁剪（最常见、最值得救的情况）
     trim = res.trim_plan()
-    if trim and set(res.reasons) <= {"nan_state", "nan_action"}:
+    if trim and set(res.reasons) <= {"nan_state", "nan_action"} and _nan_all_trimmable(res):
         d = Decision(res.episode_index, "repair", severity, list(res.reasons),
                      f"裁掉首{trim['head_frames']}帧/尾{trim['tail_frames']}帧后保留",
                      repair="trim", trim=trim)

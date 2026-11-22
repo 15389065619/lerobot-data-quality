@@ -134,9 +134,21 @@ def clean_pointclouds(
                         pts = to_matrix(cell)
                         if k in decisions and decisions[k].disposition == "repair":
                             new_pts, removed, added = repair_frame(pts, decisions[k], ctx)
+                            if not new_pts.shape[0]:
+                                # 整帧点全被过滤（如 100% 越界——坏点比例上限不含
+                                # outside_ratio，整帧越界仍判 repair）：修不出任何点，
+                                # 退回 hold-last-good / 原值，避免写出 0 点空 cell
+                                # 破坏「修复后保持 N 点不变」的定长契约
+                                good = last_good.get(int(ep))
+                                new_pts = good if good is not None and good.shape[0] else pts
+                                removed = 0
+                                added = 0
+                                why = "使用同 episode 最近好帧占位" if new_pts is not pts else "保留原值"
+                                result.warnings.append(f"ep {ep} 帧 {fi} 修复后 0 点，{why}")
+                            else:
+                                last_good[int(ep)] = new_pts
                             added_points += added
                             removed_points += removed
-                            last_good[int(ep)] = new_pts
                             new_cells.append(to_nested(new_pts))
                         elif k in decisions and decisions[k].disposition == "drop":
                             good = last_good.get(int(ep))
@@ -147,7 +159,12 @@ def clean_pointclouds(
                                 new_cells.append(to_nested(good))
                                 result.warnings.append(f"ep {ep} 帧 {fi} 不可修复，使用同 episode 最近好帧占位")
                         else:
-                            last_good[int(ep)] = pts if np.isfinite(pts).all() else last_good.get(int(ep), pts)
+                            # 空矩阵的 np.isfinite().all() 是空真——先判 size，
+                            # 否则 None/解析失败的 cell 会被当成「好帧」污染占位
+                            last_good[int(ep)] = (
+                                pts if pts.size and np.isfinite(pts).all()
+                                else last_good.get(int(ep), pts)
+                            )
                             new_cells.append(to_nested(pts))
                     icol = batch.schema.get_field_index(key)
                     new_col = pa.array(new_cells, type=field.type)
@@ -174,7 +191,11 @@ def clean_pointclouds(
 
     result.removed_points = removed_points
     result.added_points = added_points
-    if dst_root != src_root:
+    # meta 只在 standalone（自行建目录）时从源复制。patch 模式（target_root 指向
+    # 主清洗器产出的 cleaned_dataset）下产物已有自己的 meta——主清洗器重建的
+    # episodes（已删集不能写回）、重算的 stats.json；从脏源 copy_meta 会把它们
+    # 全部冲掉，产物 meta 与 data 直接不一致。
+    if not target_root:
         copy_meta(src_root, dst_root)
     result.stats_updated = _rewrite_pointcloud_stats(dst_root, key, validation.config)
     _attach_samples(result, validation, decisions, src_root, key, ctx, limit=5, repaired=repaired)

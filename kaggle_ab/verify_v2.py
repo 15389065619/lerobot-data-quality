@@ -181,6 +181,12 @@ def main() -> int:
                 verdict[f"validator_{name}"] = "PASS（0 非 keep）" if non_keep == 0 \
                     else f"FAIL（{non_keep} 个非 keep）"
                 print(f"[validator {name}] disposition={disp}")
+            else:
+                # validator 没跑成（子进程崩溃/超时/无报告）也是失败：判定层缺席
+                # 不能让其余各层全 PASS 时静默返回 0
+                verdict[f"validator_{name}"] = \
+                    f"FAIL（validator 未产出报告: {(g.get('error') or '')[-200:]}）"
+                print(f"[validator {name}] 未产出报告，判 FAIL")
 
     report["verdict"] = verdict
     report_path = dump_json(OUT / "verify_report_v2.json", report)

@@ -229,12 +229,19 @@ class DashboardState:
                          "state": [], "state_names": []})
             return meta
 
-        def to_vectors(key: str) -> tuple[list[list[float]], list[str]]:
+        def to_vectors(key: str) -> tuple[list[list[float] | None], list[str]]:
             if key not in df.columns:
                 return [], []
             raw = df.iloc[idx][key].tolist()
-            arr = [list(map(float, row)) for row in raw]
-            return arr, _feature_names(self.dataset.features, key, len(arr[0]) if arr else 0)
+            # 整格 null（list 单元为 None）→ 该采样点输出 null，曲线在此断开，
+            # 与 _finite 把 NaN 转 null 的口径一致；不能让 map(float, None)
+            # 抛 TypeError 导致该 episode 的 API 请求无响应
+            arr: list[list[float] | None] = [
+                [float(x) for x in row] if row is not None else None
+                for row in raw
+            ]
+            widths = [len(v) for v in arr if v]
+            return arr, _feature_names(self.dataset.features, key, widths[0] if widths else 0)
 
         action, action_names = to_vectors("action")
         state, state_names = to_vectors("observation.state")
@@ -300,12 +307,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._route(head=False)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as exc:  # noqa: BLE001 - 处理异常回 JSON 错误，不让连接直接断
+            LOG.exception("处理请求失败: %s", self.path)
+            try:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"internal error: {exc}")
+            except Exception:  # noqa: BLE001 - 响应头已发出时只能放弃
+                pass
 
     def do_HEAD(self) -> None:  # noqa: N802
         try:
             self._route(head=True)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as exc:  # noqa: BLE001
+            LOG.exception("处理请求失败: %s", self.path)
+            try:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"internal error: {exc}")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _route(self, head: bool) -> None:
         path = unquote(urlparse(self.path).path)

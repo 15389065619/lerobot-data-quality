@@ -12,6 +12,8 @@
 
   Pass 2（逐 episode 规则）
     - 直接复用内存模式的 `_validate_non_video`，保证规则与严重度完全一致
+    - 跨 parquet 文件的 episode 先聚合全部分片再整体校验（Pass 1 顺便统计，
+      零额外 IO）；单文件 episode 占绝大多数，保持「读一个校一个」的流式路径
     - 同时累计 frames_by_episode 与 state/action 的 min/max/mean/NaN/Inf
     - 最后统一跑视频探针（仍有界并发）
 
@@ -78,7 +80,7 @@ def validate_dataset_streaming(
 ) -> ValidationResult:
     """与 validate_dataset 同签名的流式实现（入参语义一致）。"""
     # 避免与包 __init__ 循环导入：运行期再取共享的逐 episode 实现
-    from . import _refresh_duplicate, _run_video_checks, _validate_non_video
+    from . import _corrupted_episode_map, _refresh_duplicate, _run_video_checks, _validate_non_video
 
     config = config or load_config(robot_type=dataset.info.get("robot_type"))
     columns = set(dataset.column_names)
@@ -100,7 +102,10 @@ def validate_dataset_streaming(
         skipped["missing_task"] = why
 
     stream_eps = _streamed_episodes(dataset)
-    ctx, skipped_extra = _build_context(dataset, config, columns, stream_eps=stream_eps)
+    corrupted: list[dict[str, str]] = []
+    ctx, skipped_extra, spanning = _build_context(
+        dataset, config, columns, stream_eps=stream_eps, corrupted=corrupted
+    )
     skipped.update(skipped_extra)
 
     cameras = dataset.video_features[: int(cfg_get(config, "probe.max_cameras", 3))]
@@ -114,9 +119,14 @@ def validate_dataset_streaming(
     field_stats = _FieldStats([key for key in (STATE_KEY, ACTION_KEY) if key in columns])
     pending_video: list[tuple[EpisodeResult, int, bool]] = []
     reused = 0
+    # 跨文件 episode 的行分散在多个分片，先聚合（只缓冲这几个集的行），
+    # 循环结束后整体校验——否则末分片的结论会覆盖前面的：帧数错位会误报
+    # frame_count_abnormal（hard-drop，误杀合法集），前分片检出的缺陷静默丢失
+    spanning_buf: dict[int, list[pd.DataFrame]] = {}
 
     pass2_columns = [c for c in PASS2_COLUMNS if c in columns]
-    for chunk in iter_frame_chunks(dataset, columns=pass2_columns, episodes=stream_eps):
+    for chunk in iter_frame_chunks(dataset, columns=pass2_columns, episodes=stream_eps,
+                                   corrupted=corrupted):
         if "episode_index" not in chunk.columns:
             raise DatasetFormatError("data/*.parquet 缺少 episode_index 列，无法按 episode 质检")
         field_stats.update(chunk)
@@ -128,6 +138,10 @@ def validate_dataset_streaming(
             if "frame_index" in ep_df.columns:
                 ep_df = ep_df.sort_values("frame_index", kind="stable")
             frames_by_episode[ep_index] = frames_by_episode.get(ep_index, 0) + int(len(ep_df))
+
+            if ep_index in spanning:
+                spanning_buf.setdefault(ep_index, []).append(ep_df)
+                continue
 
             if revalidate is not None and ep_index not in revalidate and prior and ep_index in prior:
                 res = EpisodeResult.from_dict(prior[ep_index].to_dict())
@@ -146,8 +160,52 @@ def validate_dataset_streaming(
             want_blank = blank_enabled and len(pending_video) < max_probes
             pending_video.append((res, ep_index, want_blank))
 
+    # 跨文件 episode：聚合后按全集行校验，结论只出一次（帧数为全集口径）
+    for ep_index in sorted(spanning_buf):
+        parts = spanning_buf[ep_index]
+        ep_df = parts[0] if len(parts) == 1 else pd.concat(parts, ignore_index=True)
+        if "frame_index" in ep_df.columns:
+            ep_df = ep_df.sort_values("frame_index", kind="stable")
+        if revalidate is not None and ep_index not in revalidate and prior and ep_index in prior:
+            res = EpisodeResult.from_dict(prior[ep_index].to_dict())
+            _refresh_duplicate(res, ep_df, ctx, config)
+            results[ep_index] = res
+            reused += 1
+            continue
+        try:
+            res = _validate_non_video(ep_df, ep_index, dataset, ctx, config, skipped)
+        except Exception as exc:  # noqa: BLE001 - 与内存模式一致：单集失败不中断整体
+            LOG.exception("episode %d 质检过程异常，已标记 episode_read_error 并跳过", ep_index)
+            res = EpisodeResult(episode_index=ep_index, frame_count=int(len(ep_df)))
+            res.add("episode_read_error", error=str(exc))
+        results[ep_index] = res
+        want_blank = blank_enabled and len(pending_video) < max_probes
+        pending_video.append((res, ep_index, want_blank))
+
     if bad_episode_rows:
         LOG.warning("流式质检跳过 %d 行 episode_index 非法的数据", bad_episode_rows)
+
+    # 损坏分片登记到视图，供 _corrupted_episode_map 反查受影响 episode（与内存模式同口径）；
+    # 同一文件在 Pass 1 / Pass 2 都会被记录，按文件去重
+    if corrupted and not dataset.corrupted_files:
+        unique = {item["file"]: item for item in corrupted}
+        dataset.corrupted_files.extend(unique.values())
+
+    # 损坏文件 / 行缺失兜底（与内存模式一致）：meta 中存在但没读到任何帧的
+    # episode 不静默消失，直接标 episode_read_error 进入处置流程
+    missing_eps = [ep for ep in dataset.episode_indices if ep not in results]
+    if missing_eps:
+        corrupted_map = _corrupted_episode_map(dataset)
+        for ep_index in missing_eps:
+            info = corrupted_map.get(ep_index) or {}
+            res = EpisodeResult(episode_index=ep_index, frame_count=0)
+            res.add("episode_read_error",
+                    file=info.get("file"),
+                    error=info.get("error") or "meta/episodes 中存在但没有任何数据行")
+            results[ep_index] = res
+        results = dict(sorted(results.items()))
+        LOG.error("%d 个 episode 因数据损坏/缺失无法质检: %s", len(missing_eps), missing_eps)
+
     _run_video_checks(pending_video, dataset, cameras, precise, config)
     if reused:
         LOG.info("增量质检：复用 %d 个 episode 的历史结论，重检 %d 个", reused, len(results) - reused)
@@ -184,11 +242,17 @@ def _build_context(
     config: dict[str, Any],
     columns: set[str],
     stream_eps: list[int] | None = None,
-) -> tuple[Any, dict[str, str]]:
-    """第一遍扫描：阈值、stats 时效、index 连续性、重复指纹。"""
+    corrupted: list[dict[str, str]] | None = None,
+) -> tuple[Any, dict[str, str], set[int]]:
+    """第一遍扫描：阈值、stats 时效、index 连续性、重复指纹。
+
+    顺便统计每个 episode 出现在几个 parquet 文件里——跨文件 episode 在
+    Pass 2 必须聚合后整体校验，Pass 1 反正逐文件扫全量行，这里的统计零额外 IO。
+    """
     from .context import DatasetContext
 
     skipped: dict[str, str] = {}
+    file_count: dict[int, int] = {}
     sample_limit = max(1, int(cfg_get(config, "streaming.action_sample_episodes", 200)))
     action_sample = set(dataset.episode_indices[:sample_limit])
 
@@ -217,10 +281,17 @@ def _build_context(
         c for c in PASS1_COLUMNS
         if c in columns and (c != STATE_KEY or read_state)
     ]
-    for chunk in iter_frame_chunks(dataset, columns=pass1_columns, episodes=stream_eps):
+    for chunk in iter_frame_chunks(dataset, columns=pass1_columns, episodes=stream_eps,
+                                   corrupted=corrupted):
         if "episode_index" not in chunk.columns:
             raise DatasetFormatError("data/*.parquet 缺少 episode_index 列，无法按 episode 质检")
         rows += int(len(chunk))
+
+        # 跨文件 episode 统计：一个 chunk 恰好对应一个 parquet 文件
+        for raw_ep in chunk["episode_index"].unique():
+            ep = _episode_key(raw_ep)
+            if ep is not None:
+                file_count[ep] = file_count.get(ep, 0) + 1
 
         if "index" in chunk.columns:
             idx = pd.to_numeric(chunk["index"], errors="coerce").to_numpy(dtype=float)
@@ -341,16 +412,24 @@ def _build_context(
             int(cfg_get(config, "video_frame_tolerance", 1)), config, dataset.fps
         ),
     }
-    LOG.info(
-        "流式第一遍完成：%d 行 / %d 个 episode，action 阈值采样 %d 个 episode",
-        rows, len(counts), len(action_parts),
-    )
+    spanning = {ep for ep, n in file_count.items() if n > 1}
+    if spanning:
+        LOG.info(
+            "流式第一遍完成：%d 行 / %d 个 episode，action 阈值采样 %d 个 episode"
+            "（跨文件 episode %d 个，Pass 2 将聚合后整体校验）",
+            rows, len(counts), len(action_parts), len(spanning),
+        )
+    else:
+        LOG.info(
+            "流式第一遍完成：%d 行 / %d 个 episode，action 阈值采样 %d 个 episode",
+            rows, len(counts), len(action_parts),
+        )
     return DatasetContext(
         frame_bounds, action_thresholds, fingerprints, issues, resolved,
         state_thresholds=state_thresholds,
         action_dim_names=dataset.feature_names(ACTION_KEY) or None,
         state_dim_names=dataset.feature_names(STATE_KEY) or None,
-    ), skipped
+    ), skipped, spanning
 
 
 def _fingerprint(arr: np.ndarray | None, decimals: int) -> str | None:
