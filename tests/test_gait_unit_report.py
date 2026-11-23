@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lerobot_data_quality.gait_unit.report import run_gait_report
+from verticals.gait_unit.report import run_gait_report
 
 REAL_URDF = Path("data/external/g1_description/g1_29dof.urdf")
 REAL_LIMITS = Path("config/g1_29dof_limits.json")
@@ -77,7 +77,7 @@ def test_report_rules_run_on_motion(tmp_path):
     src = _build_tree(tmp_path)
     report = run_gait_report(src, tmp_path / "r2.json", urdf=REAL_URDF,
                              limits_path=REAL_LIMITS)
-    from lerobot_data_quality.gait_unit.limits import load_g1_limits
+    from verticals.gait_unit.limits import load_g1_limits
     limits_table = set(load_g1_limits(REAL_LIMITS).keys())  # 通道名（dof_*（rad））
     ep = next(e for e in report["episodes"] if e["file"].endswith("ep_default.csv"))
     # 空间规则跑过（FK 成功）：足端接触占比存在、腾空规则有键

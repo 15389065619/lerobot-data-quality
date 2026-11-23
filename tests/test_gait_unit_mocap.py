@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lerobot_data_quality.gait_unit.adapters import load_motiondecode_csv
-from lerobot_data_quality.gait_unit.motion import MotionClip, validate_motion
-from lerobot_data_quality.gait_unit.qc_rules import (
+from verticals.gait_unit.adapters import load_motiondecode_csv
+from verticals.gait_unit.motion import MotionClip, validate_motion
+from verticals.gait_unit.qc_rules import (
     rule_constant_channel,
     rule_mad_jump,
     rule_nan_runs,

@@ -2,10 +2,47 @@
 
 ![CI](https://github.com/15389065619/lerobot-data-quality/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![tests](https://img.shields.io/badge/tests-429%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-439%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 本地 LeRobot 数据集的质检、分级处置、报告、清洗与可视化工具。支持 v3.0 和 v2.1 布局，输入 parquet + mp4（可选点云），输出可训练的数据集、逐 episode 的报告和可复核的队列。仓库里没有训练代码。
+
+> 面向机器人模仿学习的数据治理引擎。它不训练模型，只回答三个问题：这份数据能不能训、怎么修、修完值多少。
+
+## 三层结构
+
+**1. Core Engine — 单机可跑、内存可控**
+
+- 自适应阈值（median ± k·MAD），四档处置 keep / repair / review / drop，能用修复解决的不删数据
+- 流式读取（`--streaming`）按 parquet 分片扫描，不把逐帧表读进内存；点云按 batch 流式处理
+- L0 预检（秒级，只读 meta）与 L1 全量质检分级拦截；`precheck()` 可接 CI，退出码 0 通过 / 2 阻断
+- 并发与串行结论逐位一致；`--incremental` 用 manifest 复用已算结论
+
+**2. High Extensibility — 与主线零依赖的适配层**
+
+- `adapters/`：ROS Bag（`.bag` / rosbag2 / `.mcap`）、FZMotion 动捕 CSV、MotionDecode G1 轨迹 CSV
+- `verticals/gait_unit/`：光捕第二产线（两级 IR + 三层 Tier + LAFAN1 校准），独立演进
+- 适配器只负责把异构数据读成帧表，缺陷不在加载层裁决，统一交给下游规则
+
+**3. Closed-loop Evaluation — 结论用实验说话**
+
+- Kaggle 上训练 SmolVLA 做 A/B：完整清洗臂 vs 最小修复臂，同 epoch 差 −0.021（t=−5.45）
+- 多 seed 三臂复验（−0.0199 ± 0.0023）与窗口级 DiD（−0.046，t=−3.76）交叉验证
+- 实验推翻了"结构异常就该丢弃"的初始政策，改为 repair-not-drop；439 个单测守住每次改动不回归
+
+## 目录结构
+
+```
+main.py                 # CLI 入口
+pipeline/               # Core Engine：loader / validator / cleaner / policy / versions
+adapters/               # 可选数据源适配（rosbag / fzmotion / motiondecode）
+verticals/gait_unit/    # 光捕第二产线（独立子系统）
+ui/                     # Web Dashboard
+evaluation/             # A/B、DiD、多 seed 复验、论文图表
+tests/                  # 439 个单测
+artifacts/              # 运行产物（gitignore，可随时重跑）
+```
 
 ![架构动图](docs/architecture.gif)
 
@@ -106,14 +143,14 @@ docker run --rm \
 
 ## 上游数据源适配
 
-`src/lerobot_data_quality/` 附带三个可选适配器，与 `pipeline/` 主线零依赖，不用则行为不变。输出与 LeRobot 帧表同构，缺陷不在加载层裁决：NaN、丢帧、时间戳缺口原样进帧表，交给下游规则统一标记。
+`adapters/` 附带三个可选适配器，与 `pipeline/` 主线零依赖，不用则行为不变。输出与 LeRobot 帧表同构，缺陷不在加载层裁决：NaN、丢帧、时间戳缺口原样进帧表，交给下游规则统一标记。
 
 - **ROS Bag**：rosbags 纯 Python 解析 `.bag` / rosbag2 / `.mcap`（无需 ROS 环境），`/joint_states` 与相机 topic 最近邻对齐到同一时间轴。`pip install lerobot-data-quality[rosbag]`
 - **FZMotion 动捕 CSV**：长表（timestamp, marker_id, x, y, z）转宽表帧表，缺 marker 补 NaN
 - **MotionDecode（青瞳视觉）G1 轨迹 CSV**：宽表（root 位姿 + 29 DOF，无显式时间戳）转帧表，120 FPS 按 frame_index/fps 补时间戳
 
 ```python
-from lerobot_data_quality.loaders import RosbagAdapter
+from adapters import RosbagAdapter
 
 df = RosbagAdapter("examples/rosbag_sim/episode_000.bag").to_dataframe()
 # 乱序排序恢复、重复时间戳去重（均留 warning）；相机丢帧窗口的 camera_timestamp 为 NaN，缺口不插值
@@ -123,7 +160,7 @@ df = RosbagAdapter("examples/rosbag_sim/episode_000.bag").to_dataframe()
 
 ## 步态/光捕质检（gait_unit 第二产线）
 
-`src/lerobot_data_quality/gait_unit/` 是与主线零依赖的第二产线，处理光学动作捕捉数据——没有视频，是关节角随时间的数值轨迹（厂商重定向 CSV、BVH 等）。两级 IR（通道级 MotionClip / 骨骼级 GaitClip）、四个数据源适配器、三层 Tier 规则（通道 → 关节限位 → 空间/接触）。
+`verticals/gait_unit/` 是与主线零依赖的第二产线，处理光学动作捕捉数据——没有视频，是关节角随时间的数值轨迹（厂商重定向 CSV、BVH 等）。两级 IR（通道级 MotionClip / 骨骼级 GaitClip）、四个数据源适配器、三层 Tier 规则（通道 → 关节限位 → 空间/接触）。
 
 验证链：LAFAN1 全库 77 段建立本底报警率校准表（按动作类别，push 8.6‰ → jumps 45.3‰）；385 次缺陷注入基准（precision 全类别 1.0）；chingmu/古典舞真实数据泛化验证（dance 跨域复用 ✓，jumps 14 倍偏差 → 校准需分域）。已知边界：joint_limit 粗探针查全按类别 0.0–0.667；mad_jump 在双峰通道上有语义盲区（滑动窗口 MAD 入改进清单）。数字与判读见 [docs/EVAL.md §12–§13](docs/EVAL.md)。
 
@@ -132,7 +169,7 @@ df = RosbagAdapter("examples/rosbag_sim/episode_000.bag").to_dataframe()
 ### Web Dashboard
 
 ```bash
-python tools/dashboard_server.py --dataset_path demo_dataset --output_dir outputs --open
+python ui/dashboard_server.py --dataset_path demo_dataset --output_dir outputs --open
 ```
 
 左侧按处置档位过滤 episode，右侧看 action / state 多维曲线与视频片段（支持拖动预览）。纯标准库 `http.server`，不引入 Web 框架。
@@ -174,7 +211,7 @@ python -m pipeline.tuning --report outputs/quality_report.json \
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 .venv/Scripts/pip install -r requirements-dev.txt      # 开发/测试
-python -m pytest tests                                  # 429 个单测
+python -m pytest tests                                  # 439 个单测
 ```
 
 未上传 PyPI，用 `pip install -e .` 从源码安装（提供 `lerobot-data-quality` 等 console 命令）。
@@ -242,11 +279,11 @@ outputs/
 | 真实数据集编号错位 | behavior1k_task0042：14 GB / 200 ep / 128 万帧 | meta 全局 ID 对 data 0..N-1，修复前 200/200 error、建议删光；自动对齐后保留 195 / 复核 5 / 剔除 0，实测视频与 state 逐条对齐 |
 | 19 个数据集审计 | v3.0 / v2.1 混合，5855 ep | 17 个仓库原有 + 2 份 HF 公开集。本地轮查出 3 处工具缺陷和 3 处数据真实缺陷；外部集又推翻 4 条结论（流式/预检/复检三路径 `missing_task` 假阳性、`stats_stale` 采样偏差等），详见 [docs/EVAL.md §2.3 与 §2.5](docs/EVAL.md) |
 | 清洗收益（代理指标） | demo + behavior1k | demo：动作方差 −10.0%，归一化跳变 51.1 → 0.34；真实规模：方差只降 1.2%（全部来自删样本），跳变 −25.7%。方差对边缘命中不敏感，能稳定观测的是跳变指标。未训练模型，不声称精度提升，见 [docs/EVAL.md §9–§11](docs/EVAL.md) |
-| **Kaggle A/B 训练实测** | so101_bomb：A 最小修复 157 块 vs B′ 清洗 106 集，训 SmolVLA | 同 epoch 裁决 A 显著更优（−0.021，t=−5.45）；multi-seed 三臂全负（−0.0199 ± 0.0023）；badgood DiD = −0.046 ± 0.012（t=−3.76）坐实被 drop 的窗口携带可学习信号 → 政策改为 repair-not-drop，详见 [kaggle_ab/results.md](kaggle_ab/results.md) 与 [论文.md](论文.md) |
+| **Kaggle A/B 训练实测** | so101_bomb：A 最小修复 157 块 vs B′ 清洗 106 集，训 SmolVLA | 同 epoch 裁决 A 显著更优（−0.021，t=−5.45）；multi-seed 三臂全负（−0.0199 ± 0.0023）；badgood DiD = −0.046 ± 0.012（t=−3.76）坐实被 drop 的窗口携带可学习信号 → 政策改为 repair-not-drop，详见 [evaluation/kaggle_ab/results.md](evaluation/kaggle_ab/results.md) 与 [论文.md](论文.md) |
 | 光捕泛化验证 | chingmu 20 集 + 零重叠古典舞 18 集 vs LAFAN1 校准表 | 按类别分化：dance 全 k 落带内（两域报警率 33.5 vs 33.6/36.8‰ 几乎重合），jumps 14 倍偏差（厂商平滑掉原始噪声）→ 校准需分域，详见 [docs/EVAL.md §12](docs/EVAL.md) |
 | 光捕注入基准全量 | LAFAN1 77 段 × 385 注入 × k 扫描 | precision 全 15 类 1.0、误报 0；joint_limit 查全按类别 0.0–0.667（170° 探针边界）；查全与 k 无关（k 管复核产量），详见 [docs/EVAL.md §13](docs/EVAL.md) |
 
-详细数字、注入表和边界说明见 [docs/EVAL.md](docs/EVAL.md)。下游行数字由 `tools/analyze_action_distribution.py` 复算生成，`--update-eval` 幂等写回文档；大数据集可用 `--proxy-from-kept` 省掉数小时视频重编码。
+详细数字、注入表和边界说明见 [docs/EVAL.md](docs/EVAL.md)。下游行数字由 `evaluation/analyze_action_distribution.py` 复算生成，`--update-eval` 幂等写回文档；大数据集可用 `--proxy-from-kept` 省掉数小时视频重编码。
 
 ## 快速导航
 
@@ -260,7 +297,7 @@ outputs/
 
 ## 技术栈
 
-pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（429 个单测，分支覆盖率实测 78%，CI 强制 64% 门槛）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。不强依赖 lerobot 包；安装了 lerobot 时，纯删除场景优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（官方 CLI 只能删不能修）。
+pandas + pyarrow（清洗直接操作 Arrow 表，保住 `fixed_size_list` / `Array2D` schema；点云按 batch 流式读写）、ffprobe/ffmpeg（帧探针与视频重建）、matplotlib（可视化）、pytest（439 个单测，分支覆盖率实测 78%，CI 强制 64% 门槛）、GitHub Actions（3.10/3.11/3.12 三版本矩阵）。不强依赖 lerobot 包；安装了 lerobot 时，纯删除场景优先走官方 `lerobot-edit-dataset` CLI，存在修复项时强制走内置实现（官方 CLI 只能删不能修）。
 
 ## 数据集格式（LeRobot v3.0）
 
@@ -273,3 +310,8 @@ dataset/
 ```
 
 兼容 v2.1 布局（episode-per-file、episodes.jsonl、tasks.jsonl）。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。
+

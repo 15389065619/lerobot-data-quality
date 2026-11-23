@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from lerobot_data_quality.gait_unit.ir import GaitClip
-from lerobot_data_quality.gait_unit.qc_rules.point_rules import (
+from verticals.gait_unit.ir import GaitClip
+from verticals.gait_unit.qc_rules.point_rules import (
     rule_marker_dropout,
     rule_marker_jump,
 )

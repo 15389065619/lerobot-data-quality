@@ -7,9 +7,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lerobot-data-quality"
-version = "1.0.0"
+version = "2.0.0"
 description = "机器人多模态数据质量治理流水线：视频 / 动作 / 点云质检，Keep-Repair-Review-Drop 分级处置与可视化报告"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 # 依赖下限与 requirements.txt 保持一致
 dependencies = [
@@ -24,7 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 hf = ["huggingface_hub>=0.23"]   # 仅 tools/publish_demo_to_hf.py 需要，发布演示数据集时安装
-rosbag = ["rosbags>=0.9"]        # 仅 ROS Bag 适配器（lerobot_data_quality.loaders.rosbag_loader）需要；
+rosbag = ["rosbags>=0.9"]        # 仅 ROS Bag 适配器（adapters.rosbag）需要；
                                  # 纯 Python 解析库，不引入 ROS 环境。安装：pip install lerobot-data-quality[rosbag]
 
 [project.urls]
@@ -37,12 +38,12 @@ lerobot-data-quality = "main:main"
 lerobot-data-quality-precheck = "pipeline.precheck:main"
 lerobot-data-quality-version = "pipeline.versions:main"
 lerobot-data-quality-tune = "pipeline.tuning:main"
-lerobot-data-quality-dashboard = "tools.dashboard_server:main"
+lerobot-data-quality-dashboard = "ui.dashboard_server:main"
 
 # 覆盖率门槛只升不降；当前门槛低于本机基线，留出跨平台差异余量
 [tool.coverage.run]
 branch = true
-source = ["pipeline", "src"]
+source = ["pipeline", "adapters", "verticals"]
 
 [tool.coverage.report]
 fail_under = 64
@@ -56,5 +57,5 @@ exclude_lines = [
 py-modules = ["main"]   # 根目录单文件入口模块
 
 [tool.setuptools.packages.find]
-where = [".", "src"]   # src 下是可选适配器包（FZMotion CSV），一并打进 wheel
-include = ["pipeline*", "tools*", "lerobot_data_quality*"]   # pipeline 含 cleaner/validator 子包
+where = ["."]   # 适配器与垂直产线在仓库根目录
+include = ["pipeline*", "tools*", "ui*", "evaluation*", "adapters*", "verticals*"]   # pipeline 含 cleaner/validator 子包

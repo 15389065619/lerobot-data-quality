@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import FPS, attach_video, build_dataset, smooth_episode
-from tools.dashboard_server import DashboardState, make_server
+from ui.dashboard_server import DashboardState, make_server
 
 N = 40
 

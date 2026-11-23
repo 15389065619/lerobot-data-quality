@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lerobot_data_quality.loaders import (
+from adapters import (
     load_motiondecode_csv,
     load_motiondecode_csv_dir,
 )

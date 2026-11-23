@@ -8,10 +8,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lerobot_data_quality.gait_unit.adapters import load_motiondecode_csv
-from lerobot_data_quality.gait_unit.ir import GaitClip, bone_lengths, validate_clip
-from lerobot_data_quality.gait_unit.kinematics import fk_motion_clip, load_skeleton
-from lerobot_data_quality.gait_unit.qc_rules.spatial_rules import (
+from verticals.gait_unit.adapters import load_motiondecode_csv
+from verticals.gait_unit.ir import GaitClip, bone_lengths, validate_clip
+from verticals.gait_unit.kinematics import fk_motion_clip, load_skeleton
+from verticals.gait_unit.qc_rules.spatial_rules import (
     compute_foot_contact,
     rule_flight_phase,
     rule_foot_skating,
@@ -43,7 +43,7 @@ _TINY_URDF = """<?xml version="1.0"?>
 
 
 def _tiny_motion(j1_deg: float, root=(0.0, 0.0, 0.0)) -> "MotionClip":
-    from lerobot_data_quality.gait_unit.motion import MotionClip
+    from verticals.gait_unit.motion import MotionClip
     ch = {"root_pos_x(m)": root[0], "root_pos_y(m)": root[1], "root_pos_z(m)": root[2],
           "root_rot_w": 1.0, "root_rot_x": 0.0, "root_rot_y": 0.0, "root_rot_z": 0.0,
           "dof_j1(rad)": math.radians(j1_deg), "dof_j2(rad)": 0.0}
@@ -74,7 +74,7 @@ def test_tiny_urdf_fk_missing_channel_raises(tmp_path):
     urdf.write_text(_TINY_URDF, encoding="utf-8")
     spec = load_skeleton(urdf)
     clip = _tiny_motion(0.0)
-    from lerobot_data_quality.gait_unit.motion import MotionClip
+    from verticals.gait_unit.motion import MotionClip
     broken = MotionClip(fps=clip.fps, channel_names=clip.channel_names[:6],
                         channels=clip.channels[:, :6])
     with pytest.raises(ValueError, match="缺少通道"):

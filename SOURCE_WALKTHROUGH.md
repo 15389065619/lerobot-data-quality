@@ -1274,7 +1274,7 @@ python -m pipeline.card --report outputs/demo/quality_report.json --out outputs/
 - `precheck.py`：不跑完整 pipeline 的轻量预检（meta/文件数/体积），用于先判断数据集值不值得跑。
 - `tuning.py`：阈值调参辅助，基于历史报告分布给建议。
 - `generate_report.py`：把 `quality_report.json` 转成人类可读摘要。
-- `tools/dashboard_server.py`：本地 dashboard，读报告 JSON 做浏览。
+- `ui/dashboard_server.py`：本地 dashboard，读报告 JSON 做浏览。
 - `visualizer.py`：按 `--plots-sample` 采样，输出 state/action 曲线与视频帧拼图到 `plots/`。
 
 这些脚本失败都不影响主链路的退出码。

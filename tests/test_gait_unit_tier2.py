@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from lerobot_data_quality.gait_unit.adapters import load_motiondecode_csv
-from lerobot_data_quality.gait_unit.limits import load_g1_limits
-from lerobot_data_quality.gait_unit.profiles import profile_params, resolve_profile
-from lerobot_data_quality.gait_unit.qc_rules import rule_mad_jump, rule_range_check
+from verticals.gait_unit.adapters import load_motiondecode_csv
+from verticals.gait_unit.limits import load_g1_limits
+from verticals.gait_unit.profiles import profile_params, resolve_profile
+from verticals.gait_unit.qc_rules import rule_mad_jump, rule_range_check
 
 REAL_SAMPLE = (Path("data/chingmu_motiondecode/samples")
                / "1.1.Basic_Movement_Category/1.1.1.High_Dynamic_Movement"

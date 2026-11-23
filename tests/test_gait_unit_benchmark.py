@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from lerobot_data_quality.gait_unit.benchmark import (
+from verticals.gait_unit.benchmark import (
     _match,
     _normalize,
     benchmark_on_clip,
     inject_random,
 )
-from lerobot_data_quality.gait_unit.defects import make_clean_clip
-from lerobot_data_quality.gait_unit.qc_rules.skeleton_rules import (
+from verticals.gait_unit.defects import make_clean_clip
+from verticals.gait_unit.qc_rules.skeleton_rules import (
     rule_bone_length_drift,
     rule_joint_rotation_limit,
     rule_timestamp_duplicates,
@@ -67,8 +67,8 @@ def test_match_clip_level_truth():
 def test_benchmark_on_clip_rules_catch_all_types():
     """合成干净底片上，四类注入缺陷必须全部被对应规则查全（查全率 100%）；
     误报 = 未命中真值 **且** 底片基线解释不了的 finding——必须为零。"""
-    from lerobot_data_quality.gait_unit.benchmark import _matches_baseline
-    from lerobot_data_quality.gait_unit.qc_rules.channel_rules import rule_mad_jump
+    from verticals.gait_unit.benchmark import _matches_baseline
+    from verticals.gait_unit.qc_rules.channel_rules import rule_mad_jump
 
     clip = make_clean_clip(seconds=60.0)
     # 底片基线：干净 clip 上全规则的 findings（步态拐点等自有动态）
@@ -78,7 +78,7 @@ def test_benchmark_on_clip_rules_catch_all_types():
         rule_joint_rotation_limit(clip, max_deg=170.0),
         rule_bone_length_drift(clip, tol_rel=0.02),
     ]
-    from lerobot_data_quality.gait_unit.benchmark import _angle_motion_clip
+    from verticals.gait_unit.benchmark import _angle_motion_clip
     baseline += [rule_mad_jump(_angle_motion_clip(clip), k=6.0)]
     baseline_norm = _normalize(clip, baseline)
 

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lerobot_data_quality.loaders import load_fzmotion_csv, load_fzmotion_csv_dir
+from adapters import load_fzmotion_csv, load_fzmotion_csv_dir
 
 
 def _write_csv(path: Path, rows: list[tuple[float, int, object, object, object]]) -> Path:

@@ -34,7 +34,7 @@ DataDoctor 还提供 `fix`（自动修复，带备份）、`trim`（裁首尾空
 | 对源数据 | `fix` / `trim` 原地改写，备份仅含 `meta/`，被重写的 parquet 没有备份 | 源目录只读，清洗产物独立落盘 |
 | 子集模式 | 跳过项记为 PASS，默认视图不显示该消息 | 检测到覆盖不足时拒绝导出，不给部分结论 |
 | 增量重检 | 无（incremental 仅指 HF 下载分批取数） | `--incremental` + manifest 复用 |
-| 下游收益量化 | 无（`score` 只排序，不量化清洗前后分布） | `tools/analyze_action_distribution.py` 三段测量（选择效应与修复效应分离） |
+| 下游收益量化 | 无（`score` 只排序，不量化清洗前后分布） | `evaluation/analyze_action_distribution.py` 三段测量（选择效应与修复效应分离） |
 
 ### 能力清单
 

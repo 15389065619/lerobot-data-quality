@@ -287,7 +287,7 @@ python main.py --dataset_path data/hf_retest/tokyo_u_lsmo --output_dir outputs_h
 
 ## 7. Metrics & Precision
 
-> 统计对象：`outputs*/review_queue.csv` 历史异常记录；脚本：`tools/eval_precision.py`。
+> 统计对象：`artifacts/**/review_queue.csv` 历史异常记录；脚本：`evaluation/eval_precision.py`。
 > 当前状态：已生成 100 条待标注样本（`eval_annotation.csv`），人工结论待回填。
 
 ### 7.1 抽样与标注口径
@@ -318,13 +318,13 @@ _待填：完成全量标注后，用 7.4 的命令生成 `recall` 列。未做�
 
 ```bash
 # 1) 抽样（默认扫描仓库根目录下所有 review_queue.csv）
-python tools/eval_precision.py sample --n 100 --out eval_annotation.csv
+python evaluation/eval_precision.py sample --n 100 --out eval_annotation.csv
 
 # 2) 人工填写 human_label 后统计精确率
-python tools/eval_precision.py report --annotations eval_annotation.csv
+python evaluation/eval_precision.py report --annotations eval_annotation.csv
 
 # 3) 可选：有全量标注时同时算召回率，并导出 Markdown 表格回填本章
-python tools/eval_precision.py report --annotations eval_annotation.csv \
+python evaluation/eval_precision.py report --annotations eval_annotation.csv \
     --full-labels full_labels.csv --markdown-out docs/metrics_table.md
 ```
 
@@ -382,7 +382,7 @@ python tools/benchmark_reader.py --dataset data/stress --n-files 5 --repeat 2
 > 原始：`demo_dataset`（36 ep / 3,008 帧） → 清洗：`cleaned_dataset`（29 ep / 2,393 帧）
 > 中间基线：同一份原始数据，只取清洗后保留的 episode —— 用来把「剔除」和「修复」两种效应拆开。
 > 跳变阈值：`|Δ|∞ > 1.000`（`action_jump.abs_floor` 按 fps 折算）；口径：逐维总体方差（ddof=0）跨维平均。
-> 复现：`python tools/analyze_action_distribution.py --raw demo_dataset --cleaned <cleaned_dataset> --report <quality_report.json> --update-eval docs/EVAL.md`
+> 复现：`python evaluation/analyze_action_distribution.py --raw demo_dataset --cleaned <cleaned_dataset> --report <quality_report.json> --update-eval docs/EVAL.md`
 
 ### 9.1 总量指标
 
@@ -451,7 +451,7 @@ python tools/benchmark_reader.py --dataset data/stress --n-files 5 --repeat 2
 > 原始：`demo_dataset`（36 ep / 3,008 帧） → 清洗：`cleaned_dataset`（28 ep / 2,335 帧）
 > 中间基线：同一份原始数据，只取清洗后保留的 episode —— 用来把「剔除」和「修复」两种效应拆开。
 > 跳变阈值：`|Δ|∞ > 1.000`（`action_jump.abs_floor` 按 fps 折算）；口径：逐维总体方差（ddof=0）跨维平均。
-> 复现：`python tools/analyze_action_distribution.py --raw demo_dataset --cleaned <cleaned_dataset> --report <quality_report.json> --update-eval docs/EVAL.md --section-id ACTION_DIST_REVIEW --section-title "## 10. 复核回灌后的再测量：把跳变 episode 判为 drop"`
+> 复现：`python evaluation/analyze_action_distribution.py --raw demo_dataset --cleaned <cleaned_dataset> --report <quality_report.json> --update-eval docs/EVAL.md --section-id ACTION_DIST_REVIEW --section-title "## 10. 复核回灌后的再测量：把跳变 episode 判为 drop"`
 
 ### 10.1 总量指标
 
@@ -522,7 +522,7 @@ python tools/benchmark_reader.py --dataset data/stress --n-files 5 --repeat 2
 > 中间基线：同一份原始数据，只取清洗后保留的 episode —— 用来把「剔除」和「修复」两种效应拆开。
 > 跳变阈值：`|Δ|∞ > 1.000`（`action_jump.abs_floor` 按 fps 折算）；口径：逐维总体方差（ddof=0）跨维平均。
 > 跳变统计排除 3 个离散维（取值种数 ≤ 3）：dim6、dim14、dim22 —— 与规则 `action_jump` 同口径；不排除的话夹爪开合（一次 ±2）会被当成跳变，每条轨迹都「有跳变」。
-> 复现：`python tools/analyze_action_distribution.py --raw behavior1k_task0042 --proxy-from-kept --report <quality_report.json> --update-eval docs/EVAL.md --section-id ACTION_DIST_BEHAVIOR1K --section-title "## 11. 真实规模复核：behavior1k 的 5 条跳变 review 判为 drop"`
+> 复现：`python evaluation/analyze_action_distribution.py --raw behavior1k_task0042 --proxy-from-kept --report <quality_report.json> --update-eval docs/EVAL.md --section-id ACTION_DIST_BEHAVIOR1K --section-title "## 11. 真实规模复核：behavior1k 的 5 条跳变 review 判为 drop"`
 
 ### 11.1 总量指标
 

@@ -19,7 +19,9 @@ RUN python -m pip install --upgrade pip && python -m pip install -r requirements
 COPY pyproject.toml README.md main.py ./
 COPY pipeline ./pipeline
 COPY tools ./tools
-COPY src ./src
+COPY ui ./ui
+COPY adapters ./adapters
+COPY verticals ./verticals
 COPY config ./config
 
 # 安装本项目，提供 lerobot-data-quality 命令

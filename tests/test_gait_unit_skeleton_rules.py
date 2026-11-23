@@ -6,14 +6,14 @@ import math
 
 import numpy as np
 
-from lerobot_data_quality.gait_unit.defects import (
+from verticals.gait_unit.defects import (
     inject_drift,
     inject_duplicate_stamp,
     inject_frame_drop,
     inject_joint_limit,
     make_clean_clip,
 )
-from lerobot_data_quality.gait_unit.qc_rules.skeleton_rules import (
+from verticals.gait_unit.qc_rules.skeleton_rules import (
     rule_bone_length_drift,
     rule_joint_rotation_limit,
     rule_timestamp_duplicates,

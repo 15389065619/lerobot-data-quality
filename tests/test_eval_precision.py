@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 
 from tools.benchmark_reader import _row, print_table, write_markdown
-from tools.eval_precision import (
+from evaluation.eval_precision import (
     LABEL_FP,
     LABEL_TP,
     _annotation_id,

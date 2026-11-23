@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("rosbags", reason="未安装可选依赖 rosbags")
 
-from lerobot_data_quality.loaders import RosbagAdapter  # noqa: E402
+from adapters import RosbagAdapter  # noqa: E402
 from tools.make_demo_rosbag import make_demo_rosbag  # noqa: E402
 
 

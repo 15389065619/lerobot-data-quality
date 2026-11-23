@@ -15,19 +15,19 @@ import math
 import numpy as np
 import pytest
 
-from lerobot_data_quality.gait_unit import (
+from verticals.gait_unit import (
     GaitClip,
     bone_lengths,
     quat_angle,
     validate_clip,
 )
-from lerobot_data_quality.gait_unit.adapters import (
+from verticals.gait_unit.adapters import (
     load_fzmotion_points,
     load_pico_csv,
     parse_bvh,
     write_pico_csv,
 )
-from lerobot_data_quality.gait_unit.defects import (
+from verticals.gait_unit.defects import (
     inject_drift,
     inject_duplicate_stamp,
     inject_frame_drop,

@@ -10,12 +10,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lerobot_data_quality.loaders import (
+from adapters import (
     RosbagAdapter,
     RosbagAdapterError,
     build_frame_table,
 )
-from lerobot_data_quality.loaders.rosbag_loader import _stamp_ns
+from adapters.rosbag import _stamp_ns
 
 MS = 1_000_000  # 1 毫秒 = 1e6 纳秒
 
