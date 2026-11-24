@@ -285,7 +285,11 @@ class RosbagAdapter:
         joint_records: list[tuple[int, np.ndarray]] = []
         image_records: list[int] = []
 
-        with AnyReader(self._reader_paths()) as reader:
+        with AnyReader(self._reader_paths(), default_typestore=typestore) as reader:
+            # default_typestore：真实 rosbag2 的 db3 里常不存消息类型定义
+            # （录制端只写了 topic 名 + 原始 CDR 字节），AnyReader 必须有类型库
+            # 才能反序列化；合成 bag 自带定义，走 reader 内部的 definitions 分支，
+            # 不受该参数影响。
             available = {c.topic for c in reader.connections}
             missing = wanted - available
             if missing:
