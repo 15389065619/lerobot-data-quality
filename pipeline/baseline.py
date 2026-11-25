@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """基线白名单：把已确认的误报沉淀下来，重跑时自动摘除。
 
 纯统计阈值在不同数据集上总会有少量稳定误报（如光捕的四元数重采样）。

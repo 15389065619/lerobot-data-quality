@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """处置策略层：把「质检结论」翻译成「业务动作」。
 
 真实数据团队不会「有异常就删整个 episode」——那会白白丢掉大量可修复数据，

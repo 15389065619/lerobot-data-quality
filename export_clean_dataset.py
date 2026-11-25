@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """从 quality_report.json 导出物理子集（默认只剔除 disposition == 'drop'）。
 
 与主流程的 cleaner 区别：cleaner 尽量保住数据（repair 修复后保留、review 保留待人工确认），

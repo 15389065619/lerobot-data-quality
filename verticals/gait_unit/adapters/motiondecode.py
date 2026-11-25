@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """CHINGMU MotionDecode（青瞳视觉）重定向轨迹 CSV → MotionClip 适配器。
 
 源格式（宽表，每行一帧，无显式时间戳，帧序即时间，MotionDecode 默认 120 FPS）：

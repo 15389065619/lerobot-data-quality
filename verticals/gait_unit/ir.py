@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """步态单元的中间格式（IR）：标准骨骼时序帧表。
 
 为什么是 dataclass 而不是 DataFrame（与 loaders/ 的 LeRobot 帧表不同构）：

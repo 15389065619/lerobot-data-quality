@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """Kaggle A/B 清洗收益实验——第 1 步本地构建脚本的共享常量与工具。
 
 脚本目录：evaluation/kaggle_ab/（不放数据）

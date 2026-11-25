@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """ROS Bag 加载器（可选能力，独立于 pipeline/ 主线）。
 
 把机器人最原始的 ROS Bag 文件（rosbag1 `.bag` / rosbag2 目录或 `.db3` / `.mcap`）

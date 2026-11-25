@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """坏/好窗口可学习性结果判读（本地）。
 
 输入：badgood_results.json（kernel 产出拷回后放 kaggle_ab/ 或 G:\\ab）。

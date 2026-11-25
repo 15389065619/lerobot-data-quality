@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """坏/好窗口可学习性评测（Kaggle GPU kernel / 本地 CPU 双端通用）。
 
 对 A_s1 / B2_s1 两个 final checkpoint 在 80 个新窗口（40 bad + 40 good，

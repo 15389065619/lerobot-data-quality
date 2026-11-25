@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """v2 复跑结果可视化（数据源：results.md 抄录数字；eval_v2_results.json 归档后可替换为逐窗口真值）。
 
 生成 kaggle_ab/figures/ 下三张图：

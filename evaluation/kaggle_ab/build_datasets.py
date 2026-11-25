@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """第 1 步 b：构建 B/eval 两份数据集（复用 pipeline.cleaner.clean_dataset 的重排机器）。
 
 A 组 so101_minrepair 由 rebuild_minrepair_blocks.py 单独构建——bomb 的坏集 81-102

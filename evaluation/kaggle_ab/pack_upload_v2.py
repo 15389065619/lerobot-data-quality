@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """把 v2（漂移修复后 cleaner 重建）的 B′/eval′ 打包成单个 zip，供 Kaggle Dataset 上传。
 
 与 pack_upload.py 同构；v2 只含 B′ 与 eval′（A 沿用 v1 数据集，A@10k 从零训不需要 ckpt）。

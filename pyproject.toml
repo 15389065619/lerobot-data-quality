@@ -10,7 +10,7 @@ name = "lerobot-data-quality"
 version = "2.0.0"
 description = "机器人多模态数据质量治理流水线：视频 / 动作 / 点云质检，Keep-Repair-Review-Drop 分级处置与可视化报告"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 # 依赖下限与 requirements.txt 保持一致
 dependencies = [

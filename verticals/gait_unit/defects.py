@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """G0 缺陷注入器 + 干净基线 clip 生成器。
 
 职责与哲学（与 examples/fzmotion_sim 一脉相承）：

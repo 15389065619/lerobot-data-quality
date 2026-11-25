@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """第 1 步 d：统一归一化统计——用 B 组训练集算一份 stats，覆盖 A/B/eval。
 
 这是两臂 loss 可比的前提：SmolVLA 按 dataset stats 做归一化，三份数据必须共用

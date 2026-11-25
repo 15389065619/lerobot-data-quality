@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """清洗前后动作分布对比：方差、跳变峰值、均值漂移。
 
 质检报告回答「哪些 episode 有问题」，不回答「清洗之后动作序列变成了什么样」。

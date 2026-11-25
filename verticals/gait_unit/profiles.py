@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """按动作类别的规则参数与误报基线（数据驱动，LAFAN1 77 段校准）。
 
 两层设计（源自 LAFAN1 校准的教训，2026-11-20）：

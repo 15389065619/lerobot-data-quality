@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """URDF 运动学：把 G1 的 URDF 解析成骨架规格，并把 MotionClip（关节角通道）
 前向运动学成 GaitClip（关节锚点位置）——Tier 3 空间级规则的数据基础。
 

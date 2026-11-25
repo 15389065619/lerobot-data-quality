@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """交互式质检 Dashboard：在线浏览每个 episode 的 action/state 曲线与视频片段。
 
 与 ``generate_report.py`` 的区别：后者是「一次性渲染的静态 HTML 快照」，本文件是

@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """FZMotion 风格动捕 CSV 加载器（可选能力，独立于 pipeline/ 主线）。
 
 FZMotion 等光学动捕系统导出的 CSV 是长表格式：

@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """数据集版本管理：内容寻址快照 + 差异对比 + 回滚。
 
 对象库在 .lrdq/objects/<前两位>/<sha1>，同一文件内容只存一份；

@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """FZMotion marker 点级规则：作用于点级 GaitClip（parents/rotations = None）。
 
   rule_marker_dropout  单 marker 缺测占比超阈（遮挡丢点）

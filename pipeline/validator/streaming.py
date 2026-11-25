@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """流式（分片）质检：不把整张逐帧表读进内存。
 
 适用场景：10–50GB 的 LeRobot 数据集在 16–24GB 内存 / 机械盘上跑质检。

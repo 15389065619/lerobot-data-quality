@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """步态质检基准 harness：真实底片 + 随机注入缺陷（地面真值）→ 规则查全/误报可测量。
 
 公开入口：

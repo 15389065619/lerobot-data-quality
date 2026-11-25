@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """Pico 穿戴动捕导出 CSV → GaitClip 适配器。
 
 字段契约（假设版 v0，真实导出样本到位后核对 REQUIRED_COLUMNS，不动解析逻辑）：

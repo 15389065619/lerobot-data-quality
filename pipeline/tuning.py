@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """从历史人工复核结果学习处置策略（阈值 / 严重度建议）。
 
 只输出 YAML patch 建议，由人评审后合并进 config/default.yaml，不自动生效。

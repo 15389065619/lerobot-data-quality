@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """FZMotion 光学动捕 marker 长表 CSV → GaitClip **点级子集**适配器。
 
 与 adapters/fzmotion_csv_loader.py 的关系：

@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """generate_report.py — 把质检流水线的产物渲染成单文件 HTML 可视化大屏。
 
 读取 --output_dir 下的 quality_manifest.json（每个 episode 的 decision）与

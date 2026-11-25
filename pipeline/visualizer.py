@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """质检结果可视化。所有图输出到 outputs/plots/。
 
 约束：大数据集只采样前 N 个 episode（默认 20），避免内存与渲染时间失控。

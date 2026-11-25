@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """光捕/重定向轨迹的通道级 IR（MotionClip）。
 
 为什么是第二个 IR 而不是复用 GaitClip：

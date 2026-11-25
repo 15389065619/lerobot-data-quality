@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """LeRobot v3 数据集加载器（只读）。
 
 职责边界：只负责「把磁盘上的数据集读成内存里的结构」，不做任何质量校验、

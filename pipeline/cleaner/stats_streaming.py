@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """流式统计累加器：清洗阶段逐文件累计 mean/std/min/max，避免全量 DataFrame 拼接。"""
 
 from __future__ import annotations

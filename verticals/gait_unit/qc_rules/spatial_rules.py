@@ -1,3 +1,10 @@
+# Copyright (c) 2026 wu
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
 """Tier 3 空间级规则：作用于 FK 产物的 GaitClip（需要骨架规格的 FK 先行）。
 
 规则清单：
