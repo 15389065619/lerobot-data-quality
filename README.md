@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![tests](https://img.shields.io/badge/tests-439%20passed-brightgreen)
 ![Docker](https://img.shields.io/badge/docker-available-informational)
-![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 本地 LeRobot 数据集的质检、分级处置、报告、清洗与可视化工具。支持 v3.0 和 v2.1 布局，输入 parquet + mp4（可选点云），输出可训练的数据集、逐 episode 的报告和可复核的队列。仓库里没有训练代码。
 
