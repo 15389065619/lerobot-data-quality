@@ -2,9 +2,9 @@
 """为源码文件批量插入版权头（幂等、可预演）。
 
 用法：
-    python tools/add_license_headers.py --holder "wu" --license apache --dry-run
-    python tools/add_license_headers.py --holder "wu" --license apache
-    python tools/add_license_headers.py --holder "wu" --license mit --include-init
+    python tools/add_license_headers.py --holder "wuliangzhong" --license apache --dry-run
+    python tools/add_license_headers.py --holder "wuliangzhong" --license apache
+    python tools/add_license_headers.py --holder "wuliangzhong" --license mit --include-init
 """
 
 from __future__ import annotations
