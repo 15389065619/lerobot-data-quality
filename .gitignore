@@ -35,3 +35,8 @@ exports_smoke_*/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 论文与配图：本地归档，不进入公开仓库（2026-11-26 从仓库移除）
+/论文.md
+/evaluation/paper_figures/
+/evaluation/generate_paper_figures.py
